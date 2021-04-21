@@ -1,0 +1,10 @@
+.vscode
+.python-version
+*.bat
+__pycache__
+work
+*.s8i
+*.GEM
+*.NAP
+!example.NAP
+!example.s8i
