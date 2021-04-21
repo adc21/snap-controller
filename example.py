@@ -1,7 +1,6 @@
 """snap-controllerの使用例"""
 
 import os, copy
-from typing import List
 from controller import snap_exec, Updater, UpdateConfig, Result, ResultConfig
 
 # snap_exec: バッチファイルを作成して、SNAPを回します
