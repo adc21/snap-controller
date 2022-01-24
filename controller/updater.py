@@ -54,7 +54,7 @@ class Updater(File):
                             if self.debug: logger.info(f"updated target line list: {rewrite_text_list}")
 
                             rewrite_text = ",".join(str(x) for x in rewrite_text_list)
-                            rewrite_line = f"{text_prefix} / {rewrite_text}"
+                            rewrite_line = f"{text_prefix} / {rewrite_text}\n"
                             data[target_line_number - 1] = rewrite_line
                             break
 

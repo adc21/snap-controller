@@ -1,6 +1,6 @@
 """snap-controllerの使用例"""
 
-import os, copy
+import copy
 from controller import snap_exec, Updater, UpdateConfig, Result, ResultConfig
 
 # snap_exec: バッチファイルを作成して、SNAPを回します
@@ -10,8 +10,10 @@ from controller import snap_exec, Updater, UpdateConfig, Result, ResultConfig
 # ResultConfig: Resultのコンフィグタイプ（使わなくてもOK）
 
 # 初期設定
-SNAP_WORK_DIR_PATH = "C:\\Users\\kakemoto\\kozosystem\\SNAPV8\\work"       # SNAPのworkフォルダへのパス !!! 使用しているパソコンのパスに書き換えてください !!!!
-SNAP_INPUT_FILE_PATH = "example.s8i"                                    # 回したいSNAPファイルへのパス（テキストデータ(.i8i)で書き出したもの）
+# SNAPのworkフォルダへのパス !!! 使用しているパソコンのパスに書き換えてください !!!!
+SNAP_WORK_DIR_PATH = "C:\\Users\\kakemoto\\kozosystem\\SNAPV8\\work"
+# 回したいSNAPファイルへのパス（テキストデータ(.i8i)で書き出したもの）
+SNAP_INPUT_FILE_PATH = "example.s8i"
 
 # 結果として参照したいデータを設定（設定できる値は、controller/result.pyのResultConfigDictを参照）
 result_config: ResultConfig = [
@@ -44,7 +46,8 @@ while True:
 
     # 結果を受けて、次の解析の設定条件を変える（お好みで）
     previous_weight = float(copy.copy(weight))
-    weight = 10 * float(result_list[0]) + float(result_list[1]) # この例では変位と加速度の両方を考慮した値を指標に用いる
+    # この例では変位と加速度の両方を考慮した値を指標に用いる
+    weight = 10 * float(result_list[0]) + float(result_list[1])
     delta = weight - previous_weight
 
     if delta > 0:   # weightが増加したら解析終了
@@ -58,8 +61,8 @@ while True:
     update_config: UpdateConfig = [
         {
             "category": "REM / 粘性/ｵｲﾙﾀﾞﾝﾊﾟｰ",   # どのカテゴリーを書き換えるか（.s8iファイルのカテゴリー部分の行をコピペ）
-            "line": 1,                          # 何行目を書き換えるか（１からスタート） 
-            "row": 9,                           # lineの何列目を書き換えるか（１からスタート） 
+            "line": 1,                          # 何行目を書き換えるか（１からスタート）
+            "row": 9,                           # lineの何列目を書き換えるか（１からスタート）
             "value": c,                         # 書き換える値
         },
     ]

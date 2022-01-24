@@ -8,3 +8,4 @@ work
 *.NAP
 !example.NAP
 !example.s8i
+test_*.py
