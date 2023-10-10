@@ -9,6 +9,7 @@ name = "pypi"
 mypy = "*"
 autopep8 = "*"
 flake8 = "*"
+watchdog = "*"
 
 [requires]
 python_version = "3.8"

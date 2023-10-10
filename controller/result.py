@@ -1,4 +1,4 @@
-from typing import TypedDict, Union, List, Optional, Literal
+from typing import TypedDict, List, Optional, Literal
 from .file import File
 from .types import TypePrefix
 from .logger import logger
@@ -63,7 +63,7 @@ class Result(File):
     def get(self) -> List[any]:
         result_list = []
         for i, c in enumerate(self.config):
-            type_prefix = "D" if not "type_prefix" in c else c["type_prefix"]
+            type_prefix = "D" if "type_prefix" not in c else c["type_prefix"]
             path = f"{self.work_dir}\{self.base}\{type_prefix}{c['case_number']}\{c['filename']}"
 
             with open(path, "r", encoding="shift_jis") as result_file:
@@ -73,7 +73,7 @@ class Result(File):
                     line_number += 1
                     if c["line"] == line_number:
                         if line:
-                            text_list = line.split(None if not "delimiter" in c else c["delimiter"])
+                            text_list = line.split(None if "delimiter" not in c else c["delimiter"])
 
                             if self.debug:
                                 logger.info(f"result target line list:  {text_list}")

@@ -1,9 +1,9 @@
 import os
-import re
 from os.path import isdir, join
-from typing import TypedDict, Union, List
+from typing import Union
 from .types import SnapDirPrefixType
-from .utils import get_dir_regex
+from ._utils import get_dir_regex
+
 
 class SnapPath:
     def __init__(self, work_dir: str, snap_filename: str):

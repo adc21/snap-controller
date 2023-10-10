@@ -4,8 +4,7 @@ from typing import Callable, List
 from watchdog.events import FileSystemEventHandler, FileSystemEvent
 from watchdog.observers import Observer
 from .logger import logger
-from .utils import get_dir_regex
-from .types import SnapDirPrefixType
+
 
 class FileEventHandler(FileSystemEventHandler):
     def __init__(self, on_created: Callable[[FileSystemEvent], None] = None):
@@ -19,7 +18,8 @@ class FileEventHandler(FileSystemEventHandler):
 
     def on_created(self, event):
         print("on_created", event.src_path)
-        if self.on_created_callback: self.on_created_callback(event)
+        if self.on_created_callback:
+            self.on_created_callback(event)
 
     """
     def on_deleted(self, event):
@@ -32,9 +32,11 @@ class FileEventHandler(FileSystemEventHandler):
         print("on_moved", event.src_path)
     """
 
+
 def _add_schedule(observer: Observer, path: str, on_created: Callable[[FileSystemEvent], None]):
     event_handler = FileEventHandler(on_created)
     observer.schedule(event_handler, path, recursive=True)
+
 
 def run_observer(work_dir: str, target_files: List[str], on_created: Callable[[FileSystemEvent], None]):
     observer = Observer()

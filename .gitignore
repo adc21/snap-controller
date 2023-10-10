@@ -9,3 +9,6 @@ work
 !example.NAP
 !example.s8i
 test_*.py
+test_
+test
+.flake8

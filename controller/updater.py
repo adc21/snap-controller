@@ -1,8 +1,8 @@
 import os
-import subprocess
 from typing import TypedDict, Union, List
 from .file import File
 from .logger import logger
+
 
 class UpdateConfigDict(TypedDict):
     category: str   # Exp. "REM / 粘性/ｵｲﾙﾀﾞﾝﾊﾟｰ"
@@ -10,7 +10,9 @@ class UpdateConfigDict(TypedDict):
     row: int    # Start from 1
     value: Union[str, float, int]
 
+
 UpdateConfig = List[UpdateConfigDict]
+
 
 class Updater(File):
     def __init__(self, file_path: str, config: UpdateConfig, debug: bool = True):
@@ -47,11 +49,13 @@ class Updater(File):
                             text = split_text[1].strip()
                             original_text_list = text.split(",")
 
-                            if self.debug: logger.info(f"update target line list:  {original_text_list}")
+                            if self.debug:
+                                logger.info(f"update target line list:  {original_text_list}")
 
                             rewrite_text_list = [c["value"] if i == c["row"] - 1 else x for i, x in enumerate(original_text_list)]
 
-                            if self.debug: logger.info(f"updated target line list: {rewrite_text_list}")
+                            if self.debug:
+                                logger.info(f"updated target line list: {rewrite_text_list}")
 
                             rewrite_text = ",".join(str(x) for x in rewrite_text_list)
                             rewrite_line = f"{text_prefix} / {rewrite_text}\n"
