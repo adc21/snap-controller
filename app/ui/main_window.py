@@ -1,0 +1,2181 @@
+"""
+app/ui/main_window.py
+メインウィンドウ。
+
+レイアウト:
+  ┌──────────────────────────────────────────────┐
+  │ MenuBar                                      │
+  │ ToolBar                                      │
+  ├──────────────────────────────────────────────┤
+  │  CaseTable (左) │  ResultChartWidget (右)     │
+  │                 │                            │
+  ├──────────────────────────────────────────────┤
+  │ LogWidget (下部)                              │
+  ├──────────────────────────────────────────────┤
+  │ StatusBar                                    │
+  └──────────────────────────────────────────────┘
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+from typing import Optional
+
+from PySide6.QtCore import Qt, QSettings
+from PySide6.QtGui import QAction, QCloseEvent, QIcon, QKeySequence
+from PySide6.QtWidgets import (
+    QApplication,
+    QFileDialog,
+    QMainWindow,
+    QMessageBox,
+    QProgressBar,
+    QSplitter,
+    QSystemTrayIcon,
+    QVBoxLayout, QHBoxLayout,
+    QWidget,
+)
+
+from app.models import AnalysisCaseStatus, Project
+from app.models.case_template import TemplateManager
+from app.services import AnalysisService
+from app.services.autosave import AutoSaveService
+from app.services.validation import validate_case, validate_batch, validate_criteria
+from .case_compare_dialog import CaseCompareDialog
+from .case_table import CaseTableWidget
+from .compare_chart_widget import CompareChartWidget
+from .envelope_chart_widget import EnvelopeChartWidget
+from .criteria_dialog import CriteriaDialog
+from .damper_catalog_dialog import DamperCatalogDialog
+from .dashboard_widget import DashboardWidget
+from .earthquake_wave_dialog import EarthquakeWaveDialog
+from .export_dialog import ExportDialog
+from .file_preview_widget import FilePreviewWidget
+from .log_widget import LogWidget
+from .multi_wave_dialog import MultiWaveDialog
+from .optimizer_dialog import OptimizerDialog
+from .radar_chart_widget import RadarChartWidget
+from .ranking_widget import RankingWidget
+from .result_chart_widget import ResultChartWidget
+from .result_table_widget import ResultTableWidget
+from .sensitivity_widget import SensitivityWidget
+from .time_history_widget import TimeHistoryWidget
+from .model_info_widget import ModelInfoWidget
+from .settings_dialog import SettingsDialog, load_settings
+from .sweep_dialog import SweepDialog
+from .template_dialog import TemplateDialog, SaveTemplateDialog
+from .theme import ThemeManager
+from .run_selection_widget import RunSelectionWidget
+from .batch_queue_widget import BatchQueueWidget
+from .validation_dialog import ValidationDialog, BatchValidationDialog
+from .welcome_widget import WelcomeWidget, add_recent_project
+from .sidebar_widget import SidebarWidget
+from .shortcut_help_dialog import ShortcutHelpDialog  # 改善⑨
+from .step_nav_footer import StepNavFooter  # UX改善①新: ステップナビゲーションフッター
+
+import qtawesome as qta
+
+APP_NAME = "snap-controller"
+ORG_NAME = "BAUES"
+MAX_RECENT_MENU = 8
+
+
+class MainWindow(QMainWindow):
+    """
+    アプリケーションのメインウィンドウ。
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._project: Optional[Project] = None
+        self._service = AnalysisService()
+        self._autosave = AutoSaveService(self)
+        self._template_manager = TemplateManager()
+
+        self._setup_ui()
+        self._setup_menu()
+        self._setup_toolbar()
+        self._restore_settings()
+        self._setup_tray_icon()  # 改善C: システムトレイ通知
+
+        # 自動保存シグナル接続
+        self._autosave.auto_saved.connect(
+            lambda p: self.statusBar().showMessage(f"自動保存しました", 3000)
+        )
+        self._autosave.error_occurred.connect(
+            lambda msg: self._log.append_line(f"[自動保存エラー] {msg}")
+        )
+
+        # 起動時はウェルカム画面を表示（空プロジェクトを裏で作成）
+        self._project = Project()
+        settings = load_settings()
+        if settings.get("snap_exe_path"):
+            self._project.snap_exe_path = settings["snap_exe_path"]
+        if settings.get("snap_work_dir"):
+            self._project.snap_work_dir = settings["snap_work_dir"]
+        self._service.set_snap_exe_path(self._project.snap_exe_path)
+        self._service.set_snap_work_dir(self._project.snap_work_dir)
+        self._autosave.set_project(self._project)
+        # 自動保存設定の復元
+        autosave_enabled = settings.get("autosave_enabled", True)
+        autosave_interval = settings.get("autosave_interval", 5)
+        self._autosave.set_interval(autosave_interval)
+        self._autosave.set_enabled(autosave_enabled)
+        self._case_table.set_project(self._project)
+        self._run_selection.set_project(self._project)
+        self._run_selection.set_snap_exe_path(self._project.snap_exe_path or "")  # UX改善4
+        self._main_stack.setCurrentIndex(0)  # ウェルカム画面
+
+        # 自動保存からの復旧チェック
+        self._check_autosave_recovery()
+
+    # ------------------------------------------------------------------
+    # UI Construction
+    # ------------------------------------------------------------------
+
+    def _setup_ui(self) -> None:
+        self.setWindowTitle(APP_NAME)
+        self.resize(1200, 750)
+
+        # ---- ウィジェット ----
+        self._model_info = ModelInfoWidget()
+        self._case_table = CaseTableWidget()
+        self._chart = ResultChartWidget()
+        self._compare_chart = CompareChartWidget()
+        self._envelope_chart = EnvelopeChartWidget()
+        self._radar_chart = RadarChartWidget()
+        self._result_table = ResultTableWidget()
+        self._ranking = RankingWidget()
+        self._time_history = TimeHistoryWidget()
+        self._dashboard = DashboardWidget()
+        self._sensitivity = SensitivityWidget()
+        self._file_preview = FilePreviewWidget()
+        self._run_selection = RunSelectionWidget()
+        self._batch_queue = BatchQueueWidget()
+        self._log = LogWidget()
+
+        # ---- ウェルカム画面 ----
+        self._welcome = WelcomeWidget()
+        self._welcome.newProjectRequested.connect(self._new_project_dialog)
+        self._welcome.openProjectRequested.connect(self._open_project)
+        self._welcome.recentProjectSelected.connect(self._open_recent_project)
+
+        # ---- ワークフローの4ステップ構築 ----
+        from PySide6.QtWidgets import QTabWidget as _QTabWidget, QStackedWidget
+
+        # ---- UX改善①新: ステップナビゲーションフッター ----
+        # STEP 1: モデル設定 (Model Info + File Preview)
+        step1 = QWidget()
+        step1_layout = QVBoxLayout(step1)
+        step1_layout.addWidget(self._model_info)
+        step1_layout.addWidget(self._file_preview, stretch=1)
+        # STEP1 フッター: 次へ（ケース設計）のみ
+        self._step1_footer = StepNavFooter(
+            show_back=False,
+            next_label="ケースを設計する  (STEP2) →",
+            next_primary=True,
+        )
+        self._step1_footer.nextRequested.connect(lambda: self._sidebar.set_current_step(1))
+        step1_layout.addWidget(self._step1_footer)
+
+        # STEP 2: ケース設計 (Case Table)
+        step2 = QWidget()
+        step2_layout = QVBoxLayout(step2)
+        step2_layout.setContentsMargins(0, 0, 0, 0)
+        step2_layout.addWidget(self._case_table)
+        # STEP2 フッター
+        self._step2_footer = StepNavFooter(
+            back_label="← モデル設定  (STEP1)",
+            next_label="解析を実行する  (STEP3) →",
+            next_primary=True,
+        )
+        self._step2_footer.backRequested.connect(lambda: self._sidebar.set_current_step(0))
+        self._step2_footer.nextRequested.connect(lambda: self._sidebar.set_current_step(2))
+        step2_layout.addWidget(self._step2_footer)
+
+        # STEP 3: 解析実行 (Run Selection + Batch Queue + Log)
+        step3_widget = QWidget()
+        step3_layout = QVBoxLayout(step3_widget)
+        step3_layout.setContentsMargins(0, 0, 0, 0)
+
+        step3_layout.addWidget(self._run_selection)
+
+        step3_split = QSplitter(Qt.Vertical)
+        step3_split.addWidget(self._batch_queue)
+        step3_split.addWidget(self._log)
+        step3_split.setStretchFactor(0, 2)
+        step3_split.setStretchFactor(1, 1)
+
+        step3_layout.addWidget(step3_split, stretch=1)
+        # STEP3 フッター
+        self._step3_footer = StepNavFooter(
+            back_label="← ケース設計  (STEP2)",
+            next_label="結果を確認する  (STEP4) →",
+            next_primary=True,
+        )
+        self._step3_footer.backRequested.connect(lambda: self._sidebar.set_current_step(1))
+        self._step3_footer.nextRequested.connect(lambda: self._sidebar.set_current_step(3))
+        step3_layout.addWidget(self._step3_footer)
+        step3 = step3_widget
+
+        # STEP 4: 結果・戦略 (右側タブだったものをSTEP4に集約)
+        self._right_tabs = _QTabWidget()
+        _tab_defs = [
+            (self._dashboard,      "fa5s.chart-pie",         "ダッシュボード",       True,  1),
+            (self._chart,          "fa5s.chart-line",        "解析結果",             True,  1),
+            (self._compare_chart,  "fa5s.exchange-alt",      "ケース比較",           True,  2),
+            (self._envelope_chart, "fa5s.ruler-combined",    "エンベロープ",         True,  1),
+            (self._radar_chart,    "fa5s.spider",            "レーダーチャート",     True,  2),
+            (self._result_table,   "fa5s.table",             "結果テーブル",         True,  1),
+            (self._ranking,        "fa5s.trophy",            "ランキング",           True,  1),
+            (self._time_history,   "fa5s.chart-area",        "時刻歴応答",           True,  1),
+            (self._sensitivity,    "fa5s.search",            "感度分析",             True,  2),
+        ]
+        self._tab_result_requirements: dict = {}
+        icon_color = "#d4d4d4" if ThemeManager.is_dark() else "#333333"
+        for idx, (widget, icon_name, label, req, min_r) in enumerate(_tab_defs):
+            self._right_tabs.addTab(widget, qta.icon(icon_name, color=icon_color), label)
+            self._tab_result_requirements[idx] = (req, min_r)
+
+        self._update_result_tabs(result_count=0)
+
+        # ---- UX改善⑤新: STEP4 コンテナ（タブ + 「次の解析を計画」フッター） ----
+        step4 = QWidget()
+        step4_layout = QVBoxLayout(step4)
+        step4_layout.setContentsMargins(0, 0, 0, 0)
+        step4_layout.setSpacing(0)
+        step4_layout.addWidget(self._right_tabs, stretch=1)
+
+        # ---- UX改善④新: 解析戦略メモパネル（STEP4） ----
+        from PySide6.QtWidgets import QTextEdit as _QTextEdit
+        from PySide6.QtWidgets import QFrame as _QFrame
+        _notes_frame = _QFrame()
+        _notes_frame.setFrameShape(_QFrame.StyledPanel)
+        _notes_frame.setMaximumHeight(110)
+        _notes_frame_layout = QVBoxLayout(_notes_frame)
+        _notes_frame_layout.setContentsMargins(8, 4, 8, 4)
+        _notes_frame_layout.setSpacing(2)
+        _notes_header_row = QHBoxLayout()
+        _notes_icon_lbl = QLabel()
+        _notes_icon_lbl.setPixmap(
+            qta.icon("fa5s.sticky-note", color=icon_color).pixmap(14, 14)
+        )
+        _notes_header_row.addWidget(_notes_icon_lbl)
+        _notes_title_lbl = QLabel(
+            "<b>解析戦略メモ</b>"
+            "<span style='color:gray; font-size:10px;'>"
+            "　次ラウンドに向けた気づきや方針をメモしておきましょう"
+            "</span>"
+        )
+        _notes_title_lbl.setTextFormat(Qt.RichText)
+        _notes_header_row.addWidget(_notes_title_lbl)
+        _notes_header_row.addStretch()
+        _notes_frame_layout.addLayout(_notes_header_row)
+        self._strategy_notes_edit = _QTextEdit()
+        self._strategy_notes_edit.setPlaceholderText(
+            "例: Case3の制振効果が最も大きかった。次はVEダンパー基数を4→6に増やして"
+            "加速度応答の低減を狙う。層間変形角はすでにOKなので変位側は余裕あり…"
+        )
+        self._strategy_notes_edit.setMaximumHeight(70)
+        self._strategy_notes_edit.setToolTip(
+            "解析結果を見た上での戦略・気づきをメモします。\n"
+            "プロジェクトファイルに保存されるため、次回起動時も参照できます。"
+        )
+        self._strategy_notes_edit.textChanged.connect(self._on_strategy_notes_changed)
+        _notes_frame_layout.addWidget(self._strategy_notes_edit)
+        step4_layout.addWidget(_notes_frame)
+
+        # STEP4 フッター: 戻る（解析実行）と「次のケースを設計する」
+        self._step4_footer = StepNavFooter(
+            back_label="← 解析実行  (STEP3)",
+            next_label="次のケースを設計する  (STEP2) →",
+            next_primary=True,
+        )
+        self._step4_footer.backRequested.connect(lambda: self._sidebar.set_current_step(2))
+        self._step4_footer.nextRequested.connect(self._go_plan_next_case)
+        step4_layout.addWidget(self._step4_footer)
+
+        # ---- 全体レイアウト構築 ----
+        self._workflow_stack = QStackedWidget()
+        self._workflow_stack.addWidget(step1)
+        self._workflow_stack.addWidget(step2)
+        self._workflow_stack.addWidget(step3)
+        self._workflow_stack.addWidget(step4)
+
+        self._sidebar = SidebarWidget()
+        self._sidebar.stepChanged.connect(self._workflow_stack.setCurrentIndex)
+        # STEP3（解析実行）に切り替えるたびにチェックリストを最新化する
+        self._sidebar.stepChanged.connect(self._on_sidebar_step_changed)
+
+        workspace = QWidget()
+        workspace_layout = QHBoxLayout(workspace)
+        workspace_layout.setContentsMargins(0, 0, 0, 0)
+        workspace_layout.setSpacing(0)
+        workspace_layout.addWidget(self._sidebar)
+        workspace_layout.addWidget(self._workflow_stack, stretch=1)
+
+        # ---- メインスタック（ウェルカム画面/ワークスペース切替） ----
+        self._main_stack = QStackedWidget()
+        self._main_stack.addWidget(self._welcome)      # index 0
+        self._main_stack.addWidget(workspace)           # index 1
+        self.setCentralWidget(self._main_stack)
+        self._v_splitter = step3_split
+
+        # ---- ステータスバー ----
+        self.statusBar().showMessage("準備完了")
+
+        # プログレスバーをステータスバーに埋め込む
+        self._progress_bar = QProgressBar()
+        self._progress_bar.setMaximumWidth(200)
+        self._progress_bar.setMaximumHeight(16)
+        self._progress_bar.setTextVisible(True)
+        self._progress_bar.setFormat("%v / %m")
+        self._progress_bar.hide()
+        self.statusBar().addPermanentWidget(self._progress_bar)
+
+        # 改善③: 選択ケースのサマリー情報ラベル（常時右端に表示）
+        from PySide6.QtWidgets import QLabel as _QLabel
+        self._case_info_label = _QLabel()
+        self._case_info_label.setStyleSheet("color: gray; margin-right: 8px; font-size: 11px;")
+        self.statusBar().addPermanentWidget(self._case_info_label)
+
+        # ---- シグナル接続 ----
+        self._model_info.fileRequested.connect(self._load_s8i_file)
+        # UX改善D: ドラッグ&ドロップでs8iファイルを直接読み込む
+        self._model_info.fileDropped.connect(self._load_s8i_from_path)
+        self._case_table.caseSelectionChanged.connect(self._on_case_selected)
+        self._case_table.runRequested.connect(self._on_run_requested)
+        self._case_table.projectModified.connect(self._update_title)  # 改善⑤: ケース変更時にタイトルバーを即時更新
+        self._case_table.projectModified.connect(self._run_selection.refresh)
+        self._case_table.projectModified.connect(self._update_sidebar_badges)  # UX改善1: ケース変更でバッジ更新
+        self._case_table.projectModified.connect(self._on_project_modified_groups)  # UX改善⑤新: グループ変更時に比較グラフを更新
+        self._ranking.caseSelected.connect(self._on_case_selected)
+        # UX改善①新: ランキングから「基点として再設計」ボタン
+        self._ranking.useAsStartingPointRequested.connect(self._on_use_ranking_case_as_base)
+        self._dashboard.caseSelected.connect(self._on_case_selected)
+        self._run_selection.runSelectedRequested.connect(self._run_selected_cases)
+        # UX改善③新: 解析完了バナーの「結果を確認する」ボタンでSTEP4へ移動
+        self._run_selection.viewResultsRequested.connect(
+            lambda: self._sidebar.set_current_step(3)
+        )
+        self._service.log_emitted.connect(self._log.append_line)
+        self._service.case_finished.connect(self._on_analysis_finished)
+        self._service.status_changed.connect(self.statusBar().showMessage)
+        self._service.progress_updated.connect(self._on_progress_updated)
+        self._service.batch_state_changed.connect(self._on_batch_state_changed)
+
+        # バッチキューウィジェットのシグナル接続
+        self._batch_queue.pauseRequested.connect(self._service.pause_batch)
+        self._batch_queue.resumeRequested.connect(self._service.resume_batch)
+        self._batch_queue.cancelRequested.connect(self._service.cancel_batch)
+        self._service.case_finished.connect(self._on_batch_queue_case_finished)
+        self._service.batch_state_changed.connect(self._on_batch_queue_state_changed)
+
+    def _setup_menu(self) -> None:
+        mb = self.menuBar()
+
+        # ---- File ----
+        file_menu = mb.addMenu("ファイル(&F)")
+
+        act_new = QAction("新規プロジェクト(&N)", self)
+        act_new.setShortcut(QKeySequence.New)
+        act_new.triggered.connect(self._new_project_dialog)
+        file_menu.addAction(act_new)
+
+        act_open = QAction("プロジェクトを開く(&O)…", self)
+        act_open.setShortcut(QKeySequence.Open)
+        act_open.triggered.connect(self._open_project)
+        file_menu.addAction(act_open)
+
+        file_menu.addSeparator()
+
+        act_save = QAction("保存(&S)", self)
+        act_save.setShortcut(QKeySequence.Save)
+        act_save.triggered.connect(self._save_project)
+        file_menu.addAction(act_save)
+
+        act_save_as = QAction("名前を付けて保存(&A)…", self)
+        act_save_as.setShortcut(QKeySequence.SaveAs)
+        act_save_as.triggered.connect(self._save_project_as)
+        file_menu.addAction(act_save_as)
+
+        file_menu.addSeparator()
+
+        # 最近使ったプロジェクト
+        from .welcome_widget import get_recent_projects
+        self._recent_menu = file_menu.addMenu("最近使ったプロジェクト(&R)")
+        self._update_recent_menu()
+
+        file_menu.addSeparator()
+
+        act_export = QAction("結果をエクスポート(&E)…", self)
+        act_export.setShortcut("Ctrl+E")
+        act_export.triggered.connect(self._export_results)
+        file_menu.addAction(act_export)
+
+        act_report = QAction("HTMLレポート生成(&H)…", self)
+        act_report.setShortcut("Ctrl+Shift+R")
+        act_report.triggered.connect(self._generate_report)
+        file_menu.addAction(act_report)
+
+        file_menu.addSeparator()
+
+        act_quit = QAction("終了(&Q)", self)
+        act_quit.setShortcut(QKeySequence.Quit)
+        act_quit.triggered.connect(self.close)
+        file_menu.addAction(act_quit)
+
+        # ---- Analysis ----
+        analysis_menu = mb.addMenu("解析(&A)")
+
+        act_add = QAction("ケースを追加(&A)", self)
+        act_add.triggered.connect(self._add_case)
+        analysis_menu.addAction(act_add)
+
+        act_sweep = QAction("パラメータスイープ(&W)…", self)
+        act_sweep.setShortcut("Ctrl+W")
+        act_sweep.triggered.connect(self._open_sweep_dialog)
+        analysis_menu.addAction(act_sweep)
+
+        act_criteria = QAction("目標性能基準(&C)…", self)
+        act_criteria.setShortcut("Ctrl+T")
+        act_criteria.triggered.connect(self._open_criteria_dialog)
+        analysis_menu.addAction(act_criteria)
+
+        act_catalog = QAction("ダンパーカタログ(&K)…", self)
+        act_catalog.setShortcut("Ctrl+K")
+        act_catalog.triggered.connect(self._open_damper_catalog)
+        analysis_menu.addAction(act_catalog)
+
+        act_wave = QAction("地震波選択(&E)…", self)
+        act_wave.setShortcut("Ctrl+Shift+E")
+        act_wave.triggered.connect(self._open_wave_dialog)
+        analysis_menu.addAction(act_wave)
+
+        act_optimize = QAction("ダンパー最適化(&O)…", self)
+        act_optimize.setShortcut("Ctrl+Shift+O")
+        act_optimize.triggered.connect(self._open_optimizer_dialog)
+        analysis_menu.addAction(act_optimize)
+
+        act_compare = QAction("ケース詳細比較(&D)…", self)
+        act_compare.setShortcut("Ctrl+D")
+        act_compare.triggered.connect(self._open_case_compare)
+        analysis_menu.addAction(act_compare)
+
+        act_groups = QAction("グループ管理(&G)…", self)
+        act_groups.triggered.connect(self._open_group_manager)
+        analysis_menu.addAction(act_groups)
+
+        analysis_menu.addSeparator()
+
+        act_template = QAction("テンプレートから適用(&T)…", self)
+        act_template.setShortcut("Ctrl+Shift+T")
+        act_template.triggered.connect(self._open_template_dialog)
+        analysis_menu.addAction(act_template)
+
+        act_save_template = QAction("テンプレートとして保存…", self)
+        act_save_template.triggered.connect(self._save_as_template)
+        analysis_menu.addAction(act_save_template)
+
+        analysis_menu.addSeparator()
+
+        act_multi_wave = QAction("複数地震波一括解析(&M)…", self)
+        act_multi_wave.setShortcut("Ctrl+Shift+M")
+        act_multi_wave.triggered.connect(self._open_multi_wave_dialog)
+        analysis_menu.addAction(act_multi_wave)
+
+        analysis_menu.addSeparator()
+
+        act_validate = QAction("入力チェック(&V)", self)
+        act_validate.setShortcut("Ctrl+Shift+V")
+        act_validate.triggered.connect(self._validate_selected)
+        analysis_menu.addAction(act_validate)
+
+        act_validate_all = QAction("全ケース入力チェック", self)
+        act_validate_all.triggered.connect(self._validate_all)
+        analysis_menu.addAction(act_validate_all)
+
+        analysis_menu.addSeparator()
+
+        act_run_selected = QAction("選択ケースを実行(&R)", self)
+        act_run_selected.setShortcut("F5")
+        act_run_selected.triggered.connect(self._run_selected)
+        analysis_menu.addAction(act_run_selected)
+
+        act_run_all = QAction("全ケースを実行(&L)", self)
+        act_run_all.triggered.connect(self._run_all)
+        analysis_menu.addAction(act_run_all)
+
+        analysis_menu.addSeparator()
+
+        act_demo = QAction("デモ実行（モックデータ）(&D)", self)
+        act_demo.setShortcut("F6")
+        act_demo.triggered.connect(self._run_demo)
+        analysis_menu.addAction(act_demo)
+
+        act_demo_all = QAction("全ケースをデモ実行(&M)", self)
+        act_demo_all.triggered.connect(self._run_demo_all)
+        analysis_menu.addAction(act_demo_all)
+
+        # ---- Settings ----
+        settings_menu = mb.addMenu("設定(&S)")
+
+        act_app_settings = QAction("アプリケーション設定(&P)…", self)
+        act_app_settings.triggered.connect(self._open_settings)
+        settings_menu.addAction(act_app_settings)
+
+        # ---- Help ----
+        help_menu = mb.addMenu("ヘルプ(&H)")
+
+        # 改善⑨: ショートカットキー一覧
+        act_shortcuts = QAction("キーボードショートカット一覧(&K)…", self)
+        act_shortcuts.setShortcut("Ctrl+?")
+        act_shortcuts.setToolTip("アプリ内のキーボードショートカットを一覧表示します  [Ctrl+?]")
+        act_shortcuts.triggered.connect(self._show_shortcut_help)
+        help_menu.addAction(act_shortcuts)
+
+        help_menu.addSeparator()
+
+        act_about = QAction("このアプリについて(&A)", self)
+        act_about.triggered.connect(self._show_about)
+        help_menu.addAction(act_about)
+
+    def _setup_toolbar(self) -> None:
+        # 改善⑥: ツールバーを機能グループ別に整理し、重複アイコンを修正、ショートカットをツールチップに明記
+        tb = self.addToolBar("メイン")
+        tb.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+        icon_color = "#d4d4d4" if ThemeManager.is_dark() else "#333333"
+
+        # ---- グループ1: ケース操作 ----
+        act_add = QAction(qta.icon("fa5s.plus", color=icon_color), "ケース追加", self)
+        act_add.setToolTip("新しい解析ケースをダイアログで作成します")
+        act_add.triggered.connect(self._add_case)
+        tb.addAction(act_add)
+
+        act_sweep = QAction(qta.icon("fa5s.stream", color=icon_color), "スイープ", self)
+        act_sweep.setToolTip("パラメータスイープで複数ケースを一括生成  [Ctrl+W]")
+        act_sweep.triggered.connect(self._open_sweep_dialog)
+        tb.addAction(act_sweep)
+
+        act_catalog = QAction(qta.icon("fa5s.box-open", color=icon_color), "カタログ", self)
+        act_catalog.setToolTip("ダンパーカタログを開く  [Ctrl+K]")
+        act_catalog.triggered.connect(self._open_damper_catalog)
+        tb.addAction(act_catalog)
+
+        tb.addSeparator()
+
+        # ---- グループ2: 解析実行 ----
+        act_run = QAction(qta.icon("fa5s.play", color="#4CAF50"), "実行", self)
+        act_run.setToolTip("選択ケースを解析実行します  [F5]")
+        act_run.triggered.connect(self._run_selected)
+        tb.addAction(act_run)
+
+        act_demo = QAction(qta.icon("fa5s.dice", color=icon_color), "デモ実行", self)
+        act_demo.setToolTip("選択ケースをモックデータで実行（SNAP 不要）  [F6]")
+        act_demo.triggered.connect(self._run_demo)
+        tb.addAction(act_demo)
+
+        act_multi_wave = QAction(qta.icon("fa5s.random", color=icon_color), "多波解析", self)
+        act_multi_wave.setToolTip("複数地震波に対して一括ケース生成・解析  [Ctrl+Shift+M]")
+        act_multi_wave.triggered.connect(self._open_multi_wave_dialog)
+        tb.addAction(act_multi_wave)
+
+        tb.addSeparator()
+
+        # ---- グループ3: 設定・条件 ----
+        act_wave = QAction(qta.icon("fa5s.water", color=icon_color), "地震波", self)
+        act_wave.setToolTip("入力地震波を選択・管理します  [Ctrl+Shift+E]")
+        act_wave.triggered.connect(self._open_wave_dialog)
+        tb.addAction(act_wave)
+
+        act_criteria = QAction(qta.icon("fa5s.bullseye", color=icon_color), "基準設定", self)
+        act_criteria.setToolTip("目標性能基準を設定します  [Ctrl+T]")
+        act_criteria.triggered.connect(self._open_criteria_dialog)
+        tb.addAction(act_criteria)
+
+        act_template = QAction(qta.icon("fa5s.folder-open", color=icon_color), "テンプレート", self)
+        act_template.setToolTip("ケーステンプレートの管理・適用  [Ctrl+Shift+T]")
+        act_template.triggered.connect(self._open_template_dialog)
+        tb.addAction(act_template)
+
+        tb.addSeparator()
+
+        # ---- グループ4: 解析・比較 ----
+        act_optimize = QAction(qta.icon("fa5s.search", color=icon_color), "最適化", self)
+        act_optimize.setToolTip("ダンパーパラメータの自動最適化  [Ctrl+Shift+O]")
+        act_optimize.triggered.connect(self._open_optimizer_dialog)
+        tb.addAction(act_optimize)
+
+        act_compare = QAction(qta.icon("fa5s.arrows-alt-h", color=icon_color), "比較", self)
+        act_compare.setToolTip("2ケースの詳細比較ダイアログ  [Ctrl+D]")
+        act_compare.triggered.connect(self._open_case_compare)
+        tb.addAction(act_compare)
+
+        tb.addSeparator()
+
+        # ---- グループ5: ファイル操作 ----
+        act_save = QAction(qta.icon("fa5s.save", color=icon_color), "保存", self)
+        act_save.setToolTip("プロジェクトを上書き保存します  [Ctrl+S]")
+        act_save.triggered.connect(self._save_project)
+        tb.addAction(act_save)
+
+        tb.addSeparator()
+
+        # ---- グループ6: バッチ実行制御（実行中のみ有効） ----
+        self._act_pause = QAction(qta.icon("fa5s.pause", color="#FF9800"), "一時停止", self)
+        self._act_pause.setToolTip("バッチ実行を一時停止します")
+        self._act_pause.triggered.connect(self._toggle_pause)
+        self._act_pause.setEnabled(False)
+        tb.addAction(self._act_pause)
+
+        self._act_cancel = QAction(qta.icon("fa5s.stop", color="#F44336"), "キャンセル", self)
+        self._act_cancel.setToolTip("バッチ実行をキャンセルします")
+        self._act_cancel.triggered.connect(self._cancel_batch)
+        self._act_cancel.setEnabled(False)
+        tb.addAction(self._act_cancel)
+
+        tb.addSeparator()
+
+        # ---- 改善⑨: ヘルプ（ショートカット一覧）----
+        act_help = QAction("❓ ヘルプ", self)
+        act_help.setToolTip("キーボードショートカット一覧を表示します  [Ctrl+?]")
+        act_help.triggered.connect(self._show_shortcut_help)
+        tb.addAction(act_help)
+
+        # ---- UX改善④新: Ctrl+1/2/3/4 でワークフローステップを直接切り替え ----
+        from PySide6.QtGui import QShortcut as _QShortcut
+        _step_shortcuts = []  # GC対策で参照を保持
+        for _step_idx in range(4):
+            _sc = _QShortcut(QKeySequence(f"Ctrl+{_step_idx + 1}"), self)
+            _sc.activated.connect(
+                lambda _n=_step_idx: self._navigate_to_step(_n)
+            )
+            _step_shortcuts.append(_sc)
+        # リストをインスタンス変数に保存してGCを防ぐ
+        self._step_shortcuts = _step_shortcuts
+
+        # ---- UX改善②新: Alt+1〜9 で STEP4 の結果タブを直接切り替え ----
+        # Alt+1=ダッシュボード, Alt+2=解析結果, Alt+3=ケース比較, ...
+        _result_tab_shortcuts = []
+        for _tab_idx in range(9):
+            _sc = _QShortcut(QKeySequence(f"Alt+{_tab_idx + 1}"), self)
+            _sc.activated.connect(
+                lambda _n=_tab_idx: self._switch_result_tab(_n)
+            )
+            _result_tab_shortcuts.append(_sc)
+        self._result_tab_shortcuts = _result_tab_shortcuts
+
+    # ------------------------------------------------------------------
+    # 改善C: システムトレイアイコン・通知
+    # ------------------------------------------------------------------
+
+    def _setup_tray_icon(self) -> None:
+        """
+        システムトレイアイコンを初期化します。
+
+        解析実行中にウィンドウを最小化・他の作業をしていても、
+        バッチ解析の完了・エラーをOSの通知バルーンで即座に確認できます。
+        QSystemTrayIcon が利用できない環境（サポートなし）では無効化されます。
+        """
+        if not QSystemTrayIcon.isSystemTrayAvailable():
+            self._tray: Optional[QSystemTrayIcon] = None
+            return
+
+        try:
+            # アプリアイコンを流用（qtawesome で生成）
+            icon = qta.icon("fa5s.building", color="#1976d2")
+            self._tray = QSystemTrayIcon(icon, self)
+            self._tray.setToolTip("snap-controller — 解析支援ツール")
+            self._tray.activated.connect(self._on_tray_activated)
+            self._tray.show()
+        except Exception:
+            self._tray = None
+
+    def _on_tray_activated(self, reason: QSystemTrayIcon.ActivationReason) -> None:
+        """トレイアイコンのダブルクリックでウィンドウを前面に表示します。"""
+        if reason == QSystemTrayIcon.DoubleClick:
+            self.showNormal()
+            self.activateWindow()
+            self.raise_()
+
+    def _tray_notify(self, title: str, message: str, icon_type=None) -> None:
+        """
+        システムトレイバルーン通知を表示します。
+
+        Parameters
+        ----------
+        title : str
+            通知タイトル
+        message : str
+            通知本文
+        icon_type : QSystemTrayIcon.MessageIcon | None
+            アイコン種別。None の場合は Information。
+        """
+        if self._tray is None or not self._tray.isVisible():
+            return
+        if icon_type is None:
+            icon_type = QSystemTrayIcon.Information
+        self._tray.showMessage(title, message, icon_type, 5000)
+
+    # ------------------------------------------------------------------
+    # Project operations
+    # ------------------------------------------------------------------
+
+    # ------------------------------------------------------------------
+    # Result Tabs state management
+    # ------------------------------------------------------------------
+
+    def _update_result_tabs(self, result_count: int) -> None:
+        """
+        解析結果の件数に応じて右パネルのタブを有効/無効にします。
+
+        Parameters
+        ----------
+        result_count : int
+            結果を持つケースの件数。
+        """
+        bar = self._right_tabs.tabBar()
+        for idx, (req, min_r) in self._tab_result_requirements.items():
+            if not req:
+                # 常時有効なタブ
+                self._right_tabs.setTabEnabled(idx, True)
+                bar.setTabToolTip(idx, "")
+            elif result_count >= min_r:
+                # 条件を満たす場合は有効化
+                self._right_tabs.setTabEnabled(idx, True)
+                bar.setTabToolTip(idx, "")
+            else:
+                # 条件を満たさない場合は無効化
+                self._right_tabs.setTabEnabled(idx, False)
+                if min_r == 1:
+                    tip = "解析を実行すると利用できます"
+                else:
+                    tip = f"解析済みケースが{min_r}件以上で利用できます"
+                bar.setTabToolTip(idx, tip)
+
+        # 現在のタブが無効化された場合、有効なタブに自動切替
+        current = self._right_tabs.currentIndex()
+        if not self._right_tabs.isTabEnabled(current):
+            # 最初の有効なタブを探す
+            for fallback in range(self._right_tabs.count()):
+                if self._right_tabs.isTabEnabled(fallback):
+                    self._right_tabs.setCurrentIndex(fallback)
+                    break
+
+    # ------------------------------------------------------------------
+    # Setup Guide
+    # ------------------------------------------------------------------
+
+    def _on_sidebar_step_changed(self, step: int) -> None:
+        """サイドバーのステップが切り替わったときの処理。"""
+        # STEP3（index=2）に切り替えるたびにチェックリストを最新化
+        if step == 2:
+            self._run_selection.refresh()
+
+    def _update_setup_guide(self) -> None:
+        """未使用 (Sidebar UIへ移行)"""
+        pass
+
+    def _update_sidebar_badges(self) -> None:
+        """
+        UX改善1: サイドバーの各ステップバッジをプロジェクト状態に合わせて更新します。
+
+        STEP1: モデルファイル名（ロード済みの場合）
+        STEP2: 総ケース数バッジ
+        STEP3: 完了/合計件数バッジ
+        STEP4: 完了件数バッジ
+
+        UX改善（新）: 各ステップの完了状態インジケーター（✓/▶/○）も同時に更新します。
+        """
+        if self._project is None:
+            for i in range(4):
+                self._sidebar.update_badge(i, "")
+                self._sidebar.set_step_state(i, "pending")
+            return
+
+        # STEP1: モデルファイル状態
+        if self._project.s8i_path:
+            model_name = Path(self._project.s8i_path).name
+            self._sidebar.update_badge(0, f"✓ {model_name}")
+            self._sidebar.set_step_state(0, "done")
+        else:
+            self._sidebar.update_badge(0, "モデル未選択")
+            self._sidebar.set_step_state(0, "pending")
+
+        # STEP2: ケース件数
+        total_cases = len(self._project.cases)
+        if total_cases > 0:
+            self._sidebar.update_badge(1, f"{total_cases} ケース")
+            self._sidebar.set_step_state(1, "done")
+        else:
+            self._sidebar.update_badge(1, "ケースなし")
+            # モデルがロード済みならSTEP2はアクティブ（着手可能）、未ロードなら未着手
+            if self._project.s8i_path:
+                self._sidebar.set_step_state(1, "active")
+            else:
+                self._sidebar.set_step_state(1, "pending")
+
+        # STEP3: 完了/合計件数
+        from app.models import AnalysisCaseStatus
+        completed = sum(1 for c in self._project.cases if c.result_summary)
+        error = sum(
+            1 for c in self._project.cases
+            if hasattr(c, "status") and c.status and
+            getattr(c.status, "name", "") == "ERROR"
+        )
+        if total_cases == 0:
+            self._sidebar.update_badge(2, "")
+            self._sidebar.set_step_state(2, "pending")
+        elif completed == total_cases:
+            self._sidebar.update_badge(2, f"{completed}/{total_cases}完了")
+            self._sidebar.set_step_state(2, "done")
+        elif error > 0:
+            self._sidebar.update_badge(2, f"{completed}/{total_cases}完了 ⚠{error}エラー")
+            self._sidebar.set_step_state(2, "active")
+        elif completed > 0:
+            self._sidebar.update_badge(2, f"{completed}/{total_cases}完了")
+            self._sidebar.set_step_state(2, "active")
+        else:
+            self._sidebar.update_badge(2, f"0/{total_cases}完了")
+            # ケースがあるなら実行可能（アクティブ）
+            self._sidebar.set_step_state(2, "active")
+
+        # STEP4: 完了件数
+        if completed > 0:
+            self._sidebar.update_badge(3, f"結果 {completed}件")
+            self._sidebar.set_step_state(3, "done")
+        else:
+            self._sidebar.update_badge(3, "")
+            self._sidebar.set_step_state(3, "pending")
+
+    def _go_plan_next_case(self) -> None:
+        """
+        UX改善⑤新: STEP4 フッターの「次のケースを設計する」ボタン処理。
+
+        STEP2（ケース設計）へ移動し、新規ケース追加ダイアログを開くかを
+        確認メッセージ付きで案内します。完了した結果を踏まえて次のケースを
+        素早く設計するためのフィードバックループを支援します。
+        """
+        self._sidebar.set_current_step(1)  # STEP2へ
+        self.statusBar().showMessage(
+            "STEP2: 前の結果を参考に新しいケースを追加しましょう  [追加ボタン or Ctrl+A]",
+            6000,
+        )
+
+    def _on_project_modified_groups(self) -> None:
+        """
+        UX改善⑤新: ケース変更（グループ追加・削除など）時に
+        比較グラフのグループ別選択ドロップダウンを更新します。
+        """
+        if self._project is not None:
+            self._compare_chart.set_case_groups(self._project.case_groups)
+
+    def _navigate_to_step(self, step: int) -> None:
+        """
+        UX改善④新: Ctrl+1/2/3/4 でワークフローステップを直接切り替えます。
+
+        ワークスペース画面が表示されている場合のみ動作します。
+        ウェルカム画面表示中は無視します。
+
+        Parameters
+        ----------
+        step : int
+            切り替え先のステップインデックス（0〜3）。
+        """
+        # ウェルカム画面では動作しない
+        if self._main_stack.currentIndex() != 1:
+            return
+        step_names = ["STEP1: モデル設定", "STEP2: ケース設計", "STEP3: 解析実行", "STEP4: 結果・戦略"]
+        self._sidebar.set_current_step(step)
+        if 0 <= step < len(step_names):
+            self.statusBar().showMessage(
+                f"✓ {step_names[step]}に移動しました  [Ctrl+{step + 1}]",
+                3000,
+            )
+
+    def _switch_result_tab(self, index: int) -> None:
+        """
+        UX改善②新: Alt+1〜9 で STEP4 の結果タブを直接切り替えます。
+
+        STEP4（結果・戦略）に移動してから、指定インデックスのタブを選択します。
+        ウェルカム画面やタブ範囲外のインデックスでは動作しません。
+
+        ショートカット対応:
+            Alt+1 → ダッシュボード
+            Alt+2 → 解析結果
+            Alt+3 → ケース比較
+            Alt+4 → エンベロープ
+            Alt+5 → レーダーチャート
+            Alt+6 → 結果テーブル
+            Alt+7 → ランキング
+            Alt+8 → 時刻歴応答
+            Alt+9 → 感度分析
+        """
+        if self._main_stack.currentIndex() != 1:
+            return
+        if index < 0 or index >= self._right_tabs.count():
+            return
+        # STEP4 に移動してからタブを切り替え
+        self._sidebar.set_current_step(3)
+        self._right_tabs.setCurrentIndex(index)
+        tab_name = self._right_tabs.tabText(index)
+        self.statusBar().showMessage(
+            f"✓ 結果タブ「{tab_name}」を表示  [Alt+{index + 1}]",
+            2500,
+        )
+
+    def _on_use_ranking_case_as_base(self, case_id: str) -> None:
+        """
+        UX改善①新: ランキングで選択したケースを複製して STEP2（ケース設計）へ移動します。
+
+        「最良ケースを出発点として次ラウンドの改善を始める」というワークフローを
+        1クリックで実現します。複製されたケースはケース名に「_Next」サフィックスが
+        付加されるため、元ケースと容易に区別できます。
+        """
+        if self._project is None:
+            return
+        original = self._project.get_case(case_id)
+        if original is None:
+            return
+        orig_name = original.name
+
+        # ケースを複製
+        clone = self._project.duplicate_case(case_id)
+        if clone is None:
+            return
+
+        # 複製ケースに「_Next」サフィックスを付加（すでに付いている場合は番号を増やす）
+        import re as _re
+        base_name = _re.sub(r"_Next\d*$", "", orig_name)
+        existing_names = {c.name for c in self._project.cases}
+        next_name = f"{base_name}_Next"
+        if next_name in existing_names:
+            counter = 2
+            while f"{base_name}_Next{counter}" in existing_names:
+                counter += 1
+            next_name = f"{base_name}_Next{counter}"
+        clone.name = next_name
+
+        self._project._touch()
+        self._case_table.refresh()
+        self._run_selection.refresh()
+        self._update_title()
+        self._update_sidebar_badges()
+
+        # STEP2（ケース設計）に切り替え
+        self._sidebar.set_current_step(1)
+
+        self.statusBar().showMessage(
+            f"ケース「{orig_name}」から「{next_name}」を複製しました。"
+            "パラメータを変更して再解析してください。",
+            7000,
+        )
+
+    def _on_strategy_notes_changed(self) -> None:
+        """
+        UX改善④新: 解析戦略メモの変更をプロジェクトに反映します。
+
+        STEP4 のメモパネルへの入力をリアルタイムでプロジェクトオブジェクトに
+        書き込みます。プロジェクト保存時に .snapproj ファイルに永続化されます。
+        """
+        if self._project is not None:
+            self._project.strategy_notes = self._strategy_notes_edit.toPlainText()
+            self._project._touch()
+
+    def _on_setup_guide_step_clicked(self, step: int) -> None:
+        """ガイドバーのステップがクリックされたときに対応するアクションを呼び出します。"""
+        if step == 1:
+            self._open_settings()
+            self._update_setup_guide()
+        elif step == 2:
+            self._load_s8i_file()
+            self._update_setup_guide()
+        elif step == 3:
+            self._add_case()
+            self._update_setup_guide()
+        elif step == 4:
+            self._run_selected()
+
+    def _check_autosave_recovery(self) -> None:
+        """起動時に自動保存ファイルの存在をチェックして復旧を提案します。"""
+        if self._autosave.has_autosave():
+            reply = QMessageBox.question(
+                self,
+                "自動保存ファイルの検出",
+                "前回のセッションから自動保存ファイルが見つかりました。\n"
+                "復旧しますか？\n\n"
+                "「はい」を選択すると自動保存から復旧します。\n"
+                "「いいえ」を選択すると自動保存ファイルを破棄します。",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.Yes,
+            )
+            if reply == QMessageBox.Yes:
+                if self._autosave.restore_from_autosave():
+                    self.statusBar().showMessage("自動保存から復旧しました")
+                    self._log.append_line("=== 自動保存からプロジェクトを復旧しました ===")
+                else:
+                    QMessageBox.warning(
+                        self, "警告", "自動保存ファイルからの復旧に失敗しました。"
+                    )
+            else:
+                self._autosave.clean_autosave()
+
+    def _new_project(self) -> None:
+        """空のプロジェクトを作成します（確認なし）。"""
+        self._project = Project()
+        # アプリ設定から SNAP.exe デフォルトパスを引き継ぐ
+        settings = load_settings()
+        if settings.get("snap_exe_path"):
+            self._project.snap_exe_path = settings["snap_exe_path"]
+        if settings.get("snap_work_dir"):
+            self._project.snap_work_dir = settings["snap_work_dir"]
+        self._service.set_snap_exe_path(self._project.snap_exe_path)
+        self._service.set_snap_work_dir(self._project.snap_work_dir)
+        self._autosave.set_project(self._project)
+        self._case_table.set_project(self._project)
+        self._run_selection.set_project(self._project)
+        self._model_info.set_model(None)
+        self._chart.clear()
+        self._log.clear()
+        self._update_title()
+        # ワークスペース表示に切替
+        self._main_stack.setCurrentIndex(1)
+        self._update_setup_guide()
+        # 新規プロジェクトは結果なし
+        self._update_result_tabs(result_count=0)
+
+    def _load_s8i_file(self) -> None:
+        """入力ファイル (.s8i) を選択して読み込みます。"""
+        if self._project is None:
+            return
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            "SNAP 入力ファイルを選択",
+            self._project.s8i_path or "",
+            "SNAP 入力ファイル (*.s8i);;すべてのファイル (*)",
+        )
+        if not path:
+            return
+        try:
+            old_s8i = self._project.s8i_path
+            model = self._project.load_s8i(path)
+            self._model_info.set_model(model)
+            self._file_preview.load_file(path)
+            # s8i が変更された場合は全ケースをリセット
+            if old_s8i and old_s8i != path:
+                self._reset_all_cases_for_new_s8i(path)
+                self._log.append_line(
+                    f"  [INFO] s8iファイルが変更されたため全ケースをリセットしました: {old_s8i} → {path}"
+                )
+            self._case_table.refresh()
+            self._update_title()
+            self._log.append_line(f"=== 入力ファイル読み込み: {path} ===")
+            self._log.append_line(
+                f"  モデル: {model.title or '(無題)'} | "
+                f"節点{model.num_nodes} | 層{model.num_floors} | "
+                f"ダンパー定義{len(model.damper_defs)}種 | "
+                f"制振ブレース{len(model.damper_braces)}本 | "
+                f"免制振装置{model.num_dampers}箇所（{model.total_damper_units}基）"
+            )
+            self._update_setup_guide()
+            # s8iロード後にRunSelectionWidgetのチェックリストを更新
+            self._run_selection.refresh()
+            # UX改善②: モデルロード完了を通知してケース追加ボタンを有効化
+            self._case_table.set_model_loaded(True)
+            # UX改善1+2: バッジ更新 & STEP2（ケース設計）へ自動ナビゲート
+            self._update_sidebar_badges()
+            self._sidebar.set_current_step(1)
+            # UX改善⑤新: 読み込んだファイルを最近使ったs8iファイル履歴に追加
+            self._model_info.add_recent_s8i(path)
+            self.statusBar().showMessage(
+                f"✅ モデル読み込み完了: {Path(path).name}  "
+                f"→ STEP2 でケースを追加してください",
+                6000,
+            )
+        except Exception as e:
+            QMessageBox.critical(
+                self, "エラー",
+                f"入力ファイルの読み込みに失敗しました:\n{e}"
+            )
+
+    def _load_s8i_from_path(self, path: str) -> None:
+        """UX改善D: ドロップされた .s8i ファイルを直接読み込みます。"""
+        if not path or self._project is None:
+            return
+        try:
+            old_s8i = self._project.s8i_path
+            model = self._project.load_s8i(path)
+            self._model_info.set_model(model)
+            self._file_preview.load_file(path)
+            # s8i が変更された場合は全ケースをリセット
+            if old_s8i and old_s8i != path:
+                self._reset_all_cases_for_new_s8i(path)
+                self._log.append_line(
+                    f"  [INFO] s8iファイルが変更されたため全ケースをリセットしました: {old_s8i} → {path}"
+                )
+            self._case_table.refresh()
+            self._update_title()
+            self._log.append_line(f"=== [ドラッグ&ドロップ] 入力ファイル読み込み: {path} ===")
+            self._update_setup_guide()
+            self._run_selection.refresh()
+            # UX改善②: モデルロード完了を通知してケース追加ボタンを有効化
+            self._case_table.set_model_loaded(True)
+            self._update_sidebar_badges()
+            self._sidebar.set_current_step(1)
+            # UX改善⑤新: 読み込んだファイルを最近使ったs8iファイル履歴に追加
+            self._model_info.add_recent_s8i(path)
+            self.statusBar().showMessage(
+                f"✅ [D&D] モデル読み込み完了: {Path(path).name}  "
+                f"({model.num_nodes}節点, {model.num_floors}層)",
+                6000,
+            )
+        except Exception as e:
+            QMessageBox.critical(
+                self, "エラー",
+                f"入力ファイルの読み込みに失敗しました:\n{e}"
+            )
+
+    def _reset_all_cases_for_new_s8i(self, new_s8i_path: str) -> None:
+        """
+        s8i ファイルが変更された際に全ケースをリセットします。
+
+        - 各ケースの model_path を新しい s8i パスに更新
+        - ステータス・解析結果・出力ディレクトリをクリア
+        - 結果表示ウィジェットをすべて初期化
+        """
+        if self._project is None:
+            return
+        for case in self._project.cases:
+            case.model_path = new_s8i_path
+            case.output_dir = ""
+            case.reset()
+            # result_path は dataclass 外で動的に付与される場合もある
+            if hasattr(case, "result_path"):
+                case.result_path = ""
+        self._project._touch()  # type: ignore[attr-defined]
+        # 結果ウィジェットをすべてクリア
+        self._update_result_tabs(result_count=0)
+        self._chart.clear()
+        self._compare_chart.set_cases([])
+        self._envelope_chart.set_cases([])
+        self._radar_chart.set_cases([])
+        self._result_table.set_cases([])
+        self._ranking.set_cases([])
+        self._time_history.set_cases([])
+        self._dashboard.set_cases([])
+        self._sensitivity.set_cases([])
+
+    def _new_project_dialog(self) -> None:
+        """変更確認後に新規プロジェクトを作成します。"""
+        if not self._confirm_discard():
+            return
+        self._new_project()
+        self.statusBar().showMessage("新規プロジェクトを作成しました")
+
+    def _open_project(self) -> None:
+        if not self._confirm_discard():
+            return
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            "プロジェクトを開く",
+            "",
+            "snap-controller プロジェクト (*.snapproj);;すべてのファイル (*)",
+        )
+        if not path:
+            return
+        self._open_project_from_path(path)
+
+    def _open_project_from_path(self, path: str) -> None:
+        """パスからプロジェクトを開きます。"""
+        try:
+            self._project = Project.load(path)
+            self._service.set_snap_exe_path(self._project.snap_exe_path)
+            self._service.set_snap_work_dir(self._project.snap_work_dir)
+            self._autosave.set_project(self._project)
+            self._model_info.set_model(self._project.s8i_model)
+            # UX改善②: プロジェクト読込時にモデルロード状態を反映
+            self._case_table.set_model_loaded(self._project.has_s8i)
+            self._case_table.set_project(self._project)
+            self._run_selection.set_project(self._project)
+            self._run_selection.set_snap_exe_path(self._project.snap_exe_path or "")
+            self._chart.clear()
+            self._update_title()
+            self._main_stack.setCurrentIndex(1)  # ワークスペース表示
+            # 最近使ったプロジェクトに追加
+            add_recent_project(path, self._project.name)
+            self._update_recent_menu()
+            self._update_setup_guide()
+            # 既存の結果件数に応じてタブ有効化
+            result_count = sum(
+                1 for c in self._project.cases if c.result_summary
+            )
+            self._update_result_tabs(result_count)
+            self._update_sidebar_badges()  # UX改善1: プロジェクト読込後にバッジ更新
+            # UX改善⑤新: プロジェクト読込時にグループ情報を比較グラフに反映
+            self._compare_chart.set_case_groups(self._project.case_groups)
+            # UX改善④新: 解析戦略メモをテキストエリアに復元
+            notes = getattr(self._project, "strategy_notes", "")
+            self._strategy_notes_edit.blockSignals(True)
+            self._strategy_notes_edit.setPlainText(notes)
+            self._strategy_notes_edit.blockSignals(False)
+            self.statusBar().showMessage(f"プロジェクトを開きました: {path}")
+        except Exception as e:
+            QMessageBox.critical(self, "エラー", f"ファイルを開けませんでした:\n{e}")
+
+    def _open_recent_project(self, path: str) -> None:
+        """最近使ったプロジェクトから開きます。"""
+        if not self._confirm_discard():
+            return
+        self._open_project_from_path(path)
+
+    def _save_project(self) -> bool:
+        if self._project is None:
+            return False
+        if self._project.file_path is None:
+            return self._save_project_as()
+        try:
+            # 保存前にバックアップを作成
+            self._autosave.create_backup()
+            self._project.save()
+            # 正常保存後に自動保存ファイルをクリーン
+            self._autosave.clean_autosave()
+            self._update_title()
+            add_recent_project(str(self._project.file_path), self._project.name)
+            self._update_recent_menu()
+            self.statusBar().showMessage(f"保存しました: {self._project.file_path}")
+            return True
+        except Exception as e:
+            QMessageBox.critical(self, "エラー", f"保存に失敗しました:\n{e}")
+            return False
+
+    def _save_project_as(self) -> bool:
+        if self._project is None:
+            return False
+        path, _ = QFileDialog.getSaveFileName(
+            self,
+            "名前を付けて保存",
+            self._project.name + ".snapproj",
+            "snap-controller プロジェクト (*.snapproj);;すべてのファイル (*)",
+        )
+        if not path:
+            return False
+        try:
+            self._project.save(path)
+            self._update_title()
+            self.statusBar().showMessage(f"保存しました: {path}")
+            return True
+        except Exception as e:
+            QMessageBox.critical(self, "エラー", f"保存に失敗しました:\n{e}")
+            return False
+
+    # ------------------------------------------------------------------
+    # Case operations
+    # ------------------------------------------------------------------
+
+    def _add_case(self) -> None:
+        if self._project is None:
+            return
+        self._case_table.add_case()
+
+    def _run_selected(self) -> None:
+        if self._project is None:
+            return
+        case_ids = self._case_table.selected_case_ids()
+        if not case_ids:
+            QMessageBox.information(self, "情報", "実行するケースを選択してください。")
+            return
+        cases = [
+            self._project.get_case(cid)
+            for cid in case_ids
+            if self._project.get_case(cid) is not None
+        ]
+        if not cases:
+            return
+        self._log.clear()
+        # バッチキューウィジェットにセット
+        self._batch_queue.set_batch(cases)
+        if len(cases) == 1:
+            self._batch_queue.on_case_started(cases[0].id)
+            self._service.run_case(cases[0])
+        else:
+            self._service.run_all(cases)
+
+    def _run_all(self) -> None:
+        if self._project is None:
+            return
+        self._log.clear()
+        cases = list(self._project.cases)
+        self._batch_queue.set_batch(cases)
+        self._service.run_all(cases)
+
+    def _run_selected_cases(self, case_ids: list[str]) -> None:
+        if self._project is None:
+            return
+        self._log.clear()
+        cases = [self._project.get_case(cid) for cid in case_ids if self._project.get_case(cid)]
+        if cases:
+            self._batch_queue.set_batch(cases)
+            self._service.run_all(cases)
+            self.statusBar().showMessage(f"{len(cases)} 件のケースをバッチキューに登録しました。")
+
+    def _on_run_requested(self, case_id: str) -> None:
+        case = self._project.get_case(case_id) if self._project else None
+        if case:
+            self._log.clear()
+            self._service.run_case(case)
+
+    def _run_demo(self) -> None:
+        """選択ケースをモックデータで実行します（SNAP 不要のデモ用）。"""
+        if self._project is None:
+            return
+        case_ids = self._case_table.selected_case_ids()
+        if not case_ids:
+            # 選択なし → ケースがなければ新規追加してデモ
+            if not self._project.cases:
+                from app.models import AnalysisCase
+                case = AnalysisCase(name="デモケース")
+                self._project.add_case(case)
+                self._case_table.refresh()
+                case_ids = [case.id]
+            else:
+                QMessageBox.information(self, "情報", "デモ実行するケースを選択してください。")
+                return
+        cases = [
+            self._project.get_case(cid)
+            for cid in case_ids
+            if self._project.get_case(cid) is not None
+        ]
+        if not cases:
+            return
+        self._log.clear()
+        floors = load_settings().get("demo_floors", 5)
+        if len(cases) == 1:
+            self._service.run_mock(cases[0], floors=floors)
+        else:
+            self._service.run_mock_all(cases, floors=floors)
+
+    def _run_demo_all(self) -> None:
+        """全ケースをモックデータで実行します（進捗バー付き）。"""
+        if self._project is None:
+            return
+        if not self._project.cases:
+            QMessageBox.information(self, "情報", "ケースがありません。")
+            return
+        self._log.clear()
+        floors = load_settings().get("demo_floors", 5)
+        self._service.run_mock_all(self._project.cases, floors=floors)
+
+    # ------------------------------------------------------------------
+    # Event handlers
+    # ------------------------------------------------------------------
+
+    def _on_case_selected(self, case_id: str) -> None:
+        if self._project is None:
+            return
+        case = self._project.get_case(case_id)
+        if case is None:
+            return
+        if case.result_summary:
+            self._chart.show_case(case)
+        # モデルファイルがある場合、入力ファイルプレビューに表示
+        if case.model_path:
+            self._file_preview.load_file(case.model_path)
+        # 複数選択時は比較チャートも更新
+        selected_ids = self._case_table.selected_case_ids()
+        if len(selected_ids) > 1:
+            selected_cases = [
+                self._project.get_case(cid)
+                for cid in selected_ids
+                if self._project.get_case(cid) is not None
+                and self._project.get_case(cid).result_summary
+            ]
+            if selected_cases:
+                self._compare_chart.set_cases(selected_cases)
+
+        # 改善③: ステータスバーに選択ケースのサマリーを表示
+        self._update_case_info_label(case)
+
+    def _update_case_info_label(self, case) -> None:
+        """ステータスバーの選択ケース情報ラベルを更新します。"""
+        if case is None:
+            self._case_info_label.setText("")
+            return
+        parts = [f"📌 {case.name}"]
+        status_label = case.get_status_label() if hasattr(case, "get_status_label") else ""
+        if status_label:
+            parts.append(status_label)
+        rs = case.result_summary or {}
+        if rs.get("max_drift"):
+            parts.append(f"層間変形角: {rs['max_drift']:.5f}")
+        if rs.get("max_acc"):
+            parts.append(f"加速度: {rs['max_acc']:.3f} m/s²")
+        if rs.get("max_disp"):
+            parts.append(f"最大変位: {rs['max_disp']:.4f} m")
+        # 判定結果
+        if self._project and rs:
+            verdict = self._project.criteria.is_all_pass(rs)
+            if verdict is True:
+                parts.append("判定: ✅ OK")
+            elif verdict is False:
+                parts.append("判定: ❌ NG")
+        self._case_info_label.setText("  |  ".join(parts))
+
+    def _on_analysis_finished(self, case_id: str, success: bool) -> None:
+        self._case_table.refresh()
+        self._update_setup_guide()
+        if self._project:
+            result_count = sum(
+                1 for c in self._project.cases if c.result_summary
+            )
+            self._update_result_tabs(result_count)
+            self._compare_chart.set_cases(self._project.cases)
+            self._compare_chart.set_criteria(self._project.criteria)
+            # UX改善⑤新: 解析完了後にグループ情報を比較グラフに反映
+            self._compare_chart.set_case_groups(self._project.case_groups)
+            self._chart.set_criteria(self._project.criteria)
+            self._envelope_chart.set_cases(self._project.cases)
+            self._envelope_chart.set_criteria(self._project.criteria)
+            self._radar_chart.set_cases(self._project.cases)
+            self._result_table.set_cases(self._project.cases)
+            self._ranking.set_cases(self._project.cases)
+            self._ranking.set_criteria(self._project.criteria)
+            self._ranking.set_case_groups(self._project.case_groups)
+            self._time_history.set_cases(self._project.cases)
+            self._dashboard.set_cases(self._project.cases)
+            self._sensitivity.set_cases(self._project.cases)
+        if success and self._project:
+            case = self._project.get_case(case_id)
+            if case:
+                self._chart.show_case(case)
+        # 改善C: 個別ケースの解析エラーをトレイ通知
+        if not success and self._project:
+            case = self._project.get_case(case_id)
+            case_name = case.name if case else case_id
+            self._tray_notify(
+                "解析エラー",
+                f"ケース「{case_name}」の解析中にエラーが発生しました。\nログを確認してください。",
+                QSystemTrayIcon.Critical,
+            )
+
+    def _on_progress_updated(self, current: int, total: int) -> None:
+        """解析進捗をプログレスバーに反映します。"""
+        if total == 0 or current == total:
+            self._progress_bar.hide()
+        else:
+            self._progress_bar.setMaximum(total)
+            self._progress_bar.setValue(current)
+            self._progress_bar.show()
+
+    def _on_batch_state_changed(self, running: bool) -> None:
+        """バッチ実行の開始・終了に応じてUI状態を更新します。"""
+        self._act_cancel.setEnabled(running)
+        self._act_pause.setEnabled(running)
+        if running:
+            self._act_pause.setText("⏸ 一時停止")
+            self._act_pause.setToolTip("バッチ実行を一時停止します")
+            # 改善④: 解析開始時は「実行キュー」タブへ自動切り替え（進捗を確認しやすく）
+            _BATCH_QUEUE_TAB = 9
+            if self._right_tabs.isTabEnabled(_BATCH_QUEUE_TAB):
+                self._right_tabs.setCurrentIndex(_BATCH_QUEUE_TAB)
+            # UX改善③新: 解析開始時はバナーを隠す
+            self._run_selection.hide_completion_banner()
+        else:
+            self._act_pause.setText("⏸ 一時停止")
+            self._act_pause.setToolTip("バッチ実行を一時停止します")
+            # 改善④: 解析完了時に結果があれば「ダッシュボード」タブへ自動切り替え
+            _DASHBOARD_TAB = 0
+            if (
+                self._project
+                and any(c.result_summary for c in self._project.cases)
+                and self._right_tabs.isTabEnabled(_DASHBOARD_TAB)
+            ):
+                self._right_tabs.setCurrentIndex(_DASHBOARD_TAB)
+            # UX改善1+3: バッジ更新 & 結果があればSTEP4へ自動ナビゲート（設定依存）
+            self._update_sidebar_badges()
+            if self._project and any(c.result_summary for c in self._project.cases):
+                completed_n = sum(1 for c in self._project.cases if c.result_summary)
+                # UX改善⑤: 設定で自動遷移が有効な場合のみSTEP4へ移動
+                _auto_step4 = load_settings().get("auto_step4", True)
+                if _auto_step4:
+                    self._sidebar.set_current_step(3)
+                    self.statusBar().showMessage(
+                        f"✅ 解析完了: {completed_n}件  "
+                        f"→ STEP4 で結果を確認してください",
+                        7000,
+                    )
+                else:
+                    self.statusBar().showMessage(
+                        f"✅ 解析完了: {completed_n}件  "
+                        f"（STEP4「結果・戦略」タブで結果を確認できます）",
+                        7000,
+                    )
+            # UX改善③新: STEP3 解析完了バナーを表示（STEP4へのCTAボタン付き）
+            if self._project:
+                completed_n = sum(1 for c in self._project.cases if c.result_summary)
+                error_count = sum(
+                    1 for c in self._project.cases
+                    if c.status and hasattr(c.status, "name") and c.status.name == "ERROR"
+                )
+                if completed_n > 0:
+                    # UX改善（新）: ベストケース（最小層間変形角）の情報を計算してバナーに表示
+                    best_case_info = ""
+                    try:
+                        completed_cases = [
+                            c for c in self._project.cases
+                            if c.result_summary and c.result_summary.get("max_drift") is not None
+                        ]
+                        if completed_cases:
+                            best = min(
+                                completed_cases,
+                                key=lambda c: c.result_summary.get("max_drift", float("inf"))
+                            )
+                            drift = best.result_summary.get("max_drift", 0)
+                            best_case_info = (
+                                f"🏆 最良ケース（最小層間変形角）: "
+                                f"<b>{best.name}</b>  —  {drift:.5f} rad"
+                            )
+                    except Exception:
+                        best_case_info = ""
+                    self._run_selection.show_completion_banner(
+                        completed_n, error_count, best_case_info
+                    )
+            # 改善C: バッチ解析完了をシステムトレイ通知（最小化中でも即座に確認可能）
+            if self._project:
+                completed = sum(1 for c in self._project.cases if c.result_summary)
+                error_count = sum(
+                    1 for c in self._project.cases
+                    if c.status and hasattr(c.status, "name") and c.status.name == "ERROR"
+                )
+                if completed > 0:
+                    if error_count > 0:
+                        self._tray_notify(
+                            "解析完了（エラーあり）",
+                            f"{completed}件完了、{error_count}件エラー。\nログを確認してください。",
+                            QSystemTrayIcon.Warning,
+                        )
+                    else:
+                        self._tray_notify(
+                            "解析完了",
+                            f"{completed}件の解析が正常に完了しました。\n結果を確認してください。",
+                            QSystemTrayIcon.Information,
+                        )
+
+    def _toggle_pause(self) -> None:
+        """一時停止/再開を切り替えます。"""
+        if self._service.is_paused:
+            self._service.resume_batch()
+            self._act_pause.setText("⏸ 一時停止")
+            self._act_pause.setToolTip("バッチ実行を一時停止します")
+        else:
+            self._service.pause_batch()
+            self._act_pause.setText("▶ 再開")
+            self._act_pause.setToolTip("一時停止中のバッチ実行を再開します")
+
+    def _cancel_batch(self) -> None:
+        """バッチ実行をキャンセルします（確認ダイアログ付き）。"""
+        reply = QMessageBox.question(
+            self,
+            "バッチキャンセル",
+            "実行中のバッチをキャンセルしますか？\n"
+            "現在実行中のケースの完了を待ってから停止します。",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if reply == QMessageBox.Yes:
+            self._service.cancel_batch()
+            self._act_pause.setText("⏸ 一時停止")
+            self._act_pause.setEnabled(False)
+            self._act_cancel.setEnabled(False)
+            self._batch_queue.on_batch_finished()
+
+    def _on_batch_queue_case_finished(self, case_id: str, success: bool) -> None:
+        """AnalysisService の case_finished をバッチキューに中継します。"""
+        self._batch_queue.on_case_finished(case_id, success)
+
+    def _on_batch_queue_state_changed(self, running: bool) -> None:
+        """バッチ実行状態の変化をバッチキューウィジェットに通知します。"""
+        if not running:
+            self._batch_queue.on_batch_finished()
+        elif self._service.is_paused:
+            self._batch_queue.on_paused()
+
+    def _generate_report(self) -> None:
+        """HTML レポートを生成して保存します。"""
+        if self._project is None:
+            return
+        completed = self._project.get_completed_cases()
+        if not completed:
+            QMessageBox.information(
+                self, "レポート生成",
+                "完了済みの解析ケースがありません。\n先に解析を実行してください。",
+            )
+            return
+
+        default_dir = ""
+        if self._project.file_path:
+            default_dir = str(self._project.file_path.parent)
+        default_name = f"{self._project.name}_report.html"
+        path, _ = QFileDialog.getSaveFileName(
+            self, "HTMLレポート保存先",
+            str(Path(default_dir) / default_name) if default_dir else default_name,
+            "HTML Files (*.html);;All Files (*)",
+        )
+        if not path:
+            return
+
+        try:
+            from app.services.report_generator import generate_report
+            generate_report(
+                project=self._project,
+                cases=completed,
+                output_path=path,
+                include_charts=True,
+            )
+            self._log.append_line(f"[レポート] HTML レポートを生成しました: {path}")
+            self.statusBar().showMessage(f"レポート生成完了: {path}", 5000)
+            QMessageBox.information(
+                self, "レポート生成完了",
+                f"HTML レポートを生成しました。\n{path}",
+            )
+        except Exception as e:
+            self._log.append_line(f"[レポートエラー] {e}")
+            QMessageBox.warning(self, "レポート生成エラー", str(e))
+
+    def _export_results(self) -> None:
+        """結果エクスポートダイアログを開きます。"""
+        if self._project is None:
+            return
+        default_dir = ""
+        if self._project.file_path:
+            default_dir = str(self._project.file_path.parent)
+        dlg = ExportDialog(
+            cases=self._project.cases,
+            default_dir=default_dir,
+            parent=self,
+        )
+        dlg.exec()
+
+    def _open_settings(self) -> None:
+        """アプリケーション設定ダイアログを開きます。"""
+        old_theme = ThemeManager.saved_mode()
+        dlg = SettingsDialog(parent=self)
+        if dlg.exec():
+            settings = dlg.get_settings()
+            # グローバル SNAP.exe パスを現在のプロジェクトとサービスに反映
+            if self._project and settings.get("snap_exe_path"):
+                self._project.snap_exe_path = settings["snap_exe_path"]
+                self._service.set_snap_exe_path(settings["snap_exe_path"])
+                self._run_selection.set_snap_exe_path(settings["snap_exe_path"])  # UX改善4
+            if self._project and settings.get("snap_work_dir"):
+                self._project.snap_work_dir = settings["snap_work_dir"]
+                self._service.set_snap_work_dir(settings["snap_work_dir"])
+            # テーマが変更された場合、即時適用を試みる
+            new_theme = settings.get("theme", "auto")
+            if new_theme != old_theme:
+                app = QApplication.instance()
+                if app:
+                    ThemeManager.apply(app, new_theme)
+                    # 各ウィジェットのテーマ依存スタイルを更新
+                    self._log.update_theme()
+                    self._case_table.refresh()
+                    self._chart.update_theme()
+                    self._compare_chart.update_theme()
+                    self._radar_chart.update_theme()
+                    self._result_table.update_theme()
+                    self._time_history.update_theme()
+                    self._dashboard.update_theme()
+                    self._sensitivity.update_theme()
+                    self._envelope_chart.update_theme()
+                    self._file_preview.update_theme()
+                QMessageBox.information(
+                    self, "テーマ変更",
+                    "テーマを変更しました。\n"
+                    "一部の表示は次回起動時に完全に反映されます。"
+                )
+            self.statusBar().showMessage("設定を保存しました")
+            self._update_setup_guide()
+
+    def _open_sweep_dialog(self) -> None:
+        """パラメータスイープダイアログを開いて一括ケース生成を行います。"""
+        if self._project is None:
+            return
+        # 選択中のケースがあればベースケースとして使う
+        base_case = None
+        case_id = self._case_table.selected_case_id()
+        if case_id:
+            base_case = self._project.get_case(case_id)
+        dlg = SweepDialog(
+            base_case=base_case,
+            parent=self,
+        )
+        if dlg.exec():
+            for case in dlg.generated_cases:
+                self._project.add_case(case)
+            self._case_table.refresh()
+            n = len(dlg.generated_cases)
+            self.statusBar().showMessage(f"パラメータスイープ: {n} ケースを追加しました")
+            self._log.append_line(f"=== パラメータスイープ: {n} ケースを追加 ===")
+
+    def _open_criteria_dialog(self) -> None:
+        """目標性能基準設定ダイアログを開きます。"""
+        if self._project is None:
+            return
+        dlg = CriteriaDialog(self._project.criteria, parent=self)
+        if dlg.exec():
+            self._project.criteria = dlg.get_criteria()
+            self._project._touch()
+            self._case_table.refresh()
+            self._ranking.set_criteria(self._project.criteria)
+            self._ranking.set_cases(self._project.cases)
+            # グラフウィジェットに基準線を反映
+            self._chart.set_criteria(self._project.criteria)
+            self._compare_chart.set_criteria(self._project.criteria)
+            self._envelope_chart.set_criteria(self._project.criteria)
+            self._log.append_line(
+                f"=== 目標性能基準を更新: {self._project.criteria.name} ==="
+            )
+            self.statusBar().showMessage("目標性能基準を更新しました")
+
+    def _open_group_manager(self) -> None:
+        """ケースグループ管理ダイアログを開きます。"""
+        if self._project is None:
+            return
+        from PySide6.QtWidgets import (
+            QDialog, QDialogButtonBox, QListWidget, QListWidgetItem,
+            QInputDialog,
+        )
+
+        dlg = QDialog(self)
+        dlg.setWindowTitle("ケースグループ管理")
+        dlg.setMinimumWidth(400)
+        layout = QVBoxLayout(dlg)
+
+        layout.addWidget(QLabel("グループ一覧:"))
+        group_list = QListWidget()
+        for gname, cids in self._project.case_groups.items():
+            count = len(cids)
+            item = QListWidgetItem(f"{gname}  ({count} ケース)")
+            item.setData(Qt.UserRole, gname)
+            group_list.addItem(item)
+        layout.addWidget(group_list)
+
+        from PySide6.QtWidgets import QHBoxLayout as _QHBoxLayout
+        btn_row = _QHBoxLayout()
+        from PySide6.QtWidgets import QPushButton as _QPushButton
+
+        btn_add = _QPushButton("＋ 追加")
+        def _add_group():
+            name, ok = QInputDialog.getText(dlg, "新規グループ", "グループ名:")
+            if ok and name.strip():
+                name = name.strip()
+                if name not in self._project.case_groups:
+                    self._project.case_groups[name] = []
+                    item = QListWidgetItem(f"{name}  (0 ケース)")
+                    item.setData(Qt.UserRole, name)
+                    group_list.addItem(item)
+                    self._project._touch()
+        btn_add.clicked.connect(_add_group)
+        btn_row.addWidget(btn_add)
+
+        btn_rename = _QPushButton("名前変更")
+        def _rename_group():
+            current = group_list.currentItem()
+            if current is None:
+                return
+            old_name = current.data(Qt.UserRole)
+            new_name, ok = QInputDialog.getText(
+                dlg, "名前変更", "新しいグループ名:", text=old_name
+            )
+            if ok and new_name.strip() and new_name.strip() != old_name:
+                new_name = new_name.strip()
+                self._project.case_groups[new_name] = self._project.case_groups.pop(old_name)
+                count = len(self._project.case_groups[new_name])
+                current.setText(f"{new_name}  ({count} ケース)")
+                current.setData(Qt.UserRole, new_name)
+                self._project._touch()
+        btn_rename.clicked.connect(_rename_group)
+        btn_row.addWidget(btn_rename)
+
+        btn_del = _QPushButton("－ 削除")
+        def _delete_group():
+            current = group_list.currentItem()
+            if current is None:
+                return
+            gname = current.data(Qt.UserRole)
+            reply = QMessageBox.question(
+                dlg, "確認",
+                f"グループ「{gname}」を削除しますか？\n（ケース自体は削除されません）",
+                QMessageBox.Yes | QMessageBox.No,
+            )
+            if reply == QMessageBox.Yes:
+                del self._project.case_groups[gname]
+                group_list.takeItem(group_list.row(current))
+                self._project._touch()
+        btn_del.clicked.connect(_delete_group)
+        btn_row.addWidget(btn_del)
+
+        btn_row.addStretch()
+        layout.addLayout(btn_row)
+
+        btn_box = QDialogButtonBox(QDialogButtonBox.Close)
+        btn_box.rejected.connect(dlg.reject)
+        layout.addWidget(btn_box)
+
+        dlg.exec()
+        self._case_table.refresh()
+        self._ranking.set_case_groups(self._project.case_groups)
+
+    def _open_wave_dialog(self) -> None:
+        """地震波選択ダイアログを開きます。"""
+        if self._project is None:
+            return
+        dlg = EarthquakeWaveDialog(parent=self)
+        dlg.waveSelected.connect(self._on_wave_selected)
+        dlg.exec()
+
+    def _on_wave_selected(self, wave) -> None:
+        """地震波が選択された際の処理。"""
+        if self._project is None:
+            return
+        # 選択中のケースに適用、なければ新規ケース作成
+        case_id = self._case_table.selected_case_id()
+        if case_id:
+            case = self._project.get_case(case_id)
+        else:
+            from app.models import AnalysisCase
+            case = AnalysisCase(name=f"{wave.name} ケース")
+            self._project.add_case(case)
+            self._case_table.refresh()
+
+        if case:
+            # 地震波情報をケースのパラメータに格納
+            case.parameters["EQ_WAVE"] = wave.name
+            case.parameters["EQ_WAVE_ID"] = wave.id
+            case.parameters["EQ_DIRECTION"] = wave.direction
+            case.parameters["EQSCALE"] = str(wave.scale_factor)
+            if wave.file_path:
+                case.parameters["EQFILE"] = wave.file_path
+            self._project._touch()
+            self._case_table.refresh()
+            self._log.append_line(
+                f"=== 地震波設定: {wave.name} "
+                f"(方向={wave.direction}, 倍率={wave.scale_factor}) "
+                f"→ ケース「{case.name}」 ==="
+            )
+            self.statusBar().showMessage(
+                f"地震波「{wave.name}」をケース「{case.name}」に設定しました"
+            )
+
+    def _open_optimizer_dialog(self) -> None:
+        """ダンパー最適化ダイアログを開きます。"""
+        if self._project is None:
+            return
+        # 選択中のケースをベースケースとして使う
+        base_case = None
+        case_id = self._case_table.selected_case_id()
+        if case_id:
+            base_case = self._project.get_case(case_id)
+
+        dlg = OptimizerDialog(
+            base_case=base_case,
+            criteria=self._project.criteria,
+            snap_exe_path=self._project.snap_exe_path,
+            parent=self,
+        )
+        if dlg.exec():
+            # 最良解をケースとして追加
+            best_params = dlg.best_params
+            result = dlg.result
+            if best_params and result and result.best:
+                from app.models import AnalysisCase
+                # パラメータ文字列を生成
+                param_str = ", ".join(
+                    f"{k}={v:.4g}" for k, v in best_params.items()
+                )
+                case = AnalysisCase(
+                    name=f"最適化結果 ({result.config.damper_type})",
+                    parameters=best_params,
+                    notes=f"最適化結果: {result.config.objective_label} = "
+                          f"{result.best.objective_value:.6g}\n"
+                          f"パラメータ: {param_str}\n"
+                          f"探索手法: {result.config.method}\n"
+                          f"評価数: {len(result.all_candidates)}",
+                )
+                if base_case and base_case.model_path:
+                    case.model_path = base_case.model_path
+                self._project.add_case(case)
+                self._case_table.refresh()
+                self._project._touch()
+                self._log.append_line(
+                    f"=== 最適化結果をケース追加: {case.name} "
+                    f"({param_str}) ==="
+                )
+                self.statusBar().showMessage(
+                    f"最適化結果をケース「{case.name}」として追加しました"
+                )
+
+    def _open_case_compare(self) -> None:
+        """2ケース詳細比較ダイアログを開きます。"""
+        if self._project is None:
+            return
+        completed = [
+            c for c in self._project.cases
+            if c.status == AnalysisCaseStatus.COMPLETED and c.result_summary
+        ]
+        if len(completed) < 2:
+            QMessageBox.information(
+                self, "情報",
+                "比較するには完了済みケースが2つ以上必要です。",
+            )
+            return
+        # 選択中のケースをケースAとして使う
+        initial_a = None
+        case_id = self._case_table.selected_case_id()
+        if case_id:
+            initial_a = self._project.get_case(case_id)
+        dlg = CaseCompareDialog(
+            cases=self._project.cases,
+            initial_a=initial_a,
+            parent=self,
+        )
+        dlg.exec()
+
+    def _open_damper_catalog(self) -> None:
+        """ダンパーカタログダイアログを開きます。"""
+        dlg = DamperCatalogDialog(parent=self)
+        dlg.specSelected.connect(self._on_catalog_spec_selected)
+        dlg.exec()
+
+    def _on_catalog_spec_selected(self, spec) -> None:
+        """カタログからダンパー仕様が選択された際の処理。"""
+        if self._project is None:
+            return
+        # 選択中のケースに適用、なければ新規ケース作成
+        case_id = self._case_table.selected_case_id()
+        if case_id:
+            case = self._project.get_case(case_id)
+        else:
+            from app.models import AnalysisCase
+            case = AnalysisCase(name=f"{spec.name} ケース")
+            self._project.add_case(case)
+            self._case_table.refresh()
+
+        if case:
+            # カタログのパラメータをケースに適用
+            if spec.snap_keyword:
+                case.damper_params[spec.name] = dict(spec.parameters)
+            self._project._touch()
+            self._case_table.refresh()
+            self._log.append_line(
+                f"=== カタログから適用: {spec.name} → ケース「{case.name}」 ==="
+            )
+            self.statusBar().showMessage(f"カタログ「{spec.name}」をケースに適用しました")
+
+    def _open_template_dialog(self) -> None:
+        """テンプレート管理ダイアログを開きます。"""
+        if self._project is None:
+            return
+        dlg = TemplateDialog(
+            template_manager=self._template_manager,
+            parent=self,
+        )
+        dlg.templateApplied.connect(self._on_template_applied)
+        dlg.exec()
+
+    def _on_template_applied(self, template) -> None:
+        """テンプレートが適用された際の処理。"""
+        if self._project is None:
+            return
+        # 選択中のケースに適用、なければ新規ケース作成
+        case_id = self._case_table.selected_case_id()
+        if case_id:
+            case = self._project.get_case(case_id)
+        else:
+            from app.models import AnalysisCase
+            case = AnalysisCase(name=f"{template.name} ケース")
+            self._project.add_case(case)
+
+        if case:
+            # テンプレートのパラメータをケースにマージ
+            case.parameters.update(template.parameters)
+            case.damper_params.update(template.damper_params)
+            self._project._touch()
+            self._case_table.refresh()
+            self._log.append_line(
+                f"=== テンプレート適用: {template.name} → ケース「{case.name}」 ==="
+            )
+            self.statusBar().showMessage(
+                f"テンプレート「{template.name}」をケース「{case.name}」に適用しました"
+            )
+
+    def _save_as_template(self) -> None:
+        """選択中のケースをテンプレートとして保存します。"""
+        if self._project is None:
+            return
+        case_id = self._case_table.selected_case_id()
+        if case_id is None:
+            QMessageBox.information(
+                self, "情報",
+                "テンプレートとして保存するケースを選択してください。",
+            )
+            return
+        case = self._project.get_case(case_id)
+        if case is None:
+            return
+
+        dlg = SaveTemplateDialog(case=case, parent=self)
+        if dlg.exec():
+            tpl = dlg.get_template()
+            if tpl:
+                path = self._template_manager.add(tpl)
+                self._log.append_line(
+                    f"=== テンプレート保存: {tpl.name} → {path} ==="
+                )
+                self.statusBar().showMessage(
+                    f"テンプレート「{tpl.name}」を保存しました"
+                )
+
+    def _open_multi_wave_dialog(self) -> None:
+        """複数地震波一括解析ダイアログを開きます。"""
+        if self._project is None:
+            return
+        # 選択中のケースをベースケースとして使う
+        base_case = None
+        case_id = self._case_table.selected_case_id()
+        if case_id:
+            base_case = self._project.get_case(case_id)
+        dlg = MultiWaveDialog(
+            base_case=base_case,
+            parent=self,
+        )
+        if dlg.exec():
+            for case in dlg.generated_cases:
+                self._project.add_case(case)
+            self._case_table.refresh()
+            n = len(dlg.generated_cases)
+            self._log.append_line(
+                f"=== 複数地震波一括生成: {n} ケースを追加 ==="
+            )
+            self.statusBar().showMessage(
+                f"複数地震波一括解析: {n} ケースを生成しました"
+            )
+            # 自動デモ実行が要求された場合
+            if dlg.auto_run_requested and dlg.generated_cases:
+                floors = load_settings().get("demo_floors", 5)
+                self._service.run_mock_all(dlg.generated_cases, floors=floors)
+
+    def _validate_selected(self) -> None:
+        """選択中のケースの入力チェックを行います。"""
+        if self._project is None:
+            return
+        case_id = self._case_table.selected_case_id()
+        if case_id is None:
+            QMessageBox.information(self, "情報", "チェックするケースを選択してください。")
+            return
+        case = self._project.get_case(case_id)
+        if case is None:
+            return
+        result = validate_case(
+            case,
+            snap_exe_path=self._project.snap_exe_path,
+            s8i_model=self._project.s8i_model,
+        )
+        dlg = ValidationDialog(result, case_name=case.name, parent=self)
+        dlg.exec()
+        self._log.append_line(result.get_display_text())
+
+    def _validate_all(self) -> None:
+        """全ケースの入力チェックを行います。"""
+        if self._project is None or not self._project.cases:
+            QMessageBox.information(self, "情報", "ケースがありません。")
+            return
+        results_map = {}
+        for case in self._project.cases:
+            result = validate_case(
+                case,
+                snap_exe_path=self._project.snap_exe_path,
+                s8i_model=self._project.s8i_model,
+            )
+            results_map[case.name] = result
+        dlg = BatchValidationDialog(results_map, parent=self)
+        dlg.exec()
+
+    def _update_recent_menu(self) -> None:
+        """最近使ったプロジェクトメニューを更新します。"""
+        from .welcome_widget import get_recent_projects
+        self._recent_menu.clear()
+        recents = get_recent_projects()
+        if not recents:
+            act = QAction("（なし）", self)
+            act.setEnabled(False)
+            self._recent_menu.addAction(act)
+            return
+        for entry in recents[:MAX_RECENT_MENU]:
+            path = entry.get("path", "")
+            name = entry.get("name", "")
+            act = QAction(f"{name}  ({path})", self)
+            act.setData(path)
+            act.triggered.connect(lambda checked, p=path: self._open_recent_project(p))
+            self._recent_menu.addAction(act)
+
+    def _show_about(self) -> None:
+        QMessageBox.about(
+            self,
+            "snap-controller について",
+            "<h3>snap-controller</h3>"
+            "<p>SNAPを利用した免振・制振装置設計支援ライブラリ</p>"
+            "<p>バージョン 0.1.0</p>"
+            "<p>© 2025 BAUES</p>",
+        )
+
+    def _show_shortcut_help(self) -> None:
+        """改善⑨: キーボードショートカット一覧ダイアログを開きます。"""
+        dlg = ShortcutHelpDialog(self)
+        dlg.exec()
+
+    # ------------------------------------------------------------------
+    # Helpers
+    # ------------------------------------------------------------------
+
+    def _confirm_discard(self) -> bool:
+        """未保存変更がある場合に確認ダイアログを出します。True なら続行。"""
+        if self._project and self._project.modified:
+            reply = QMessageBox.question(
+                self,
+                "確認",
+                "未保存の変更があります。破棄しますか？",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No,
+            )
+            return reply == QMessageBox.Yes
+        return True
+
+    def _update_title(self) -> None:
+        """ウィンドウタイトルをプロジェクト状態に合わせて更新します。"""
+        if self._project is None:
+            self.setWindowTitle(APP_NAME)
+            return
+        name = self._project.name or "無題プロジェクト"
+        modified = " *" if getattr(self._project, "modified", False) else ""
+        self.setWindowTitle(f"{name}{modified} — {APP_NAME}")
+
+    def _restore_settings(self) -> None:
+        """ウィンドウのジオメトリ・状態を QSettings から復元します。"""
+        s = QSettings(ORG_NAME, APP_NAME)
+        geom = s.value("geometry")
+        state = s.value("windowState")
+        if geom:
+            self.restoreGeometry(geom)
+        if state:
+            self.restoreState(state)
+
+    def closeEvent(self, event: QCloseEvent) -> None:
+        """ウィンドウを閉じる前に未保存変更の確認とジオメトリ保存を行います。"""
+        if not self._confirm_discard():
+            event.ignore()
+            return
+        # ウィンドウ状態を保存
+        s = QSettings(ORG_NAME, APP_NAME)
+        s.setValue("geometry", self.saveGeometry())
+        s.setValue("windowState", self.saveState())
+        self._autosave.stop()
+        event.accept()
