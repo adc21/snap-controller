@@ -1,0 +1,77 @@
+title:Example
+unit(kN,m)
+
+//control data
+
+gravity acceleration= 9.80665
+required modes = 10
+output for node velocity acceleration and displacement
+output all node
+output damage info
+output reaction
+output EGC 11
+output floor SFC 8
+collect story shear froce include damper force
+output floor DAV
+output EMD
+output all node
+output all spring
+output step interval 10
+resolve 
+restep 
+FL-iteration = 5
+FL-tolerance = 0.01 
+Mode-iteration = 100
+upper-tolerance = 1.00000000000000e-06 
+lower-tolerance = 0.01 
+iteration limit = 5
+tolerance = 0.01 
+relative displacement limit 0.1 
+
+Beta-value 0.25 
+
+integration steps = 10
+output direction 0 
+
+factor 0.01  TX file=D:\KAKEMOTO\KOZOSYSTEM\SNAPV8\WORK\EXAMPLE_SHEAR\D1\EXAMPLE_SHEAR.HTX
+start time 0.000
+end time 53.000
+
+//floor level data
+2F:Z=4 W=980.66499999999996 Wp=980.66499999999996 /* F2
+1F:Z=0 W=9.80665 Wp=990.47164999999995 /* F1
+
+//supernode
+R1 TX : G(0 0 4) W=980.66499999999996  /* R2
+R2 TX : G(0 0 0) W=9.80665  /* R1
+
+//node locations
+1:0 0 0, 1F /*1
+2:0 0 4, 2F /*2
+
+//node DOF
+node DOFs: TX only
+1 prescribed TX TZ RY 
+
+2 super-coupled R1 
+1 super-coupled R2 
+R2 prescribed TX 
+
+//weight at node
+1  W=9.80665
+2  W=980.66499999999996
+
+//spring
+1 - 2 TX U1 Stc3 /* 1 2
+
+//damper
+1 - 2 TX C(U2) /* 1 2 Damper
+1 - 2 TX C(U2) /* 1 2 Damper
+
+//HD
+/* Uniaxial Model
+U1 EL1 1 250
+
+/* Dashpot Model
+U2 EL1 1 100
+

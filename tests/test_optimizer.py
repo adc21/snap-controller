@@ -1,0 +1,391 @@
+"""
+tests/test_optimizer.py
+Unit tests for optimizer module — ParameterRange, mock evaluate, GP, EI,
+and Bayesian search logic.
+
+PySide6 の QThread / Signal を使う optimizer.py を import するには
+PySide6 のランタイムライブラリが必要です。このテストでは PySide6 が
+ロードできない環境でも動作するように、sys.modules をモックします。
+"""
+
+import pytest
+import sys
+import math
+import random
+from typing import Dict
+from unittest.mock import MagicMock
+
+import numpy as np
+
+# ---------------------------------------------------------------------------
+# PySide6 mock — 共有ライブラリが無い環境でもインポートを通す
+# ---------------------------------------------------------------------------
+_HAS_QT = False
+try:
+    from PySide6.QtCore import QObject  # noqa: F401
+    _HAS_QT = True
+except (ImportError, OSError):
+    # PySide6 が利用不能 → 軽量モックを注入
+    _mock_qtcore = MagicMock()
+
+    class _FakeSignal:
+        """Signal() の代替: emit / connect は何もしない。"""
+        def __init__(self, *args, **kwargs):
+            pass
+        def emit(self, *a, **kw):
+            pass
+        def connect(self, *a, **kw):
+            pass
+
+    _mock_qtcore.Signal = _FakeSignal
+    _mock_qtcore.QObject = type("QObject", (), {"__init__": lambda self, *a, **kw: None})
+    _mock_qtcore.QThread = type("QThread", (), {
+        "__init__": lambda self, *a, **kw: None,
+        "start": lambda self: None,
+        "isRunning": lambda self: False,
+        "wait": lambda self, *a: None,
+        "terminate": lambda self: None,
+    })
+
+    _mock_qtwidgets = MagicMock()
+
+    sys.modules.setdefault("PySide6", MagicMock())
+    sys.modules["PySide6.QtCore"] = _mock_qtcore
+    sys.modules.setdefault("PySide6.QtWidgets", _mock_qtwidgets)
+    sys.modules.setdefault("PySide6.QtGui", MagicMock())
+
+# Now import the optimizer classes (always succeeds)
+from app.services.optimizer import (
+    ParameterRange,
+    OptimizationConfig,
+    OptimizationCandidate,
+    OptimizationResult,
+    _mock_evaluate,
+    _GaussianProcessRegressor,
+    _expected_improvement_no_scipy,
+    _OptimizationWorker,
+)
+
+needs_qt = pytest.mark.skipif(not _HAS_QT, reason="PySide6 runtime not available")
+
+
+# No qapp fixture needed — all Worker methods are called synchronously.
+
+
+# ===================================================================
+# ParameterRange
+# ===================================================================
+
+
+class TestParameterRangeDiscreteValues:
+    def test_with_step(self):
+        pr = ParameterRange(key="Cd", min_val=100, max_val=500, step=100)
+        vals = pr.discrete_values()
+        assert vals == [100, 200, 300, 400, 500]
+
+    def test_continuous(self):
+        pr = ParameterRange(key="a", min_val=0, max_val=1, step=0)
+        vals = pr.discrete_values()
+        assert len(vals) == 20
+        assert vals[0] == pytest.approx(0.0)
+        assert vals[-1] == pytest.approx(1.0)
+
+    def test_integer_flag(self):
+        pr = ParameterRange(key="n", min_val=1, max_val=10, step=1, is_integer=True)
+        vals = pr.discrete_values()
+        assert all(isinstance(v, int) for v in vals)
+        assert vals == list(range(1, 11))
+
+    def test_max_points_limit(self):
+        pr = ParameterRange(key="x", min_val=0, max_val=1000, step=1)
+        vals = pr.discrete_values(max_points=5)
+        assert len(vals) <= 5
+
+
+class TestParameterRangeRandomValue:
+    def test_in_range(self):
+        pr = ParameterRange(key="x", min_val=10, max_val=20)
+        for _ in range(100):
+            v = pr.random_value()
+            assert 10 <= v <= 20
+
+    def test_integer(self):
+        pr = ParameterRange(key="n", min_val=1, max_val=5, is_integer=True)
+        for _ in range(50):
+            v = pr.random_value()
+            assert v == round(v)
+
+    def test_snap_to_step(self):
+        pr = ParameterRange(key="x", min_val=0, max_val=1, step=0.25)
+        for _ in range(50):
+            v = pr.random_value()
+            assert v % 0.25 == pytest.approx(0.0, abs=0.001)
+
+
+# ===================================================================
+# Mock evaluate
+# ===================================================================
+
+
+class TestMockEvaluate:
+    def test_returns_all_keys(self):
+        result = _mock_evaluate({"Cd": 300, "alpha": 0.4}, {}, "max_drift")
+        expected_keys = {
+            "max_drift", "max_acc", "max_disp", "max_vel",
+            "shear_coeff", "max_otm", "max_story_disp",
+        }
+        assert expected_keys == set(result.keys())
+
+    def test_all_positive(self):
+        result = _mock_evaluate({"Cd": 500}, {}, "max_drift")
+        for k, v in result.items():
+            assert v > 0, f"{k} should be positive"
+
+    def test_cd_effect_on_average(self):
+        """Higher Cd reduces drift on average."""
+        base = {"max_drift": 0.01}
+        low = [_mock_evaluate({"Cd": 50}, base, "max_drift")["max_drift"] for _ in range(80)]
+        high = [_mock_evaluate({"Cd": 2000}, base, "max_drift")["max_drift"] for _ in range(80)]
+        assert np.mean(low) > np.mean(high)
+
+
+# ===================================================================
+# Optimization data classes
+# ===================================================================
+
+
+class TestOptimizationResult:
+    def test_feasible_candidates(self):
+        r = OptimizationResult(all_candidates=[
+            OptimizationCandidate(is_feasible=True, objective_value=1),
+            OptimizationCandidate(is_feasible=False, objective_value=2),
+            OptimizationCandidate(is_feasible=True, objective_value=3),
+        ])
+        assert len(r.feasible_candidates) == 2
+
+    def test_ranked_candidates(self):
+        r = OptimizationResult(all_candidates=[
+            OptimizationCandidate(is_feasible=True, objective_value=0.03),
+            OptimizationCandidate(is_feasible=True, objective_value=0.01),
+            OptimizationCandidate(is_feasible=True, objective_value=0.02),
+        ])
+        ranked = r.ranked_candidates
+        assert [c.objective_value for c in ranked] == [0.01, 0.02, 0.03]
+
+    def test_summary_text_with_best(self):
+        r = OptimizationResult(
+            config=OptimizationConfig(objective_label="テスト", method="grid"),
+            best=OptimizationCandidate(params={"Cd": 500}, objective_value=0.005,
+                                       response_values={"max_drift": 0.005}),
+            all_candidates=[],
+            elapsed_sec=1.5,
+            message="OK",
+        )
+        text = r.get_summary_text()
+        assert "テスト" in text
+        assert "0.005" in text
+
+    def test_summary_text_no_best(self):
+        r = OptimizationResult(config=OptimizationConfig(), message="OK")
+        assert "見つかりませんでした" in r.get_summary_text()
+
+
+# ===================================================================
+# Gaussian Process Regressor
+# ===================================================================
+
+
+class TestGaussianProcess:
+    def test_fit_predict_linear(self):
+        gp = _GaussianProcessRegressor(length_scale=1.0, noise=1e-6)
+        X = np.array([[0.0], [0.5], [1.0]])
+        y = np.array([1.0, 0.5, 0.0])
+        gp.fit(X, y)
+        mu, sigma = gp.predict(np.array([[0.25], [0.75]]))
+        assert mu[0] == pytest.approx(0.75, abs=0.25)
+        assert mu[1] == pytest.approx(0.25, abs=0.25)
+
+    def test_low_uncertainty_at_data(self):
+        gp = _GaussianProcessRegressor(noise=1e-6)
+        X = np.array([[0.0], [0.5], [1.0]])
+        y = np.array([0.0, 0.5, 1.0])
+        gp.fit(X, y)
+        _, sigma = gp.predict(X)
+        assert all(s < 0.1 for s in sigma)
+
+    def test_higher_uncertainty_far_away(self):
+        gp = _GaussianProcessRegressor(length_scale=0.3, noise=1e-6)
+        X = np.array([[0.0], [1.0]])
+        y = np.array([0.0, 1.0])
+        gp.fit(X, y)
+        _, s_near = gp.predict(np.array([[0.5]]))
+        _, s_far = gp.predict(np.array([[10.0]]))
+        assert s_far[0] > s_near[0]
+
+    def test_predict_without_fit(self):
+        gp = _GaussianProcessRegressor()
+        mu, sigma = gp.predict(np.array([[0.5]]))
+        assert mu[0] == 0.0
+        assert sigma[0] == 1.0
+
+    def test_multidimensional(self):
+        gp = _GaussianProcessRegressor(noise=1e-6)
+        X = np.array([[0, 0], [1, 0], [0, 1], [1, 1]], dtype=float)
+        y = np.array([0, 1, 1, 2], dtype=float)
+        gp.fit(X, y)
+        mu, _ = gp.predict(np.array([[0.5, 0.5]]))
+        assert mu[0] == pytest.approx(1.0, abs=0.4)
+
+
+# ===================================================================
+# Expected Improvement
+# ===================================================================
+
+
+class TestExpectedImprovement:
+    def test_positive_for_improvement(self):
+        ei = _expected_improvement_no_scipy(
+            mu=np.array([0.3]), sigma=np.array([0.1]), y_best=0.5
+        )
+        assert ei[0] > 0
+
+    def test_zero_for_zero_sigma(self):
+        ei = _expected_improvement_no_scipy(
+            mu=np.array([0.3]), sigma=np.array([0.0]), y_best=0.5
+        )
+        assert ei[0] == 0.0
+
+    def test_prefers_lower_mu(self):
+        ei = _expected_improvement_no_scipy(
+            mu=np.array([0.1, 0.4]), sigma=np.array([0.1, 0.1]), y_best=0.5
+        )
+        assert ei[0] > ei[1]
+
+    def test_prefers_higher_sigma(self):
+        ei = _expected_improvement_no_scipy(
+            mu=np.array([0.3, 0.3]), sigma=np.array([0.5, 0.01]), y_best=0.5
+        )
+        assert ei[0] > ei[1]
+
+
+# ===================================================================
+# Worker-level search tests (require Qt)
+# ===================================================================
+
+
+class TestBayesianSearch:
+    """Test the Bayesian search method directly."""
+
+    def test_finds_1d_minimum(self):
+        def evaluate(params):
+            return {"max_drift": (params["x"] - 0.5) ** 2}
+
+        config = OptimizationConfig(
+            objective_key="max_drift",
+            parameters=[ParameterRange(key="x", min_val=0, max_val=1, step=0)],
+            method="bayesian",
+            max_iterations=35,
+        )
+        worker = _OptimizationWorker(config, evaluate)
+        result = worker._run_bayesian_search(config)
+
+        assert result.best is not None
+        assert result.best.objective_value < 0.15
+        assert abs(result.best.params["x"] - 0.5) < 0.4
+
+    def test_finds_2d_minimum(self):
+        def evaluate(params):
+            return {"max_drift": (params["x"] - 0.3) ** 2 + (params["y"] - 0.7) ** 2}
+
+        config = OptimizationConfig(
+            objective_key="max_drift",
+            parameters=[
+                ParameterRange(key="x", min_val=0, max_val=1, step=0),
+                ParameterRange(key="y", min_val=0, max_val=1, step=0),
+            ],
+            method="bayesian",
+            max_iterations=40,
+        )
+        worker = _OptimizationWorker(config, evaluate)
+        result = worker._run_bayesian_search(config)
+
+        assert result.best is not None
+        assert result.best.objective_value < 0.2
+
+    def test_empty_params_returns_message(self):
+        config = OptimizationConfig(
+            objective_key="max_drift", parameters=[], method="bayesian",
+        )
+        worker = _OptimizationWorker(config)
+        result = worker._run_bayesian_search(config)
+        assert "設定されていません" in result.message
+
+    def test_message_includes_bayesian_label(self):
+        def evaluate(params):
+            return {"max_drift": params["x"] ** 2}
+
+        config = OptimizationConfig(
+            objective_key="max_drift",
+            parameters=[ParameterRange(key="x", min_val=0, max_val=1, step=0)],
+            method="bayesian",
+            max_iterations=15,
+        )
+        worker = _OptimizationWorker(config, evaluate)
+        result = worker._run_bayesian_search(config)
+        assert "ベイズ" in result.message
+
+
+class TestGridSearch:
+    def test_evaluates_all_combos(self):
+        config = OptimizationConfig(
+            objective_key="max_drift",
+            parameters=[ParameterRange(key="Cd", min_val=100, max_val=300, step=100)],
+        )
+        worker = _OptimizationWorker(config)
+        result = worker._run_grid_search(config)
+        assert len(result.all_candidates) == 3
+
+    def test_finds_best(self):
+        def evaluate(params):
+            return {"max_drift": abs(params["Cd"] - 200)}
+
+        config = OptimizationConfig(
+            objective_key="max_drift",
+            parameters=[ParameterRange(key="Cd", min_val=100, max_val=300, step=100)],
+        )
+        worker = _OptimizationWorker(config, evaluate)
+        result = worker._run_grid_search(config)
+        assert result.best.params["Cd"] == 200
+        assert result.best.objective_value == 0.0
+
+
+class TestRandomSearch:
+    def test_respects_max_iterations(self):
+        config = OptimizationConfig(
+            objective_key="max_drift",
+            parameters=[ParameterRange(key="x", min_val=0, max_val=1, step=0)],
+            method="random",
+            max_iterations=20,
+        )
+        worker = _OptimizationWorker(config)
+        result = worker._run_random_search(config)
+        assert len(result.all_candidates) <= 20
+
+
+class TestLatinHypercubeSampling:
+    def test_shape(self):
+        samples = _OptimizationWorker._latin_hypercube_sample(10, 3)
+        assert samples.shape == (10, 3)
+
+    def test_range(self):
+        samples = _OptimizationWorker._latin_hypercube_sample(50, 4)
+        assert np.all(samples >= 0) and np.all(samples <= 1)
+
+    def test_coverage(self):
+        """Each bin gets exactly one sample per dimension."""
+        n = 20
+        samples = _OptimizationWorker._latin_hypercube_sample(n, 2)
+        for d in range(2):
+            bins = np.floor(samples[:, d] * n).astype(int)
+            bins = np.clip(bins, 0, n - 1)
+            assert len(set(bins)) == n

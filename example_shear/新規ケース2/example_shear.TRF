@@ -1,0 +1,106 @@
+CANNY main program CA2
+Developed and Copyright by Li Kangning, 1993-2005
+
+User ID: JP0001KOZO
+User of Kozo System Inc.
+
+Report at Thu Apr  2 16:40:20 2026
+
+Title: Example
+Analysis function: 3D DYNAMIC analysis
+Unit system: kN, m, sec, rad.
+Loading & Output direction: cos = 1.0 sin = 0
+
+1. MODE OF UNLOADED STRUCTURE
+* Number of required modes = 1
+* Number of iteration vectors used = 1
+* number of subspace iteration performed = 1
+* Sturm Sequence Check: found the lowest 1 eigenvalues
+Mode No., Circular frequency, Period, Mode shape
+1, 1.5811,3.9738, +0.100000
+
+2. EXTREME RESPONSES
+
+(1) Spring element extreme force and dislacement
+ (N1-N2) TX, e=0.00075996, F=17.796~-13.039, D=0.071186~-0.052158
+
+(2) Damping element force velocity displacement energy
+ (N1-N2) TX,Dashpot,32.815,0.32815,0.071186,16.934
+ (N1-N2) TX,Dashpot,32.815,0.32815,0.071186,16.934
+
+(3) Node displacement max,min (in global coordinate direction)
+N1 (1F), TX=0,0
+N2 (2F), TX=0.052158,-0.071186
+R1 (2F), TX=0.052158,-0.071186
+R2 (1F), TX=0,0
+
+(4) Node absolute acceleration max,min (in global coordinate direction)
+N1 (1F), TX=3.417,-2.631
+N2 (2F), TX=0.70228,-0.5881
+R1 (2F), TX=0.70228,-0.5881
+R2 (1F), TX=3.417,-2.631
+
+(5) Node relative velocity max,min (in global coordinate direction)
+N1 (1F), TX=0,0
+N2 (2F), TX=0.28813,-0.32815
+R1 (2F), TX=0.28813,-0.32815
+R2 (1F), TX=0,0
+
+(6) Support reactions max,min (in support-direction)
+R2 (1F), Px=70.818,-59.074
+
+(7) Story shear force and interstory displacement angle
+	Q = story shear force
+	D = interstory horizontal displacement angle
+	S = interstory shear displacement angle
+	R = interstory rotation
+	OM = story-base overturning moment
+	DM = interstory element maximum angle
+	Mz = story-center torsion moment
+	Rz = interstory torsional rotation
+Story,Qx,Dx,Sx,Rx,OMx,DMx,Qy,Dy,Sy,Ry,OMy,DMy,Mz,Rz
+1F-2F,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+
+(8) Floor lateral force overturning moment and DAV
+Floor,Fx,Mx,Dx,Ax,Vx,Fy,My,Dy,Ay,Vy,Mz,Rz
+2F,0,0,0,0,0,0,0,0,0,0,0,0
+1F,0,0,0,0,0,0,0,0,0,0,0,0
+
+(9) Story-shear components
+Story,Vwx,Vwy,Vhx,Vhy,Vdx,Vdy
+1F-2F,0,0,0,0,0,0
+
+(10) Story results in specific direction
+	Q = story shear force
+	D = interstory horizontal displacement angle
+	S = interstory shear displacement angle
+	R = interstory rotation
+	M = story-base overturning moment
+	DM = element maximum displacement angle
+Story,Q0,D0,S0,R0,M0,DM0,Q90,D90,S90,R90,M90,DM90
+1F-2F,58.81,0.013039,0.013039,0,235.24,3.2599,0,0,0,0,0,0
+
+(11) Floor results in specific direction
+Floor,F0,M0,D0,A0,V0,F90,M90,D90,A90,V90
+2F,13.039,0,0.052158,0.70228,0.28813,0,0,0,0,0
+1F,17.796,235.24,0,3.417,0,0,0,0,0,0
+
+(12) Shear components in specific direction
+Story,,Vw0,Vw90,Vh0,Vh90,Vd0,Vd90
+1F-2F,0,0,0,0,0,0
+
+3. ENERGY
+input energy = 33.87
+Kinmatic energy = 0.0012157
+strain energy(include damper and isolator) = 0.00075996
+damping energy(include damper) = 33.868
+
+4. COMPUTATION TIME
+Finished computation steps =26500, with 0 steps stiffness change
+Total CPU time =0.089451 sec
+Time of stiffness initialization =0.000116
+Time of binary/text file output =0.041931
+Time of mode extraction =0.0000271
+Time of element response computation =0.01545
+Time of matrix LDU decomposition =0.000015
+Time of matrix substitution and numerical computation =0.0031863

@@ -198,7 +198,12 @@ class ModelInfoWidget(QWidget):
         header = QHBoxLayout()
         header.addWidget(QLabel("<b>入力モデル (.s8i)</b>"))
         header.addStretch()
-        self._load_btn = QPushButton("ファイルを読み込む…")
+        self._load_btn = QPushButton("📂 .s8i ファイルを読み込む…")
+        self._load_btn.setToolTip(
+            "SNAP の解析入力ファイル (.s8i) を読み込みます。\n"
+            "モデルの節点・層・ダンパー定義などの構造情報が読み取られ、\n"
+            "STEP2 でのケース設定・STEP3 での解析実行が可能になります。"
+        )
         self._load_btn.clicked.connect(self.fileRequested.emit)
         header.addWidget(self._load_btn)
 
@@ -300,32 +305,15 @@ class ModelInfoWidget(QWidget):
         empty_msg.setFont(msg_font)
         empty_card_layout.addWidget(empty_msg)
 
-        empty_hint = QLabel("解析モデルの情報・ダンパー定義を確認でき、\nケースの作成が可能になります。")
+        empty_hint = QLabel(
+            "SNAP の解析入力ファイル (.s8i) を読み込みます。\n"
+            "モデル情報・ダンパー定義が表示され、STEP2 でのケース作成が可能になります。\n\n"
+            "過去の作業を再開するには、メニュー「ファイル → プロジェクトを開く (.snapproj)」を使用してください。"
+        )
         empty_hint.setAlignment(Qt.AlignCenter)
         empty_hint.setStyleSheet("color: gray;")
         empty_hint.setWordWrap(True)
         empty_card_layout.addWidget(empty_hint)
-
-        empty_load_btn = QPushButton("\U0001f4c2 ファイルを選択…")
-        empty_load_btn.setMinimumHeight(36)
-        empty_load_btn.setMaximumWidth(200)
-        empty_load_btn.setStyleSheet("""
-            QPushButton {
-                font-weight: bold;
-                padding: 6px 16px;
-                border: 2px solid palette(mid);
-                border-radius: 6px;
-            }
-            QPushButton:hover {
-                background-color: palette(highlight);
-                color: palette(highlighted-text);
-            }
-        """)
-        empty_load_btn.clicked.connect(self.fileRequested.emit)
-        btn_layout = QHBoxLayout()
-        btn_layout.setAlignment(Qt.AlignCenter)
-        btn_layout.addWidget(empty_load_btn)
-        empty_card_layout.addLayout(btn_layout)
 
         self._info_stack.addWidget(empty_card)  # index 0
 
@@ -381,8 +369,21 @@ class ModelInfoWidget(QWidget):
             self._info_stack.setCurrentIndex(0)  # CTAカードを表示
             self._damper_group.hide()
             if hasattr(self, '_toggle_btn'): self._toggle_btn.hide()
+            if hasattr(self, '_load_btn'):
+                self._load_btn.setText("📂 .s8i ファイルを読み込む…")
+                self._load_btn.setToolTip(
+                    "SNAP の解析入力ファイル (.s8i) を読み込みます。\n"
+                    "モデルの節点・層・ダンパー定義などの構造情報が読み取られ、\n"
+                    "STEP2 でのケース設定・STEP3 での解析実行が可能になります。"
+                )
             return
         self._info_stack.setCurrentIndex(1)  # モデル情報を表示
+        if hasattr(self, '_load_btn'):
+            self._load_btn.setText("🔄 .s8i ファイルを変更…")
+            self._load_btn.setToolTip(
+                "現在読み込んでいる .s8i ファイルを別のファイルに変更します。\n"
+                "モデルの節点・層・ダンパー定義などの構造情報が再読み取りされます。"
+            )
 
         import os
         fname = os.path.basename(m.file_path) if m.file_path else "（不明）"

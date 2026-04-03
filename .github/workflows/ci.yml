@@ -1,0 +1,169 @@
+name: CI
+
+on:
+  push:
+    branches: ["main", "develop"]
+  pull_request:
+    branches: ["main", "develop"]
+  # Windows ビルドテストは手動でも実行可能
+  workflow_dispatch:
+    inputs:
+      run_build:
+        description: "Windows EXE ビルドテストを実行する"
+        required: false
+        default: "false"
+        type: choice
+        options: ["true", "false"]
+
+# ---------------------------------------------------------------------------
+# Job 1: ユニットテスト（Linux / Python 3.11）
+#   - push / PR のたびに高速実行
+#   - Qt / PySide6 が不要なテストのみ対象（controller / app.models）
+# ---------------------------------------------------------------------------
+jobs:
+  unit-tests:
+    name: Unit Tests (Linux)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install pipenv
+        run: pip install pipenv --quiet
+
+      - name: Install dependencies
+        run: pipenv install --dev --skip-lock
+
+      - name: Run unit tests (no Qt required)
+        run: |
+          pipenv run pytest tests/ \
+            --ignore=tests/test_build.py \
+            -v --tb=short \
+            -k "not PySide6 and not AppUI"
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: unit-test-results
+          path: .pytest_cache/
+          retention-days: 7
+
+# ---------------------------------------------------------------------------
+# Job 2: import スモークテスト（Linux）
+#   - EXE を生成せずに「全モジュールが import できるか」だけを確認
+#   - Qt 不要モジュールのみ対象
+# ---------------------------------------------------------------------------
+  import-smoke:
+    name: Import Smoke Tests (Linux)
+    runs-on: ubuntu-latest
+    needs: unit-tests
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install pipenv
+        run: pip install pipenv --quiet
+
+      - name: Install dependencies
+        run: pipenv install --dev --skip-lock
+
+      - name: Run import smoke tests
+        run: |
+          pipenv run pytest tests/test_imports.py \
+            -v --tb=short \
+            -k "not PySide6 and not AppUI"
+
+# ---------------------------------------------------------------------------
+# Job 3: Windows EXE ビルド＆スモークテスト
+#   - main への push または手動実行時のみ起動
+#   - build.bat 相当の処理を実行し、EXE の起動確認まで行う
+# ---------------------------------------------------------------------------
+  build-windows:
+    name: Build & Smoke Test (Windows)
+    runs-on: windows-latest
+    needs: unit-tests
+    if: >
+      github.ref == 'refs/heads/main' ||
+      (github.event_name == 'workflow_dispatch' && inputs.run_build == 'true')
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install pipenv
+        run: pip install pipenv --quiet
+
+      - name: Install runtime + build dependencies
+        run: pipenv install --dev --skip-lock
+
+      - name: Run import smoke tests (Windows, Qt あり)
+        # Qt は Windows runner で利用可能なため UI テストも実行
+        run: |
+          pipenv run pytest tests/test_imports.py -v --tb=short
+
+      - name: Build EXE with PyInstaller
+        run: pipenv run pyinstaller snap_controller.spec --noconfirm --workpath build_win --distpath dist_win
+
+      - name: Check EXE was created
+        run: |
+          if (Test-Path "dist_win\snap-controller.exe") {
+            $size = (Get-Item "dist_win\snap-controller.exe").Length / 1MB
+            Write-Host "EXE created: dist_win\snap-controller.exe ($([math]::Round($size, 1)) MB)"
+          } else {
+            Write-Error "EXE not found: dist_win\snap-controller.exe"
+            exit 1
+          }
+
+      - name: Run EXE smoke test (--check flag)
+        run: |
+          $proc = Start-Process `
+            -FilePath "dist_win\snap-controller.exe" `
+            -ArgumentList "--check" `
+            -Wait -PassThru `
+            -RedirectStandardOutput "check_stdout.txt" `
+            -RedirectStandardError "check_stderr.txt"
+
+          $stdout = Get-Content "check_stdout.txt" -Raw
+          $stderr = Get-Content "check_stderr.txt" -Raw
+
+          Write-Host "--- stdout ---"
+          Write-Host $stdout
+          if ($stderr) {
+            Write-Host "--- stderr ---"
+            Write-Host $stderr
+          }
+
+          if ($proc.ExitCode -ne 0) {
+            Write-Error "EXE --check failed with exit code $($proc.ExitCode)"
+            exit 1
+          }
+          Write-Host "EXE smoke test passed."
+
+      - name: Run post-build pytest (test_build.py)
+        run: |
+          pipenv run pytest tests/test_build.py -v --tb=short
+
+      - name: Upload EXE artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: snap-controller-exe
+          path: dist_win/snap-controller.exe
+          retention-days: 30

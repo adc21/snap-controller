@@ -1,72 +1,142 @@
-import os
-from typing import TypedDict, Union, List
-from .file import File
-from .logger import logger
+"""
+controller/updater.py
+SNAP 入力ファイル (.s8i) のパラメータを読み書きするクラス。
+
+SNAP の .s8i ファイルは行ベースのテキスト形式です。
+各行は「キー: 値」または固定列幅の数値データで構成されます。
+Updater はキーワード検索によってパラメータを特定し上書きします。
+"""
+
+import re
+import shutil
+from pathlib import Path
+from typing import Any, Dict, List, Optional
 
 
-class UpdateConfigDict(TypedDict):
-    category: str   # Exp. "REM / 粘性/ｵｲﾙﾀﾞﾝﾊﾟｰ"
-    line: int   # Start from 1
-    row: int    # Start from 1
-    value: Union[str, float, int]
+class Updater:
+    """
+    .s8i ファイルのパラメータ更新クラス。
 
+    Usage::
 
-UpdateConfig = List[UpdateConfigDict]
+        upd = Updater("path/to/model.s8i")
+        upd.set_param("DAMPING", 0.05)
+        upd.set_param("DT", 0.01)
+        upd.write("path/to/output.s8i")
+    """
 
+    def __init__(self, filepath: str) -> None:
+        self.source_path = Path(filepath)
+        self._lines: List[str] = []
+        self._pending: Dict[str, Any] = {}
 
-class Updater(File):
-    def __init__(self, file_path: str, config: UpdateConfig, debug: bool = True):
-        super().__init__(file_path)
-        self.config = config
-        self.debug = debug
+        if self.source_path.exists():
+            self._load()
 
-    def get_new_file_path(self):
-        i = 0
-        while os.path.exists(f"{self.base}{i}{self.ext}"):
-            i += 1
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
 
-        return f"{self.parent_dir_path}{self.base}{i}{self.ext}"
+    def set_param(self, keyword: str, value: Any) -> None:
+        """
+        キーワードに対応するパラメータを設定します。
+        write() を呼ぶまで実際のファイルは変更されません。
 
-    def update(self) -> str:
-        with open(self.file_path, "r", encoding="shift_jis") as snap_file:
-            data = snap_file.readlines()
+        Parameters
+        ----------
+        keyword : str
+            .s8i 内で検索するキーワード文字列（大文字小文字無視）。
+        value : Any
+            置換後の値。
+        """
+        self._pending[keyword.upper()] = value
 
-            for i, c in enumerate(self.config):
-                line_number = 0
-                target_line_number = -1
+    def set_params(self, params: Dict[str, Any]) -> None:
+        """複数パラメータをまとめて設定します。"""
+        for key, val in params.items():
+            self.set_param(key, val)
 
-                for line in data:
-                    line_number += 1
+    def get_param(self, keyword: str) -> Optional[str]:
+        """
+        ファイル内のキーワードに対応する現在の値を返します。
+        見つからない場合は None を返します。
+        """
+        pattern = re.compile(
+            rf"^\s*{re.escape(keyword)}\s*=?\s*(.+?)$", re.IGNORECASE
+        )
+        for line in self._lines:
+            m = pattern.match(line)
+            if m:
+                return m.group(1).strip()
+        return None
 
-                    if c["category"] in line:
-                        target_line_number = line_number + c["line"]
+    def write(self, output_path: Optional[str] = None) -> Path:
+        """
+        変更を適用してファイルを書き出します。
 
-                    if target_line_number == line_number:
+        Parameters
+        ----------
+        output_path : str, optional
+            書き出し先のパス。省略時はソースファイルを上書きします。
 
-                        if line:
-                            split_text = line.split("/")
-                            text_prefix = split_text[0].strip()
-                            text = split_text[1].strip()
-                            original_text_list = text.split(",")
+        Returns
+        -------
+        Path
+            書き出したファイルのパス。
+        """
+        dest = Path(output_path) if output_path else self.source_path
 
-                            if self.debug:
-                                logger.info(f"update target line list:  {original_text_list}")
+        updated_lines = list(self._lines)
+        applied_keys: set = set()
 
-                            rewrite_text_list = [c["value"] if i == c["row"] - 1 else x for i, x in enumerate(original_text_list)]
+        for i, line in enumerate(updated_lines):
+            for keyword, value in self._pending.items():
+                if keyword not in applied_keys:
+                    pattern = re.compile(
+                        rf"^(\s*{re.escape(keyword)}\s*=?\s*)",
+                        re.IGNORECASE,
+                    )
+                    m = pattern.match(line)
+                    if m:
+                        updated_lines[i] = f"{m.group(1)}{value}\n"
+                        applied_keys.add(keyword)
+                        break
 
-                            if self.debug:
-                                logger.info(f"updated target line list: {rewrite_text_list}")
+        # 未適用のパラメータを末尾に追記
+        for keyword, value in self._pending.items():
+            if keyword not in applied_keys:
+                updated_lines.append(f"{keyword} = {value}\n")
 
-                            rewrite_text = ",".join(str(x) for x in rewrite_text_list)
-                            rewrite_line = f"{text_prefix} / {rewrite_text}\n"
-                            data[target_line_number - 1] = rewrite_line
-                            break
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        with open(dest, "w", encoding="shift_jis", errors="replace") as f:
+            f.writelines(updated_lines)
 
-                        else:
-                            raise ValueError(f"no data found for config index {i}")
+        self._pending.clear()
+        return dest
 
-        new_file = self.get_new_file_path()
-        with open(new_file, "w", encoding="shift_jis") as out_file:
-            out_file.writelines(data)
+    def copy_to(self, dest_path: str) -> "Updater":
+        """
+        ソースファイルを別パスにコピーし、そのパスを操作する新たな
+        Updater を返します。パラメトリック解析の準備に便利です。
+        """
+        dest = Path(dest_path)
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(self.source_path, dest)
+        new_upd = Updater(str(dest))
+        new_upd._pending = dict(self._pending)
+        return new_upd
 
-        return new_file
+    # ------------------------------------------------------------------
+    # Internal
+    # ------------------------------------------------------------------
+
+    def _load(self) -> None:
+        """ファイルを読み込んで行リストに格納します。"""
+        for enc in ("shift_jis", "utf-8", "cp932"):
+            try:
+                with open(self.source_path, "r", encoding=enc, errors="replace") as f:
+                    self._lines = f.readlines()
+                return
+            except Exception:
+                continue
+        raise IOError(f"ファイルを読み込めませんでした: {self.source_path}")

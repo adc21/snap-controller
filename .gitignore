@@ -1,14 +1,48 @@
-.vscode
+# ===== IDE / Editor =====
+.vscode/
+.idea/
+
+# ===== Python =====
+__pycache__/
+*.py[cod]
+*.pyo
+*.egg-info/
 .python-version
-*.bat
-__pycache__
-work
+
+# ===== Testing =====
+.pytest_cache/
+pytest-cache-files-*/
+.mypy_cache/
+.flake8
+
+# ===== Build artifacts =====
+build/
+build_win/
+dist/
+dist_win/
+
+# ===== SNAP specific =====
+work/
 *.s8i
 *.GEM
 *.NAP
-!example.NAP
-!example.s8i
-test_*.py
-test_
-test
-.flake8
+!example_shear/*.s8i
+!example_3D/*.s8i
+
+# ===== Reference (potentially copyrighted PDFs) =====
+reference/*.pdf
+
+# ===== Local scripts with hardcoded paths =====
+run.bat
+
+# ===== Logs & temp files =====
+error.txt
+build_log.txt
+*.log
+
+# ===== snap-controller project files (user data) =====
+*.snapproj
+
+# ===== Windows =====
+Thumbs.db
+Desktop.ini

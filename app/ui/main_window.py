@@ -26,10 +26,13 @@ from PySide6.QtGui import QAction, QCloseEvent, QIcon, QKeySequence
 from PySide6.QtWidgets import (
     QApplication,
     QFileDialog,
+    QLabel,
     QMainWindow,
     QMessageBox,
     QProgressBar,
+    QPushButton,
     QSplitter,
+    QStackedWidget,
     QSystemTrayIcon,
     QVBoxLayout, QHBoxLayout,
     QWidget,
@@ -71,6 +74,9 @@ from .welcome_widget import WelcomeWidget, add_recent_project
 from .sidebar_widget import SidebarWidget
 from .shortcut_help_dialog import ShortcutHelpDialog  # 改善⑨
 from .step_nav_footer import StepNavFooter  # UX改善①新: ステップナビゲーションフッター
+from .step4_summary_bar import Step4SummaryBar  # UX改善（新）: STEP4結果サマリーバー
+from .step_hint_banner import StepHintBanner  # UX改善（新）: 初回ステップヒントバナー
+from .error_guide_widget import ErrorGuideWidget  # UX改善③: 解析エラーガイダンスパネル
 
 import qtawesome as qta
 
@@ -125,6 +131,11 @@ class MainWindow(QMainWindow):
         self._run_selection.set_snap_exe_path(self._project.snap_exe_path or "")  # UX改善4
         self._main_stack.setCurrentIndex(0)  # ウェルカム画面
 
+        # UX改善（スマートデフォルト）: SNAP実行ファイル未設定の場合に警告バナーを表示
+        # 設定済みであれば警告を非表示にする。プロジェクトを開いた後も更新する。
+        _snap_configured = bool(settings.get("snap_exe_path", ""))
+        self._welcome.show_snap_warning(not _snap_configured)
+
         # 自動保存からの復旧チェック
         self._check_autosave_recovery()
 
@@ -158,6 +169,10 @@ class MainWindow(QMainWindow):
         self._welcome.newProjectRequested.connect(self._new_project_dialog)
         self._welcome.openProjectRequested.connect(self._open_project)
         self._welcome.recentProjectSelected.connect(self._open_recent_project)
+        # UX改善（スマートデフォルト）: SNAP未設定警告バナーから設定ダイアログへ誘導
+        self._welcome.snapSettingsRequested.connect(self._open_settings)
+        # UX改善⑤: デモ体験ボタンからデモフローを開始
+        self._welcome.demoRequested.connect(self._start_demo_experience)
 
         # ---- ワークフローの4ステップ構築 ----
         from PySide6.QtWidgets import QTabWidget as _QTabWidget, QStackedWidget
@@ -166,6 +181,11 @@ class MainWindow(QMainWindow):
         # STEP 1: モデル設定 (Model Info + File Preview)
         step1 = QWidget()
         step1_layout = QVBoxLayout(step1)
+        step1_layout.setContentsMargins(0, 0, 0, 0)
+        step1_layout.setSpacing(0)
+        # UX改善（新）: 初回ヒントバナー
+        self._hint_banner_step1 = StepHintBanner(step_index=0)
+        step1_layout.addWidget(self._hint_banner_step1)
         step1_layout.addWidget(self._model_info)
         step1_layout.addWidget(self._file_preview, stretch=1)
         # STEP1 フッター: 次へ（ケース設計）のみ
@@ -174,6 +194,11 @@ class MainWindow(QMainWindow):
             next_label="ケースを設計する  (STEP2) →",
             next_primary=True,
         )
+        # UX改善②新: 初期状態は s8i 未読み込みのため無効
+        self._step1_footer.set_next_enabled(False)
+        # UX改善（段階的開示）: 無効理由をインラインヒントで表示
+        self._step1_footer.set_next_hint(".s8i ファイルを読み込むと STEP2 へ進めます")
+        self._step1_footer.setToolTip("STEP1でs8iファイルを読み込むとSTEP2へ進めます")
         self._step1_footer.nextRequested.connect(lambda: self._sidebar.set_current_step(1))
         step1_layout.addWidget(self._step1_footer)
 
@@ -181,6 +206,110 @@ class MainWindow(QMainWindow):
         step2 = QWidget()
         step2_layout = QVBoxLayout(step2)
         step2_layout.setContentsMargins(0, 0, 0, 0)
+        step2_layout.setSpacing(0)
+        # UX改善（新）: 初回ヒントバナー
+        self._hint_banner_step2 = StepHintBanner(step_index=1)
+        step2_layout.addWidget(self._hint_banner_step2)
+
+        # ---- UX改善⑤（段階的開示）: 空ケースリスト時クイックスタートパネル ----
+        # ケースが0件 かつ s8i ファイルが読み込まれているとき、
+        # ケーステーブルの上部にガイドパネルを表示し「最初の一歩」を促します。
+        # ケースが追加されると自動的に非表示になります。
+        from PySide6.QtWidgets import QFrame as _QFrame2
+        self._step2_quickstart_panel = _QFrame2()
+        self._step2_quickstart_panel.setFrameShape(_QFrame2.StyledPanel)
+        self._step2_quickstart_panel.setStyleSheet(
+            "QFrame {"
+            "  background-color: #e8f4fd;"
+            "  border: 1px solid #90caf9;"
+            "  border-radius: 6px;"
+            "  margin: 8px 8px 0px 8px;"
+            "}"
+        )
+        self._step2_quickstart_panel.setVisible(False)  # 初期非表示（モデル未読込）
+
+        _qs_layout = QVBoxLayout(self._step2_quickstart_panel)
+        _qs_layout.setContentsMargins(16, 12, 16, 12)
+        _qs_layout.setSpacing(8)
+
+        # タイトル
+        _qs_title = QLabel("🚀  まずはケースを追加してみましょう")
+        _qs_title_font = _qs_title.font()
+        _qs_title_font.setPointSize(12)
+        _qs_title_font.setBold(True)
+        _qs_title.setFont(_qs_title_font)
+        _qs_title.setStyleSheet("color: #1565c0; background: transparent;")
+        _qs_layout.addWidget(_qs_title)
+
+        _qs_desc = QLabel(
+            "上の「＋ 追加」ボタンでケースを作成するか、"
+            "よく使われる設定で素早く追加できます:"
+        )
+        _qs_desc.setStyleSheet("color: #333; font-size: 11px; background: transparent;")
+        _qs_desc.setWordWrap(True)
+        _qs_layout.addWidget(_qs_desc)
+
+        # クイック追加ボタン行
+        _qs_btn_row = QHBoxLayout()
+        _qs_btn_row.setSpacing(8)
+
+        _qs_templates = [
+            {
+                "label": "📊 ベースライン",
+                "tooltip": (
+                    "ダンパーなしの素モデルを追加します。\n"
+                    "ベースラインとして比較の基準値に使います。"
+                ),
+                "name": "ベースライン（ダンパーなし）",
+            },
+            {
+                "label": "🔧 複製して追加",
+                "tooltip": (
+                    "現在選択中のケースを複製します。\n"
+                    "パラメータをわずかに変えて比較したいときに便利です。"
+                ),
+                "name": "_duplicate",  # 特殊フラグ
+            },
+            {
+                "label": "📐 スイープ生成",
+                "tooltip": (
+                    "パラメータを自動的に変化させ、複数ケースを一括生成します。\n"
+                    "スイープ設定ダイアログが開きます。"
+                ),
+                "name": "_sweep",  # 特殊フラグ
+            },
+        ]
+
+        for _tmpl in _qs_templates:
+            _btn = QPushButton(_tmpl["label"])
+            _btn.setToolTip(_tmpl["tooltip"])
+            _btn.setStyleSheet(
+                "QPushButton {"
+                "  background: white; color: #1565c0;"
+                "  border: 1px solid #90caf9; border-radius: 4px;"
+                "  padding: 6px 14px; font-size: 11px; font-weight: bold;"
+                "}"
+                "QPushButton:hover {"
+                "  background-color: #1976d2; color: white;"
+                "  border-color: #1976d2;"
+                "}"
+            )
+            _name = _tmpl["name"]
+            if _name == "_duplicate":
+                _btn.clicked.connect(lambda: self._case_table._duplicate_selected_case()
+                                     if hasattr(self._case_table, "_duplicate_selected_case")
+                                     else self._case_table._add_case())
+            elif _name == "_sweep":
+                _btn.clicked.connect(self._open_sweep_dialog)
+            else:
+                # 「ベースライン」クイック追加: 追加後にケース名を自動設定
+                _btn.clicked.connect(lambda: self._add_baseline_case())
+            _qs_btn_row.addWidget(_btn)
+
+        _qs_btn_row.addStretch()
+        _qs_layout.addLayout(_qs_btn_row)
+
+        step2_layout.addWidget(self._step2_quickstart_panel)
         step2_layout.addWidget(self._case_table)
         # STEP2 フッター
         self._step2_footer = StepNavFooter(
@@ -188,6 +317,11 @@ class MainWindow(QMainWindow):
             next_label="解析を実行する  (STEP3) →",
             next_primary=True,
         )
+        # UX改善②新: 初期状態はケースなしのため無効
+        self._step2_footer.set_next_enabled(False)
+        # UX改善（段階的開示）: 無効理由をインラインヒントで表示
+        self._step2_footer.set_next_hint("解析ケースを1件以上追加すると STEP3 へ進めます")
+        self._step2_footer.setToolTip("STEP2で解析ケースを1件以上追加するとSTEP3へ進めます")
         self._step2_footer.backRequested.connect(lambda: self._sidebar.set_current_step(0))
         self._step2_footer.nextRequested.connect(lambda: self._sidebar.set_current_step(2))
         step2_layout.addWidget(self._step2_footer)
@@ -196,8 +330,19 @@ class MainWindow(QMainWindow):
         step3_widget = QWidget()
         step3_layout = QVBoxLayout(step3_widget)
         step3_layout.setContentsMargins(0, 0, 0, 0)
+        step3_layout.setSpacing(0)
+        # UX改善（新）: 初回ヒントバナー
+        self._hint_banner_step3 = StepHintBanner(step_index=2)
+        step3_layout.addWidget(self._hint_banner_step3)
 
         step3_layout.addWidget(self._run_selection)
+
+        # ---- UX改善③: 解析エラーガイダンスパネル ----
+        # 解析がエラー終了したとき、ログエリアの上部に原因・解決策を表示します。
+        self._error_guide = ErrorGuideWidget()
+        self._error_guide.openSettingsRequested.connect(self._open_settings)
+        self._error_guide.editCaseRequested.connect(self._edit_case_by_id)
+        step3_layout.addWidget(self._error_guide)
 
         step3_split = QSplitter(Qt.Vertical)
         step3_split.addWidget(self._batch_queue)
@@ -212,6 +357,11 @@ class MainWindow(QMainWindow):
             next_label="結果を確認する  (STEP4) →",
             next_primary=True,
         )
+        # UX改善②新: 初期状態は解析完了なしのため無効
+        self._step3_footer.set_next_enabled(False)
+        # UX改善（段階的開示）: 無効理由をインラインヒントで表示
+        self._step3_footer.set_next_hint("解析を実行して結果が出ると STEP4 へ進めます")
+        self._step3_footer.setToolTip("解析を実行して結果が出るとSTEP4へ進めます")
         self._step3_footer.backRequested.connect(lambda: self._sidebar.set_current_step(1))
         self._step3_footer.nextRequested.connect(lambda: self._sidebar.set_current_step(3))
         step3_layout.addWidget(self._step3_footer)
@@ -238,12 +388,107 @@ class MainWindow(QMainWindow):
 
         self._update_result_tabs(result_count=0)
 
+        # ---- UX改善④: STEP4 タブ「このタブの読み方」コーナーボタン ----
+        # 各タブに文脈に応じた解説を提供するコーナーボタンをタブバーに追加します。
+        # タブを切り替えるたびに現在のタブの説明が読めます。
+        _tab_guide_btn = QPushButton("📖 読み方")
+        _tab_guide_btn.setFixedHeight(22)
+        _tab_guide_btn.setStyleSheet(
+            "QPushButton {"
+            "  font-size: 10px; padding: 2px 10px;"
+            "  border: 1px solid #90caf9; border-radius: 3px;"
+            "  background: #e3f2fd; color: #1565c0;"
+            "  margin: 2px 4px;"
+            "}"
+            "QPushButton:hover { background: #1976d2; color: white; }"
+        )
+        _tab_guide_btn.setToolTip(
+            "このタブで確認できる内容と、結果の読み方を表示します。\n"
+            "タブを切り替えると説明も切り替わります。"
+        )
+        _tab_guide_btn.clicked.connect(self._show_current_tab_guide)
+        self._right_tabs.setCornerWidget(_tab_guide_btn, Qt.TopRightCorner)
+
         # ---- UX改善⑤新: STEP4 コンテナ（タブ + 「次の解析を計画」フッター） ----
         step4 = QWidget()
         step4_layout = QVBoxLayout(step4)
         step4_layout.setContentsMargins(0, 0, 0, 0)
         step4_layout.setSpacing(0)
-        step4_layout.addWidget(self._right_tabs, stretch=1)
+
+        # ---- UX改善（新）: STEP4 結果サマリーバー ----
+        # 全タブの最上部に常時表示される最良/最悪ケースと改善率のサマリーです。
+        # タブを切り替えても「どのケースが最も優れているか」がひと目でわかります。
+        self._step4_summary_bar = Step4SummaryBar()
+        self._step4_summary_bar.bestCaseClicked.connect(self._on_summary_best_case_clicked)
+        step4_layout.addWidget(self._step4_summary_bar)
+
+        # UX改善（新）: 初回ヒントバナー（サマリーバーの直下に表示）
+        self._hint_banner_step4 = StepHintBanner(step_index=3)
+        # UX改善④: タブショートカットシグナルをRIGHT_TABSに接続（ラムダで後から接続）
+        # right_tabs はこの時点ではまだ作成済みなので直接接続する
+        self._hint_banner_step4.tabShortcutRequested.connect(
+            lambda idx: self._right_tabs.setCurrentIndex(idx)
+        )
+        step4_layout.addWidget(self._hint_banner_step4)
+
+        # ---- UX改善①新: STEP4 「結果なし」空状態ウィジェット ----
+        # 結果がゼロのとき: 空状態ページ (index=0)
+        # 結果が1件以上のとき: タブページ (index=1)
+        from PySide6.QtWidgets import QStackedWidget as _QStackedWidget4
+        self._step4_content_stack = _QStackedWidget4()
+
+        # -- 空状態ページ --
+        _s4_empty = QWidget()
+        _s4_empty_layout = QVBoxLayout(_s4_empty)
+        _s4_empty_layout.setAlignment(Qt.AlignCenter)
+
+        _s4_empty_icon = QLabel()
+        _s4_empty_icon.setPixmap(
+            qta.icon("fa5s.chart-bar", color=("#555" if ThemeManager.is_dark() else "#bbb")).pixmap(72, 72)
+        )
+        _s4_empty_icon.setAlignment(Qt.AlignCenter)
+        _s4_empty_layout.addWidget(_s4_empty_icon)
+
+        _s4_empty_title = QLabel("解析結果がまだありません")
+        _s4_empty_title_font = _s4_empty_title.font()
+        _s4_empty_title_font.setPointSize(14)
+        _s4_empty_title_font.setBold(True)
+        _s4_empty_title.setFont(_s4_empty_title_font)
+        _s4_empty_title.setAlignment(Qt.AlignCenter)
+        _s4_empty_layout.addWidget(_s4_empty_title)
+
+        _s4_empty_desc = QLabel(
+            "STEP3 で解析を実行すると、ここに結果グラフ・比較チャート・ランキングなどが表示されます。\n"
+            "少なくとも1件の解析ケースを実行してください。"
+        )
+        _s4_empty_desc.setAlignment(Qt.AlignCenter)
+        _s4_empty_desc.setStyleSheet("color: gray; padding: 8px;")
+        _s4_empty_desc.setWordWrap(True)
+        _s4_empty_layout.addWidget(_s4_empty_desc)
+
+        _s4_goto_btn = QPushButton("🚀  STEP3: 解析を実行する →")
+        _s4_goto_btn.setMinimumHeight(42)
+        _s4_goto_btn.setMaximumWidth(300)
+        _s4_goto_btn.setStyleSheet(
+            "QPushButton {"
+            "  background-color: #1976d2; color: white;"
+            "  font-size: 13px; font-weight: bold;"
+            "  padding: 8px 20px; border-radius: 5px; border: none;"
+            "}"
+            "QPushButton:hover { background-color: #1565c0; }"
+            "QPushButton:pressed { background-color: #0d47a1; }"
+        )
+        _s4_goto_btn.setToolTip("STEP3（解析実行）に移動してケースを実行します")
+        _s4_goto_btn.clicked.connect(lambda: self._sidebar.set_current_step(2))
+        _s4_goto_btn_row = QHBoxLayout()
+        _s4_goto_btn_row.setAlignment(Qt.AlignCenter)
+        _s4_goto_btn_row.addWidget(_s4_goto_btn)
+        _s4_empty_layout.addLayout(_s4_goto_btn_row)
+
+        self._step4_content_stack.addWidget(_s4_empty)      # index 0: 空状態
+        self._step4_content_stack.addWidget(self._right_tabs)  # index 1: タブ
+
+        step4_layout.addWidget(self._step4_content_stack, stretch=1)
 
         # ---- UX改善④新: 解析戦略メモパネル（STEP4） ----
         from PySide6.QtWidgets import QTextEdit as _QTextEdit
@@ -348,6 +593,8 @@ class MainWindow(QMainWindow):
         self._case_table.projectModified.connect(self._run_selection.refresh)
         self._case_table.projectModified.connect(self._update_sidebar_badges)  # UX改善1: ケース変更でバッジ更新
         self._case_table.projectModified.connect(self._on_project_modified_groups)  # UX改善⑤新: グループ変更時に比較グラフを更新
+        # UX改善⑤（段階的開示）: ケース追加/削除時にクイックスタートパネルを更新
+        self._case_table.projectModified.connect(self._update_quickstart_panel)
         self._ranking.caseSelected.connect(self._on_case_selected)
         # UX改善①新: ランキングから「基点として再設計」ボタン
         self._ranking.useAsStartingPointRequested.connect(self._on_use_ranking_case_as_base)
@@ -641,6 +888,51 @@ class MainWindow(QMainWindow):
         act_help.triggered.connect(self._show_shortcut_help)
         tb.addAction(act_help)
 
+        tb.addSeparator()
+
+        # ---- UX改善④新: グローバル解析進捗インジケーター ----
+        # 現在どのステップを見ていても、解析の進行状況をツールバーで常時確認できます。
+        self._global_progress_widget = QWidget()
+        _gp_layout = QHBoxLayout(self._global_progress_widget)
+        _gp_layout.setContentsMargins(4, 0, 8, 0)
+        _gp_layout.setSpacing(4)
+
+        self._global_progress_icon = QLabel()
+        self._global_progress_icon.setPixmap(
+            qta.icon("fa5s.tasks", color=icon_color).pixmap(14, 14)
+        )
+        _gp_layout.addWidget(self._global_progress_icon)
+
+        self._global_progress_label = QLabel("解析: —")
+        self._global_progress_label.setStyleSheet(
+            "font-size: 11px; color: gray; min-width: 90px;"
+        )
+        self._global_progress_label.setToolTip(
+            "全解析ケースの進捗状況（完了件数 / 合計件数）。\n"
+            "現在表示しているステップに関わらず常時更新されます。\n"
+            "クリックで STEP4（結果・戦略）へ移動できます。"
+        )
+        self._global_progress_label.setCursor(Qt.PointingHandCursor)
+        self._global_progress_label.mousePressEvent = lambda _: self._navigate_to_step(3)
+        _gp_layout.addWidget(self._global_progress_label)
+
+        self._global_mini_bar = QProgressBar()
+        self._global_mini_bar.setRange(0, 100)
+        self._global_mini_bar.setValue(0)
+        self._global_mini_bar.setMaximumWidth(80)
+        self._global_mini_bar.setMaximumHeight(8)
+        self._global_mini_bar.setTextVisible(False)
+        self._global_mini_bar.setStyleSheet(
+            "QProgressBar { border: 1px solid palette(mid); border-radius: 3px;"
+            "  background-color: palette(base); }"
+            "QProgressBar::chunk { background-color: #4CAF50; border-radius: 2px; }"
+        )
+        self._global_mini_bar.setToolTip("解析完了率")
+        self._global_mini_bar.hide()  # ケースがゼロのときは非表示
+        _gp_layout.addWidget(self._global_mini_bar)
+
+        tb.addWidget(self._global_progress_widget)
+
         # ---- UX改善④新: Ctrl+1/2/3/4 でワークフローステップを直接切り替え ----
         from PySide6.QtGui import QShortcut as _QShortcut
         _step_shortcuts = []  # GC対策で参照を保持
@@ -761,15 +1053,230 @@ class MainWindow(QMainWindow):
                     self._right_tabs.setCurrentIndex(fallback)
                     break
 
+        # UX改善①新: 結果件数に応じて空状態/タブを切り替え
+        if hasattr(self, "_step4_content_stack"):
+            self._step4_content_stack.setCurrentIndex(0 if result_count == 0 else 1)
+
+        # UX改善（新）: STEP4 結果サマリーバーを更新
+        if hasattr(self, "_step4_summary_bar") and self._project:
+            self._step4_summary_bar.update_cases(self._project.cases)
+
     # ------------------------------------------------------------------
     # Setup Guide
     # ------------------------------------------------------------------
+
+    # ------------------------------------------------------------------
+    # UX改善④: STEP4 タブガイド
+    # ------------------------------------------------------------------
+
+    # 各結果タブの「読み方」説明テキスト（タブインデックス順）
+    _TAB_GUIDE_TEXTS = [
+        # 0: ダッシュボード
+        (
+            "📊 ダッシュボード",
+            "全解析ケースの主要指標を一覧で確認できます。\n\n"
+            "【見方】\n"
+            "・各ケースのカードに最大層間変形角・最大加速度・最大変位が表示されます\n"
+            "・性能基準を設定している場合、✅/❌ で合否をひと目で確認できます\n"
+            "・カードをクリックすると「解析結果」タブで詳細グラフを確認できます\n\n"
+            "【活用ヒント】\n"
+            "3ケース以上あるときに最も有用です。最良ケースを素早く特定できます。"
+        ),
+        # 1: 解析結果
+        (
+            "📈 解析結果",
+            "選択した1つのケースの解析結果グラフを確認できます。\n\n"
+            "【見方】\n"
+            "・層ごとの最大応答値（変位・速度・加速度・層間変形角）が棒グラフで表示されます\n"
+            "・赤い破線は性能基準ライン（設定している場合）です\n"
+            "・グラフ上部のドロップダウンで表示する地震波ケースを切り替えられます\n\n"
+            "【活用ヒント】\n"
+            "ケース一覧でケースを選択してからこのタブに切り替えると素早く確認できます。"
+        ),
+        # 2: ケース比較
+        (
+            "↔ ケース比較",
+            "複数ケースの解析結果を並べて比較できます。\n\n"
+            "【見方】\n"
+            "・各ケースの最大応答値を棒グラフで並べて比較します\n"
+            "・凡例の色はケース名に対応しています\n"
+            "・グラフ上部で比較する指標（変位/速度/加速度/層間変形角）を選択できます\n\n"
+            "【活用ヒント】\n"
+            "「ベースライン（ダンパーなし）」を含めて比較すると制振効果が分かりやすくなります。"
+        ),
+        # 3: エンベロープ
+        (
+            "📐 エンベロープ",
+            "複数地震波ケースの応答包絡線（エンベロープ）を確認できます。\n\n"
+            "【見方】\n"
+            "・各地震波ケースの最大応答を重ね合わせ、その包絡線を表示します\n"
+            "・実線が各地震波の応答、太線が全波の最大値（包絡線）です\n\n"
+            "【活用ヒント】\n"
+            "複数地震波解析をしている場合に最も有用です。設計に用いる最大値を確認できます。"
+        ),
+        # 4: レーダーチャート
+        (
+            "🕸 レーダーチャート",
+            "複数ケースのバランスを多軸で視覚的に比較できます。\n\n"
+            "【見方】\n"
+            "・各軸が異なる応答指標（変位・速度・加速度・層間変形角など）を表します\n"
+            "・レーダーが小さいほど全指標が優れています\n"
+            "・形が崩れているケースは特定の指標で性能が低い傾向があります\n\n"
+            "【活用ヒント】\n"
+            "「万能型」か「変位特化型」かなど、ダンパー設計のトレードオフを把握するのに最適です。"
+        ),
+        # 5: 結果テーブル
+        (
+            "📋 結果テーブル",
+            "全ケースの数値結果を一覧テーブルで確認できます。\n\n"
+            "【見方】\n"
+            "・行がケース、列が指標（変位・速度・加速度・層間変形角・せん断力係数など）です\n"
+            "・列ヘッダーをクリックするとその指標で並び替えできます\n"
+            "・数値の上にマウスを乗せると詳細情報が表示されます\n\n"
+            "【活用ヒント】\n"
+            "Excel にコピーして設計検討書に使えます。右クリックメニューからコピーできます。"
+        ),
+        # 6: ランキング
+        (
+            "🏆 ランキング",
+            "性能基準に基づいてケースをランキング表示します。\n\n"
+            "【見方】\n"
+            "・上位のケースが目標性能を最も満たしているケースです\n"
+            "・ランキングスコアは設定した性能基準（層間変形角・加速度など）に基づきます\n"
+            "・「基点として再設計」ボタンで上位ケースを元にしたケース追加ができます\n\n"
+            "【活用ヒント】\n"
+            "目標性能基準（Ctrl+T）を設定してから使うと、自動的に合否が判定されます。"
+        ),
+        # 7: 時刻歴応答
+        (
+            "📉 時刻歴応答",
+            "各ケースの時刻歴応答（時間と応答の関係）を確認できます。\n\n"
+            "【見方】\n"
+            "・横軸が時間（秒）、縦軸が各応答値です\n"
+            "・ピーク時の応答挙動や振動の継続時間を確認できます\n\n"
+            "【活用ヒント】\n"
+            "「なぜ最大値が出たか」を時刻歴レベルで分析したいときに使います。"
+        ),
+        # 8: 感度分析
+        (
+            "🔍 感度分析",
+            "パラメータを変化させたときの応答変化（感度）を確認できます。\n\n"
+            "【見方】\n"
+            "・横軸がパラメータ値、縦軸が応答指標です\n"
+            "・傾きが急な部分ほど、そのパラメータの影響が大きいことを意味します\n\n"
+            "【活用ヒント】\n"
+            "パラメータスイープ（Ctrl+W）で複数ケースを生成してからこのタブを使うと、\n"
+            "最も効果的なパラメータ範囲を特定できます。"
+        ),
+    ]
+
+    def _show_current_tab_guide(self) -> None:
+        """
+        UX改善④: 現在アクティブな結果タブの「読み方ガイド」を表示します。
+
+        タブインデックスに対応したガイドテキストを QMessageBox でポップアップ表示します。
+        建築設計者が「このグラフで何を見ればよいか」を即座に把握できます。
+        """
+        if not hasattr(self, "_right_tabs"):
+            return
+        idx = self._right_tabs.currentIndex()
+        if 0 <= idx < len(self._TAB_GUIDE_TEXTS):
+            title, text = self._TAB_GUIDE_TEXTS[idx]
+        else:
+            return
+
+        dlg = QMessageBox(self)
+        dlg.setWindowTitle(f"{title} — 読み方ガイド")
+        dlg.setText(f"<b>{title}</b>")
+        dlg.setInformativeText(text)
+        dlg.setStandardButtons(QMessageBox.Ok)
+        dlg.setDefaultButton(QMessageBox.Ok)
+        dlg.exec()
+
+    def _on_summary_best_case_clicked(self, case_id: str) -> None:
+        """
+        UX改善（新）: STEP4 サマリーバーの「最良ケース」クリック時処理。
+
+        該当ケースを解析結果タブで選択・表示します。
+        """
+        if not case_id or self._project is None:
+            return
+        # STEP4 の解析結果タブ (index=1) に切り替え
+        if hasattr(self, '_right_tabs') and self._right_tabs.isTabEnabled(1):
+            self._right_tabs.setCurrentIndex(1)
+        # ケースを解析結果ウィジェットに表示
+        if hasattr(self, '_chart'):
+            case = self._project.get_case(case_id)
+            if case:
+                self._chart.set_case(case)
+        self.statusBar().showMessage(
+            f"🏆 最良ケース「{self._project.get_case(case_id).name if self._project.get_case(case_id) else ''}」の結果を表示しています",
+            4000,
+        )
 
     def _on_sidebar_step_changed(self, step: int) -> None:
         """サイドバーのステップが切り替わったときの処理。"""
         # STEP3（index=2）に切り替えるたびにチェックリストを最新化
         if step == 2:
             self._run_selection.refresh()
+        # UX改善③新: STEP4（index=3）へ切り替わったとき、最適なタブを自動選択
+        elif step == 3:
+            self._auto_select_result_tab()
+
+        # UX改善（新）: 初回ステップ訪問時ヒントバナーを表示
+        _hint_map = {
+            0: getattr(self, '_hint_banner_step1', None),
+            1: getattr(self, '_hint_banner_step2', None),
+            2: getattr(self, '_hint_banner_step3', None),
+            3: getattr(self, '_hint_banner_step4', None),
+        }
+        banner = _hint_map.get(step)
+        if banner is not None:
+            banner.show_if_first_visit()
+
+    def _auto_select_result_tab(self) -> None:
+        """
+        UX改善③新: STEP4 に切り替わったとき、完了ケース数に応じて
+        最も適切な結果タブを自動的に選択します。
+
+        選択ロジック:
+          - 完了ケース 0件  → 何もしない（空状態ページが表示される）
+          - 完了ケース 1件  → 「解析結果」タブ（index 1）
+          - 完了ケース 2件  → 「ケース比較」タブ（index 2）
+          - 完了ケース 3件以上 → 「ダッシュボード」タブ（index 0）
+
+        ユーザーが手動でタブを変更していた場合でも、STEP4 に入るたびに
+        状況にあった最良のタブから確認できます。
+        """
+        if self._project is None:
+            return
+        completed = [c for c in self._project.cases if c.result_summary]
+        n = len(completed)
+        if n == 0:
+            return  # 空状態のまま
+
+        # タブインデックス定義 (main_window _tab_defs の順番に対応)
+        # 0: ダッシュボード, 1: 解析結果, 2: ケース比較, ...
+        _TAB_DASHBOARD = 0
+        _TAB_RESULT    = 1
+        _TAB_COMPARE   = 2
+
+        if n == 1:
+            target_tab = _TAB_RESULT
+        elif n == 2:
+            target_tab = _TAB_COMPARE
+        else:
+            target_tab = _TAB_DASHBOARD
+
+        # タブが有効な場合のみ切り替える
+        if (0 <= target_tab < self._right_tabs.count()
+                and self._right_tabs.isTabEnabled(target_tab)):
+            self._right_tabs.setCurrentIndex(target_tab)
+            tab_name = self._right_tabs.tabText(target_tab)
+            self.statusBar().showMessage(
+                f"✓ 解析結果 {n}件 — 「{tab_name}」タブを自動選択しました",
+                3000,
+            )
 
     def _update_setup_guide(self) -> None:
         """未使用 (Sidebar UIへ移行)"""
@@ -847,6 +1354,138 @@ class MainWindow(QMainWindow):
             self._sidebar.update_badge(3, "")
             self._sidebar.set_step_state(3, "pending")
 
+        # UX改善④新: グローバル進捗インジケーターを更新
+        self._update_global_progress()
+
+        # UX改善②新: StepNavFooter の「次へ」ボタンをプロジェクト状態に合わせて制御
+        # STEP1→STEP2: s8iファイルが読み込まれていると「次へ」が有効
+        model_loaded = bool(self._project.s8i_path)
+        if hasattr(self, "_step1_footer"):
+            self._step1_footer.set_next_enabled(model_loaded)
+            self._step1_footer.setToolTip(
+                "" if model_loaded
+                else "STEP1でs8iファイルを読み込むとSTEP2へ進めます"
+            )
+        # STEP2→STEP3: ケースが1件以上あると「次へ」が有効
+        has_cases = total_cases > 0
+        if hasattr(self, "_step2_footer"):
+            self._step2_footer.set_next_enabled(has_cases)
+            self._step2_footer.setToolTip(
+                "" if has_cases
+                else "STEP2で解析ケースを1件以上追加するとSTEP3へ進めます"
+            )
+        # STEP3→STEP4: 解析が完了しているケースがあると「次へ」が有効
+        if hasattr(self, "_step3_footer"):
+            self._step3_footer.set_next_enabled(completed > 0)
+            self._step3_footer.setToolTip(
+                "" if completed > 0
+                else "解析を実行して結果が出るとSTEP4へ進めます"
+            )
+
+        # UX改善（新）: サイドバー下部のプロジェクト状態サマリーを更新
+        if hasattr(self, "_sidebar") and hasattr(self._sidebar, "update_project_summary"):
+            s8i_name = ""
+            if self._project and self._project.s8i_path:
+                s8i_name = Path(self._project.s8i_path).name
+            self._sidebar.update_project_summary(
+                s8i_name=s8i_name,
+                case_count=total_cases,
+                done_count=completed,
+            )
+
+    def _update_global_progress(self) -> None:
+        """
+        UX改善④新: ツールバーのグローバル解析進捗インジケーターを更新します。
+
+        全解析ケースの完了数・合計数をツールバーのラベルとミニプログレスバーに反映します。
+        現在のステップに関わらず常時更新され、解析の進行状況を一目で把握できます。
+        """
+        if not hasattr(self, "_global_progress_label"):
+            return
+        if self._project is None:
+            self._global_progress_label.setText("解析: —")
+            self._global_mini_bar.hide()
+            return
+
+        total = len(self._project.cases)
+        if total == 0:
+            self._global_progress_label.setText("解析: —")
+            self._global_mini_bar.hide()
+            return
+
+        completed = sum(1 for c in self._project.cases if c.result_summary)
+        error = sum(
+            1 for c in self._project.cases
+            if hasattr(c, "status") and c.status and
+            getattr(c.status, "name", "") == "ERROR"
+        )
+        running = sum(
+            1 for c in self._project.cases
+            if hasattr(c, "status") and c.status and
+            getattr(c.status, "name", "") == "RUNNING"
+        )
+
+        pct = int(completed / total * 100) if total > 0 else 0
+
+        if running > 0:
+            label_text = f"解析中 {completed}/{total}"
+            self._global_progress_label.setStyleSheet(
+                "font-size: 11px; color: #1976d2; min-width: 90px;"
+            )
+        elif completed == total and total > 0:
+            label_text = f"✅ {completed}/{total}完了"
+            self._global_progress_label.setStyleSheet(
+                "font-size: 11px; color: #2e7d32; min-width: 90px;"
+            )
+        elif error > 0:
+            label_text = f"⚠ {completed}/{total} ({error}エラー)"
+            self._global_progress_label.setStyleSheet(
+                "font-size: 11px; color: #e65100; min-width: 90px;"
+            )
+        else:
+            label_text = f"解析 {completed}/{total}完了"
+            self._global_progress_label.setStyleSheet(
+                "font-size: 11px; color: gray; min-width: 90px;"
+            )
+
+        self._global_progress_label.setText(label_text)
+
+        # ミニプログレスバーを更新
+        self._global_mini_bar.setValue(pct)
+        if running > 0:
+            self._global_mini_bar.setStyleSheet(
+                "QProgressBar { border: 1px solid palette(mid); border-radius: 3px;"
+                "  background-color: palette(base); }"
+                "QProgressBar::chunk { background-color: #1976d2; border-radius: 2px; }"
+            )
+        elif completed == total and total > 0:
+            self._global_mini_bar.setStyleSheet(
+                "QProgressBar { border: 1px solid palette(mid); border-radius: 3px;"
+                "  background-color: palette(base); }"
+                "QProgressBar::chunk { background-color: #4caf50; border-radius: 2px; }"
+            )
+        else:
+            self._global_mini_bar.setStyleSheet(
+                "QProgressBar { border: 1px solid palette(mid); border-radius: 3px;"
+                "  background-color: palette(base); }"
+                "QProgressBar::chunk { background-color: #4CAF50; border-radius: 2px; }"
+            )
+        self._global_mini_bar.show()
+
+    def _edit_case_by_id(self, case_id: str) -> None:
+        """
+        UX改善③: 指定 case_id のケース編集ダイアログを開きます。
+        エラーガイダンスパネルの「ケースを編集」ボタンから呼び出されます。
+        """
+        if self._project is None:
+            return
+        case = self._project.get_case(case_id)
+        if case is None:
+            return
+        # STEP2（ケース設計）へ移動してからダイアログを開く
+        self._sidebar.set_current_step(1)
+        self._case_table.open_edit_dialog_for(case_id)
+
     def _go_plan_next_case(self) -> None:
         """
         UX改善⑤新: STEP4 フッターの「次のケースを設計する」ボタン処理。
@@ -860,6 +1499,45 @@ class MainWindow(QMainWindow):
             "STEP2: 前の結果を参考に新しいケースを追加しましょう  [追加ボタン or Ctrl+A]",
             6000,
         )
+
+    def _update_quickstart_panel(self) -> None:
+        """
+        UX改善⑤（段階的開示）: STEP2のクイックスタートパネルの表示/非表示を更新します。
+
+        条件:
+          - s8i ファイルが読み込まれている
+          - かつ解析ケースが0件
+        の場合のみクイックスタートパネルを表示します。
+        ケースが追加されたら自動的に非表示にします。
+        """
+        if not hasattr(self, "_step2_quickstart_panel"):
+            return
+        if self._project is None:
+            self._step2_quickstart_panel.setVisible(False)
+            return
+        model_loaded = bool(self._project.s8i_path)
+        no_cases = len(self._project.cases) == 0
+        self._step2_quickstart_panel.setVisible(model_loaded and no_cases)
+
+    def _add_baseline_case(self) -> None:
+        """
+        UX改善⑤（スマートデフォルト）: ベースラインケースをクイック追加します。
+
+        「ベースライン（ダンパーなし）」という名前のケースを追加します。
+        クイックスタートパネルのボタンから呼び出されます。
+        通常の追加フロー（編集ダイアログ）を経て確認できます。
+        """
+        if self._project is None or not self._project.s8i_path:
+            return
+        # _add_case_from_template を使って名前付きでケースを追加
+        if hasattr(self._case_table, "_add_case_from_template"):
+            self._case_table._add_case_from_template(
+                name_prefix="ベースライン",
+                notes="ダンパーなし基準ケース。他ケースとの比較基準として使用します。"
+            )
+        else:
+            # フォールバック: 通常の追加ダイアログを開く
+            self._case_table.add_case()
 
     def _on_project_modified_groups(self) -> None:
         """
@@ -1031,14 +1709,18 @@ class MainWindow(QMainWindow):
         self._service.set_snap_exe_path(self._project.snap_exe_path)
         self._service.set_snap_work_dir(self._project.snap_work_dir)
         self._autosave.set_project(self._project)
+        # s8i未読み込み状態にリセット（前プロジェクトの状態汚染を防ぐ）
+        self._case_table.set_model_loaded(False)
         self._case_table.set_project(self._project)
         self._run_selection.set_project(self._project)
         self._model_info.set_model(None)
         self._chart.clear()
         self._log.clear()
         self._update_title()
-        # ワークスペース表示に切替
+        # ワークスペース表示に切替してSTEP1から開始
         self._main_stack.setCurrentIndex(1)
+        self._sidebar.set_current_step(0)  # 常にSTEP1から開始
+        self._update_sidebar_badges()
         self._update_setup_guide()
         # 新規プロジェクトは結果なし
         self._update_result_tabs(result_count=0)
@@ -1058,6 +1740,8 @@ class MainWindow(QMainWindow):
         try:
             old_s8i = self._project.s8i_path
             model = self._project.load_s8i(path)
+            # ロード成功後すぐに状態を確定させる（後続処理で例外が起きても反映される）
+            self._case_table.set_model_loaded(True)
             self._model_info.set_model(model)
             self._file_preview.load_file(path)
             # s8i が変更された場合は全ケースをリセット
@@ -1079,11 +1763,11 @@ class MainWindow(QMainWindow):
             self._update_setup_guide()
             # s8iロード後にRunSelectionWidgetのチェックリストを更新
             self._run_selection.refresh()
-            # UX改善②: モデルロード完了を通知してケース追加ボタンを有効化
-            self._case_table.set_model_loaded(True)
             # UX改善1+2: バッジ更新 & STEP2（ケース設計）へ自動ナビゲート
             self._update_sidebar_badges()
             self._sidebar.set_current_step(1)
+            # UX改善⑤（段階的開示）: モデル読み込み後にクイックスタートパネルを表示
+            self._update_quickstart_panel()
             # UX改善⑤新: 読み込んだファイルを最近使ったs8iファイル履歴に追加
             self._model_info.add_recent_s8i(path)
             self.statusBar().showMessage(
@@ -1104,6 +1788,8 @@ class MainWindow(QMainWindow):
         try:
             old_s8i = self._project.s8i_path
             model = self._project.load_s8i(path)
+            # ロード成功後すぐに状態を確定させる（後続処理で例外が起きても反映される）
+            self._case_table.set_model_loaded(True)
             self._model_info.set_model(model)
             self._file_preview.load_file(path)
             # s8i が変更された場合は全ケースをリセット
@@ -1117,10 +1803,10 @@ class MainWindow(QMainWindow):
             self._log.append_line(f"=== [ドラッグ&ドロップ] 入力ファイル読み込み: {path} ===")
             self._update_setup_guide()
             self._run_selection.refresh()
-            # UX改善②: モデルロード完了を通知してケース追加ボタンを有効化
-            self._case_table.set_model_loaded(True)
             self._update_sidebar_badges()
             self._sidebar.set_current_step(1)
+            # UX改善⑤（段階的開示）: モデル読み込み後にクイックスタートパネルを更新
+            self._update_quickstart_panel()
             # UX改善⑤新: 読み込んだファイルを最近使ったs8iファイル履歴に追加
             self._model_info.add_recent_s8i(path)
             self.statusBar().showMessage(
@@ -1198,6 +1884,7 @@ class MainWindow(QMainWindow):
             self._run_selection.set_project(self._project)
             self._run_selection.set_snap_exe_path(self._project.snap_exe_path or "")
             self._chart.clear()
+            self._chart.set_cases(self._project.cases)
             self._update_title()
             self._main_stack.setCurrentIndex(1)  # ワークスペース表示
             # 最近使ったプロジェクトに追加
@@ -1364,6 +2051,74 @@ class MainWindow(QMainWindow):
         floors = load_settings().get("demo_floors", 5)
         self._service.run_mock_all(self._project.cases, floors=floors)
 
+    def _start_demo_experience(self) -> None:
+        """
+        UX改善⑤: デモ体験フローを開始します。
+
+        ウェルカム画面の「デモを開始する」ボタンから呼び出されます。
+        SNAP や .s8i ファイルがなくても、以下のデモを実行します:
+
+        1. 新規プロジェクトを作成
+        2. 3つのサンプルケース（ベースライン・中規模ダンパー・大規模ダンパー）を自動生成
+        3. STEP3（解析実行）へ移動
+        4. モックデータで全ケースを自動実行
+        5. 完了後に STEP4（結果・戦略）へ自動遷移
+
+        このデモにより、UIの操作フローと結果の見方を実際のデータで体験できます。
+        """
+        from app.models import AnalysisCase
+
+        # 既存プロジェクトの変更を確認
+        if not self._confirm_discard():
+            return
+
+        # 新規プロジェクト作成
+        self._new_project()
+
+        # サンプルケースを3件生成
+        _demo_cases = [
+            {
+                "name": "Demo-01_ベースライン（ダンパーなし）",
+                "notes": "デモ用: ダンパーなしの基準ケース。他のケースと比較するための基準値です。",
+            },
+            {
+                "name": "Demo-02_粘性ダンパー_Cd500",
+                "notes": "デモ用: 粘性ダンパー(Cd=500kN・s/m)を全層に設置した場合の解析です。",
+            },
+            {
+                "name": "Demo-03_粘性ダンパー_Cd1000",
+                "notes": "デモ用: 粘性ダンパー(Cd=1000kN・s/m)をより多く設置した場合の解析です。",
+            },
+        ]
+
+        for _c in _demo_cases:
+            case = AnalysisCase(name=_c["name"], notes=_c["notes"])
+            self._project.add_case(case)
+
+        # UIを更新
+        self._case_table.refresh()
+        self._run_selection.refresh()
+        self._update_sidebar_badges()
+
+        # STEP3へ移動（解析実行ステップ）
+        self._sidebar.set_current_step(2)
+        self._main_stack.setCurrentIndex(1)
+
+        # ステータスバーでデモモードを案内
+        self.statusBar().showMessage(
+            "🚀 デモモード: 3件のサンプルケースを自動実行します。SNAPは不要です。",
+            8000,
+        )
+
+        # モックデータで全ケースを自動実行（少し遅延して画面が整ってから）
+        from PySide6.QtCore import QTimer as _QTimer
+        floors = load_settings().get("demo_floors", 5)
+        _QTimer.singleShot(
+            600,  # 0.6秒後に実行開始
+            lambda: self._service.run_mock_all(self._project.cases, floors=floors)
+                    if self._project and self._project.cases else None,
+        )
+
     # ------------------------------------------------------------------
     # Event handlers
     # ------------------------------------------------------------------
@@ -1432,6 +2187,7 @@ class MainWindow(QMainWindow):
             # UX改善⑤新: 解析完了後にグループ情報を比較グラフに反映
             self._compare_chart.set_case_groups(self._project.case_groups)
             self._chart.set_criteria(self._project.criteria)
+            self._chart.set_cases(self._project.cases)
             self._envelope_chart.set_cases(self._project.cases)
             self._envelope_chart.set_criteria(self._project.criteria)
             self._radar_chart.set_cases(self._project.cases)
@@ -1446,6 +2202,9 @@ class MainWindow(QMainWindow):
             case = self._project.get_case(case_id)
             if case:
                 self._chart.show_case(case)
+        # UX改善④新: グローバル進捗インジケーターを更新
+        self._update_global_progress()
+
         # 改善C: 個別ケースの解析エラーをトレイ通知
         if not success and self._project:
             case = self._project.get_case(case_id)
@@ -1455,6 +2214,17 @@ class MainWindow(QMainWindow):
                 f"ケース「{case_name}」の解析中にエラーが発生しました。\nログを確認してください。",
                 QSystemTrayIcon.Critical,
             )
+            # UX改善③: 解析エラーガイダンスパネルを表示
+            if hasattr(self, "_error_guide"):
+                log_text = self._log.get_plain_text() if hasattr(self._log, "get_plain_text") else ""
+                self._error_guide.show_for_case(
+                    case_id=case_id,
+                    case_name=case_name,
+                    log_text=log_text,
+                )
+        elif success and hasattr(self, "_error_guide"):
+            # 成功したらガイダンスを非表示に
+            self._error_guide.hide()
 
     def _on_progress_updated(self, current: int, total: int) -> None:
         """解析進捗をプログレスバーに反映します。"""
@@ -1464,6 +2234,8 @@ class MainWindow(QMainWindow):
             self._progress_bar.setMaximum(total)
             self._progress_bar.setValue(current)
             self._progress_bar.show()
+        # UX改善④新: グローバル進捗インジケーターも更新
+        self._update_global_progress()
 
     def _on_batch_state_changed(self, running: bool) -> None:
         """バッチ実行の開始・終了に応じてUI状態を更新します。"""
@@ -1481,14 +2253,36 @@ class MainWindow(QMainWindow):
         else:
             self._act_pause.setText("⏸ 一時停止")
             self._act_pause.setToolTip("バッチ実行を一時停止します")
-            # 改善④: 解析完了時に結果があれば「ダッシュボード」タブへ自動切り替え
-            _DASHBOARD_TAB = 0
-            if (
-                self._project
-                and any(c.result_summary for c in self._project.cases)
-                and self._right_tabs.isTabEnabled(_DASHBOARD_TAB)
-            ):
-                self._right_tabs.setCurrentIndex(_DASHBOARD_TAB)
+            # UX改善（スマートデフォルト）: 解析完了時のタブ自動選択を文脈に応じて最適化
+            # - 1件のみ完了: 「解析結果」タブ（そのケースの詳細グラフ）
+            # - 2件以上 + 性能基準設定あり: 「ランキング」タブ（合否判定を即確認）
+            # - 2件以上 + 基準なし: 「ケース比較」タブ（差分を視覚的に比較）
+            # - 0件: 切り替えない（エラーのみ等）
+            if self._project and any(c.result_summary for c in self._project.cases):
+                _completed_cases = [c for c in self._project.cases if c.result_summary]
+                _completed_n = len(_completed_cases)
+                _TAB_DASHBOARD    = 0  # ダッシュボード
+                _TAB_RESULT       = 1  # 解析結果（単一ケース）
+                _TAB_COMPARE      = 2  # ケース比較（複数ケース）
+                _TAB_RANKING      = 6  # ランキング（性能基準あり時に最適）
+                _has_criteria = (
+                    self._project.criteria is not None
+                    and (
+                        getattr(self._project.criteria, "max_drift", None) is not None
+                        or getattr(self._project.criteria, "max_acc", None) is not None
+                    )
+                )
+                if _completed_n == 1:
+                    # 単独ケース → 解析結果タブで詳細を確認
+                    _best_tab = _TAB_RESULT
+                elif _has_criteria:
+                    # 複数ケース + 基準あり → ランキングで合否を確認
+                    _best_tab = _TAB_RANKING if self._right_tabs.isTabEnabled(_TAB_RANKING) else _TAB_COMPARE
+                else:
+                    # 複数ケース → ケース比較で差分を確認
+                    _best_tab = _TAB_COMPARE if self._right_tabs.isTabEnabled(_TAB_COMPARE) else _TAB_DASHBOARD
+                if self._right_tabs.isTabEnabled(_best_tab):
+                    self._right_tabs.setCurrentIndex(_best_tab)
             # UX改善1+3: バッジ更新 & 結果があればSTEP4へ自動ナビゲート（設定依存）
             self._update_sidebar_badges()
             if self._project and any(c.result_summary for c in self._project.cases):
@@ -1665,6 +2459,9 @@ class MainWindow(QMainWindow):
                 self._project.snap_exe_path = settings["snap_exe_path"]
                 self._service.set_snap_exe_path(settings["snap_exe_path"])
                 self._run_selection.set_snap_exe_path(settings["snap_exe_path"])  # UX改善4
+            # UX改善（スマートデフォルト）: 設定変更後にSNAP未設定警告バナーを更新
+            _snap_now_configured = bool(settings.get("snap_exe_path", ""))
+            self._welcome.show_snap_warning(not _snap_now_configured)
             if self._project and settings.get("snap_work_dir"):
                 self._project.snap_work_dir = settings["snap_work_dir"]
                 self._service.set_snap_work_dir(settings["snap_work_dir"])

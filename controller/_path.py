@@ -1,7 +1,7 @@
 import os
 from os.path import isdir, join
 from typing import Union
-from .types import SnapDirPrefixType
+from .types import TypePrefix as SnapDirPrefixType
 from ._utils import get_dir_regex
 
 

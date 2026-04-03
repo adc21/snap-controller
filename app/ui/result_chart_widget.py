@@ -2,6 +2,14 @@
 app/ui/result_chart_widget.py
 解析結果グラフウィジェット。
 
+UX改善③新2追加: 空状態オーバーレイUI。
+  ケースが選択されていない、または選択ケースに結果データがない場合、
+  matplotlib の薄いテキストより視認性の高い空状態ウィジェットを表示します。
+  「ケースを選択すると結果が表示されます」の案内と共に、STEP2・STEP3への
+  誘導テキストを表示し、何をすればよいかを一目で理解できます。
+  show_case(case) でケースに結果があれば自動的にグラフ表示へ切り替わり、
+  clear() を呼ぶか result_summary がないケースを選択すると空状態に戻ります。
+
 matplotlib の FigureCanvas を PySide6 に埋め込み、
 層別応答値を横棒グラフ（Y軸 = 層番号）で表示します。
 
@@ -46,6 +54,7 @@ from PySide6.QtWidgets import (
     QPushButton,
     QScrollArea,
     QSizePolicy,
+    QStackedWidget,
     QTabWidget,
     QTextEdit,
     QVBoxLayout,
@@ -69,6 +78,17 @@ except Exception:
 from app.models import AnalysisCase
 from app.models.performance_criteria import PerformanceCriteria
 from .theme import ThemeManager, MPL_STYLES
+
+def _get_floor0_value(key: str, result_data: dict) -> float:
+    """0層（地盤面）にプロットする値を返します。"""
+    if key == "max_acc":
+        pga = result_data.get("input_pga")
+        return float(pga) if pga is not None else 0.0
+    if key == "max_otm":
+        base = result_data.get("base_otm")
+        return float(base) if base is not None else 0.0
+    return 0.0
+
 
 # 応答値の定義 (key, 日本語ラベル, 単位)
 _RESPONSE_ITEMS = [
@@ -142,6 +162,7 @@ class ResultChartWidget(QWidget):
         self._current_case: Optional[AnalysisCase] = None
         self._criteria: Optional[PerformanceCriteria] = None
         self._show_criteria: bool = True
+        self._all_cases: List[AnalysisCase] = []  # 全解析済みケース一覧
         # DYC サブケース選択状態
         # None = case.result_summary を使用（DYC なし or 選択なし）
         # int  = case.dyc_results[n] を使用
@@ -158,23 +179,38 @@ class ResultChartWidget(QWidget):
         self._criteria = criteria
         self._update_chart()
 
+    def set_cases(self, cases: List[AnalysisCase]) -> None:
+        """利用可能なケース一覧を更新します。解析済みケースのみをコンボに表示します。"""
+        from app.models import AnalysisCaseStatus
+        self._all_cases = [c for c in cases if c.result_summary]
+        self._rebuild_case_combo()
+
     def show_case(self, case: AnalysisCase) -> None:
         """指定ケースの結果を表示します。"""
         self._current_case = case
         self._active_dyc_index = None
+        # ケース選択コンボを同期
+        self._sync_case_combo(case)
         self._title_label.setText(f"ケース: <b>{case.name}</b>")
         self._rebuild_dyc_selector(case)
+        has_result = bool(case.result_summary)
+        # UX改善③新2追加: 結果があればグラフ表示、なければ空状態
+        if hasattr(self, "_chart_stack"):
+            self._chart_stack.setCurrentIndex(1 if has_result else 0)
         self._update_chart()
         self._update_text(case)
         # UX改善③新2: ケースが設定されたら拡大ボタンを有効化
         if hasattr(self, "_btn_popout"):
-            self._btn_popout.setEnabled(bool(case.result_summary))
+            self._btn_popout.setEnabled(has_result)
 
     def clear(self) -> None:
         """表示をクリアします。"""
         self._current_case = None
         self._active_dyc_index = None
         self._title_label.setText("<b>結果グラフ</b>")
+        # UX改善③新2追加: クリア時は空状態ページを表示
+        if hasattr(self, "_chart_stack"):
+            self._chart_stack.setCurrentIndex(0)
         # UX改善③新2: クリア時は拡大ボタンを無効化
         if hasattr(self, "_btn_popout"):
             self._btn_popout.setEnabled(False)
@@ -207,6 +243,15 @@ class ResultChartWidget(QWidget):
         title_row = QHBoxLayout()
         self._title_label = QLabel("<b>結果グラフ</b>")
         title_row.addWidget(self._title_label)
+
+        # ケース選択コンボ（解析済みケース一覧）
+        title_row.addWidget(QLabel("ケース:"))
+        self._case_combo = QComboBox()
+        self._case_combo.setMinimumWidth(180)
+        self._case_combo.setToolTip("表示するケースを選択します（解析済みケースのみ表示）")
+        self._case_combo.currentIndexChanged.connect(self._on_case_combo_changed)
+        title_row.addWidget(self._case_combo)
+
         title_row.addStretch()
 
         # 基準線表示チェックボックス
@@ -326,7 +371,43 @@ class ResultChartWidget(QWidget):
         text_layout.addWidget(self._text)
         self._tabs.addTab(text_tab, "テキスト")
 
-        layout.addWidget(self._tabs)
+        # ---- UX改善③新2追加: 空状態/グラフ を切り替えるスタックウィジェット ----
+        self._chart_stack = QStackedWidget()
+
+        # -- 空状態ページ (index 0) --
+        _empty_page = QWidget()
+        _empty_layout = QVBoxLayout(_empty_page)
+        _empty_layout.setAlignment(Qt.AlignCenter)
+
+        _empty_icon_lbl = QLabel("📊")
+        _empty_icon_lbl.setAlignment(Qt.AlignCenter)
+        _empty_icon_font = _empty_icon_lbl.font()
+        _empty_icon_font.setPointSize(36)
+        _empty_icon_lbl.setFont(_empty_icon_font)
+        _empty_layout.addWidget(_empty_icon_lbl)
+
+        _empty_title_lbl = QLabel("ケースを選択すると結果が表示されます")
+        _empty_title_font = _empty_title_lbl.font()
+        _empty_title_font.setPointSize(12)
+        _empty_title_font.setBold(True)
+        _empty_title_lbl.setFont(_empty_title_font)
+        _empty_title_lbl.setAlignment(Qt.AlignCenter)
+        _empty_layout.addWidget(_empty_title_lbl)
+
+        _empty_hint_lbl = QLabel(
+            "STEP2でケースを設計し、STEP3で解析を実行してください。\n"
+            "解析が完了したケースをケーステーブルで選択すると、\n"
+            "ここに層別の応答グラフが表示されます。"
+        )
+        _empty_hint_lbl.setAlignment(Qt.AlignCenter)
+        _empty_hint_lbl.setStyleSheet("color: gray; padding: 12px;")
+        _empty_hint_lbl.setWordWrap(True)
+        _empty_layout.addWidget(_empty_hint_lbl)
+
+        self._chart_stack.addWidget(_empty_page)   # index 0: 空状態
+        self._chart_stack.addWidget(self._tabs)     # index 1: グラフタブ
+
+        layout.addWidget(self._chart_stack)
 
         # 初期状態
         self.clear()
@@ -361,6 +442,55 @@ class ResultChartWidget(QWidget):
         n = self._combo.count()
         if n > 0:
             self._combo.setCurrentIndex((idx + 1) % n)
+
+    # ------------------------------------------------------------------
+    # ケース選択コンボ
+    # ------------------------------------------------------------------
+
+    def _rebuild_case_combo(self) -> None:
+        """解析済みケース一覧でコンボボックスを再構築します。"""
+        self._case_combo.blockSignals(True)
+        self._case_combo.clear()
+        for case in self._all_cases:
+            self._case_combo.addItem(case.name, userData=case.id)
+        self._case_combo.blockSignals(False)
+        # 現在選択中のケースを復元
+        if self._current_case:
+            self._sync_case_combo(self._current_case)
+
+    def _sync_case_combo(self, case: AnalysisCase) -> None:
+        """コンボを指定ケースに同期します（シグナルは発火しない）。"""
+        self._case_combo.blockSignals(True)
+        for i in range(self._case_combo.count()):
+            if self._case_combo.itemData(i) == case.id:
+                self._case_combo.setCurrentIndex(i)
+                break
+        else:
+            # コンボにないケース（まだ set_cases が呼ばれていない場合）は末尾に追加
+            if case.result_summary:
+                self._case_combo.addItem(case.name, userData=case.id)
+                self._case_combo.setCurrentIndex(self._case_combo.count() - 1)
+        self._case_combo.blockSignals(False)
+
+    def _on_case_combo_changed(self, index: int) -> None:
+        """ケース選択コンボが変更されたとき、対応するケースを表示します。"""
+        if index < 0 or index >= len(self._all_cases):
+            return
+        case_id = self._case_combo.itemData(index)
+        # _all_cases からケースを探す
+        for case in self._all_cases:
+            if case.id == case_id:
+                self._current_case = case
+                self._active_dyc_index = None
+                self._title_label.setText(f"ケース: <b>{case.name}</b>")
+                self._rebuild_dyc_selector(case)
+                self._update_chart()
+                self._update_text(case)
+                if hasattr(self, "_chart_stack"):
+                    self._chart_stack.setCurrentIndex(1)
+                if hasattr(self, "_btn_popout"):
+                    self._btn_popout.setEnabled(True)
+                break
 
     # ------------------------------------------------------------------
     # DYC サブケース選択
@@ -540,30 +670,46 @@ class ResultChartWidget(QWidget):
             self._canvas.draw()
             return
 
+        # 0層（地盤面）を常にプロット
+        if 0 not in floor_dict:
+            floor_dict = {0: _get_floor0_value(key, result_data), **floor_dict}
+
         floors = sorted(floor_dict.keys())
         values = [floor_dict[f] for f in floors]
 
-        # 横棒グラフ（Y 軸 = 層番号）
-        colors = plt.cm.Blues(np.linspace(0.4, 0.85, len(floors)))
-        bars = ax.barh(
-            [str(f) for f in floors],
-            values,
-            color=colors,
-            edgecolor="steelblue",
-            linewidth=0.5,
+        # 質点系ライン＋大きなマーカー（X = 応答値, Y = 層番号）
+        ax.plot(
+            values, floors,
+            color="steelblue", linewidth=2.0,
+            marker="o", markersize=9,
+            markerfacecolor="steelblue", markeredgecolor="white",
+            markeredgewidth=1.5,
+            zorder=3,
         )
-        ax.bar_label(bars, fmt="%.4g", padding=3, fontsize=8)
+        # 各層の数値ラベル
+        for v, f in zip(values, floors):
+            ax.annotate(
+                f"{v:.4g}",
+                xy=(v, f),
+                xytext=(6, 0), textcoords="offset points",
+                fontsize=8, va="center",
+            )
         ax.set_xlabel(f"{label}  [{unit}]", fontsize=9)
         ax.set_ylabel("層", fontsize=9)
+        ax.set_yticks(floors)
+        ax.set_yticklabels([str(f) for f in floors])
         # タイトルにDYCサブケース名も表示
         title = f"{case.name} — {label}"
         if sub_label:
             title += f"\n({sub_label})"
         ax.set_title(title, fontsize=10)
         ax.tick_params(labelsize=8)
-        ax.grid(axis="x", linestyle="--", alpha=0.5)
+        ax.grid(axis="x", linestyle="--", alpha=0.4)
+        ax.grid(axis="y", linestyle=":", alpha=0.25)
+        # X軸を0から始める（応答値は常に正）
+        ax.set_xlim(left=0)
 
-        # --- 性能基準線のオーバーレイ ---
+        # --- 性能基準線のオーバーレイ（縦線）---
         self._draw_criteria_line(ax, key)
 
         self._canvas.fig.tight_layout()
@@ -616,25 +762,39 @@ class ResultChartWidget(QWidget):
 
         # グラフを描画
         if floor_dict:
+            # 0層（地盤面）を常にプロット
+            if 0 not in floor_dict:
+                floor_dict = {0: _get_floor0_value(key, result_data), **floor_dict}
             floors = sorted(floor_dict.keys())
             values = [floor_dict[f] for f in floors]
-            colors = plt.cm.Blues(np.linspace(0.4, 0.85, len(floors)))
-            bars = pop_ax.barh(
-                [str(f) for f in floors],
-                values,
-                color=colors,
-                edgecolor="steelblue",
-                linewidth=0.7,
+            # 質点系ライン＋大きなマーカー
+            pop_ax.plot(
+                values, floors,
+                color="steelblue", linewidth=2.5,
+                marker="o", markersize=12,
+                markerfacecolor="steelblue", markeredgecolor="white",
+                markeredgewidth=2.0,
+                zorder=3,
             )
-            pop_ax.bar_label(bars, fmt="%.4g", padding=4, fontsize=10)
+            for v, f in zip(values, floors):
+                pop_ax.annotate(
+                    f"{v:.4g}",
+                    xy=(v, f),
+                    xytext=(8, 0), textcoords="offset points",
+                    fontsize=10, va="center",
+                )
             pop_ax.set_xlabel(f"{label}  [{unit}]", fontsize=11)
             pop_ax.set_ylabel("層", fontsize=11)
+            pop_ax.set_yticks(floors)
+            pop_ax.set_yticklabels([str(f) for f in floors])
             title = f"{case.name} — {label}"
             if sub_label:
                 title += f"  ({sub_label})"
             pop_ax.set_title(title, fontsize=12, pad=10)
             pop_ax.tick_params(labelsize=10)
-            pop_ax.grid(axis="x", linestyle="--", alpha=0.5)
+            pop_ax.grid(axis="x", linestyle="--", alpha=0.4)
+            pop_ax.grid(axis="y", linestyle=":", alpha=0.25)
+            pop_ax.set_xlim(left=0)
             # 性能基準線
             self._draw_criteria_line(pop_ax, key)
         else:

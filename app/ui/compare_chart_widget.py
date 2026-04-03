@@ -31,6 +31,19 @@ UX改善④新: 「完了のみ」クイック選択ボタンを追加。
          解析が完了しているケースだけをチェックします。
          「全選択」すると未完了ケースもチェックされてしまい
          エラーになるケースを避けたい場合に役立ちます。
+
+UX改善（新①）: 選択中の応答値指標の説明ラベルを追加。
+         コンボボックスの右側に小さな説明テキストを常時表示することで、
+         各指標の物理的意味・単位・建築的意義をひと目で確認できます。
+         指標が変わるたびに自動更新され、専門用語の意味を調べる手間を省きます。
+
+UX改善（今回追加）: 空状態を Qt オーバーレイウィジェットに改善。
+         従来の「matplotlib グレーテキスト」から、アイコン・見出し・ガイドテキストを
+         持つ Qt パネルに変更しました。QStackedWidget でグラフと空状態を切り替えます。
+         - ケース未選択 / 完了ケースなし → Qt 空状態パネル（index 0）
+         - チェックボックス ON で描画あり → matplotlib キャンバス（index 1）
+         パネルには「← 左のリストでチェックを ON にしてください」とガイドを表示し、
+         次のアクションが直感的に分かるようにしました。
 """
 
 from __future__ import annotations
@@ -73,6 +86,23 @@ from app.models import AnalysisCase, AnalysisCaseStatus
 from app.models.performance_criteria import PerformanceCriteria
 from .theme import ThemeManager, MPL_STYLES
 
+def _get_floor0_value(key: str, result_data: dict) -> float:
+    """
+    0層（地盤面）にプロットする値を返します。
+
+    - max_acc: 入力地震動の最大加速度（PGA）
+    - max_otm: 基部転倒モーメント
+    - その他: 0.0（地盤面では変位・速度・層間変形 = 0）
+    """
+    if key == "max_acc":
+        pga = result_data.get("input_pga")
+        return float(pga) if pga is not None else 0.0
+    if key == "max_otm":
+        base = result_data.get("base_otm")
+        return float(base) if base is not None else 0.0
+    return 0.0
+
+
 # 応答値の定義 (key, 日本語ラベル, 単位)
 _RESPONSE_ITEMS = [
     ("max_disp",        "最大応答相対変位",    "m"),
@@ -83,6 +113,45 @@ _RESPONSE_ITEMS = [
     ("shear_coeff",     "せん断力係数",        "—"),
     ("max_otm",         "最大転倒モーメント",  "kN·m"),
 ]
+
+# UX改善（新①）: 応答値指標ごとの説明テキスト（建築構造的意義）
+_RESPONSE_DESCRIPTIONS = {
+    "max_disp": (
+        "📐 各層の地面に対する水平変位の最大値。"
+        "免震層では大きな変位が生じます。"
+        "アイソレーターのストローク設計に直結します。"
+    ),
+    "max_vel": (
+        "💨 各層の地面に対する相対速度の最大値。"
+        "速度依存型ダンパー（粘性・粘弾性）の減衰力はこの値に比例します。"
+        "ダンパーの最大発揮力の確認に使います。"
+    ),
+    "max_acc": (
+        "⚡ 各層の絶対加速度の最大値。"
+        "建物内の機器・天井・家具への衝撃に相当します。"
+        "制振目標として「入力の何分の１に抑えるか」で設定されることが多い指標です。"
+    ),
+    "max_story_disp": (
+        "📏 上下の層間の相対水平変位の最大値。"
+        "外装・内装の損傷目安になります。"
+        "層間変形角と合わせて確認します。"
+    ),
+    "max_story_drift": (
+        "📐 層間変形 ÷ 層高 の最大値 [rad]。"
+        "建築基準法施行令では弾性設計用に 1/200 (= 0.005 rad) が多用されます。"
+        "非構造部材・内外装の損傷評価の基本指標です。"
+    ),
+    "shear_coeff": (
+        "⚖ 各層のせん断力 ÷ その層より上の重量。"
+        "構造体（柱・梁・接合部）に作用する水平力の大きさを示します。"
+        "降伏耐力・接合部設計の確認に使います。"
+    ),
+    "max_otm": (
+        "🏗 建物基部の転倒モーメントの最大値 [kN·m]。"
+        "基礎・杭の引抜き力に直結します。"
+        "免震建物では転倒モーメントが大きくなりやすいため注意が必要です。"
+    ),
+}
 
 # グラフ応答値キー → 性能基準キーのマッピング
 _CHART_KEY_TO_CRITERIA_KEY = {
@@ -206,6 +275,7 @@ class CompareChartWidget(QWidget):
         for _, label, unit in _RESPONSE_ITEMS:
             self._combo.addItem(f"{label}  [{unit}]")
         self._combo.currentIndexChanged.connect(self.refresh)
+        self._combo.currentIndexChanged.connect(self._update_metric_description)
         ctrl_row.addWidget(self._combo)
         ctrl_row.addStretch()
 
@@ -247,6 +317,17 @@ class CompareChartWidget(QWidget):
         ctrl_row.addWidget(btn_copy_chart)
 
         layout.addLayout(ctrl_row)
+
+        # ---- UX改善（新①）: 指標説明ラベル ----
+        self._metric_desc_label = QLabel()
+        self._metric_desc_label.setWordWrap(True)
+        self._metric_desc_label.setStyleSheet(
+            "color: #888888; font-size: 10px; padding: 2px 6px 2px 6px;"
+            "background-color: palette(alternate-base); border-radius: 3px;"
+        )
+        self._metric_desc_label.setTextFormat(Qt.PlainText)
+        self._update_metric_description(0)  # 初期説明を表示
+        layout.addWidget(self._metric_desc_label)
 
         # --- メインエリア: チェックリスト（左）+ グラフ右エリア（右）---
         main_row = QHBoxLayout()
@@ -327,13 +408,74 @@ class CompareChartWidget(QWidget):
         self._nav_toolbar = NavigationToolbar(self._canvas, self)
         self._nav_toolbar.setMaximumHeight(30)
         chart_area_layout.addWidget(self._nav_toolbar)
-        chart_area_layout.addWidget(self._canvas)
+
+        # UX改善（新）: 空状態 Qt オーバーレイ vs グラフ canvas を QStackedWidget で切替
+        # index 0: 空状態パネル（ケース未選択 / 完了ケースなし）
+        # index 1: matplotlib canvas（描画あり）
+        from PySide6.QtWidgets import QStackedWidget as _QSW
+        self._chart_stack = _QSW()
+
+        # -- 空状態パネル --
+        _empty_panel = QWidget()
+        _ep_layout = QVBoxLayout(_empty_panel)
+        _ep_layout.setAlignment(Qt.AlignCenter)
+        _ep_layout.setSpacing(8)
+
+        _ep_icon = QLabel("📊")
+        _ep_icon.setAlignment(Qt.AlignCenter)
+        _ep_icon.setStyleSheet("font-size: 48px; padding: 8px;")
+        _ep_layout.addWidget(_ep_icon)
+
+        self._empty_panel_title = QLabel("比較するケースを選択してください")
+        _title_font = self._empty_panel_title.font()
+        _title_font.setPointSize(13)
+        _title_font.setBold(True)
+        self._empty_panel_title.setFont(_title_font)
+        self._empty_panel_title.setAlignment(Qt.AlignCenter)
+        _ep_layout.addWidget(self._empty_panel_title)
+
+        _ep_desc = QLabel(
+            "← 左の「比較するケース」リストにある\n"
+            "チェックボックスをONにするとグラフが表示されます。\n\n"
+            "「完了のみ」ボタンで解析済みケースを一括選択できます。"
+        )
+        _ep_desc.setAlignment(Qt.AlignCenter)
+        _ep_desc.setWordWrap(True)
+        _ep_desc.setStyleSheet("color: gray; font-size: 11px; padding: 4px 24px;")
+        _ep_layout.addWidget(_ep_desc)
+
+        self._chart_stack.addWidget(_empty_panel)   # index 0: 空状態
+        self._chart_stack.addWidget(self._canvas)   # index 1: グラフ
+
+        chart_area_layout.addWidget(self._chart_stack, stretch=1)
         main_row.addWidget(chart_area, stretch=1)
 
         layout.addLayout(main_row, stretch=1)
 
-        # 初期描画
-        self._show_empty()
+        # 初期描画（空状態パネルを表示）
+        self._chart_stack.setCurrentIndex(0)
+
+    # ------------------------------------------------------------------
+    # UX改善（新①）: 指標説明ラベル更新
+    # ------------------------------------------------------------------
+
+    def _update_metric_description(self, index: int = -1) -> None:
+        """
+        UX改善（新①）: コンボで選択中の応答値指標の説明をラベルに反映します。
+
+        指標名・単位だけでは分かりにくい建築的意義を1〜2行で補足することで、
+        SNAP の専門用語に不慣れなユーザーでも迷わず指標を選べるようにします。
+        """
+        if not hasattr(self, "_metric_desc_label"):
+            return
+        idx = self._combo.currentIndex()
+        if 0 <= idx < len(_RESPONSE_ITEMS):
+            key = _RESPONSE_ITEMS[idx][0]
+            desc = _RESPONSE_DESCRIPTIONS.get(key, "")
+            self._metric_desc_label.setText(desc)
+            self._metric_desc_label.setVisible(bool(desc))
+        else:
+            self._metric_desc_label.setVisible(False)
 
     # ------------------------------------------------------------------
     # Checklist management
@@ -553,6 +695,10 @@ class CompareChartWidget(QWidget):
             self._show_empty()
             return
 
+        # UX改善（新）: データあり → canvas ページに切替
+        if hasattr(self, "_chart_stack"):
+            self._chart_stack.setCurrentIndex(1)
+
         idx = self._combo.currentIndex()
         key, label, unit = _RESPONSE_ITEMS[idx]
 
@@ -584,6 +730,11 @@ class CompareChartWidget(QWidget):
                     floor_dict = {1: scalar}
             if not floor_dict:
                 continue
+
+            # 0層（地盤面）を常にプロット
+            if 0 not in floor_dict:
+                floor0_val = _get_floor0_value(key, result_data)
+                floor_dict = {0: floor0_val, **floor_dict}
 
             floors = sorted(floor_dict.keys())
             values = [floor_dict[f] for f in floors]
@@ -675,10 +826,19 @@ class CompareChartWidget(QWidget):
                 break
 
     def _show_empty(self, msg: str = "比較するケースを選択してください") -> None:
-        ax = self._canvas.ax
-        ax.clear()
-        ax.text(0.5, 0.5, msg,
-                ha="center", va="center",
-                transform=ax.transAxes,
-                fontsize=11, color="gray")
-        self._canvas.draw()
+        """
+        UX改善（新）: 空状態を matplotlib のグレーテキストではなく
+        視認性の高い Qt パネルで表示します。
+        msg が指定された場合はパネルのタイトルテキストを更新します。
+        """
+        if hasattr(self, "_empty_panel_title"):
+            self._empty_panel_title.setText(msg)
+        if hasattr(self, "_chart_stack"):
+            self._chart_stack.setCurrentIndex(0)  # 空状態パネルへ切替
+        else:
+            # フォールバック（初期化前に呼ばれた場合）
+            ax = self._canvas.ax
+            ax.clear()
+            ax.text(0.5, 0.5, msg, ha="center", va="center",
+                    transform=ax.transAxes, fontsize=11, color="gray")
+            self._canvas.draw()

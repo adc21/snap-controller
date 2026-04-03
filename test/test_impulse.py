@@ -11,9 +11,9 @@ from controller import snap_exec, Updater, UpdateConfig, Result, ResultConfig
 
 # 初期設定
 # SNAPのworkフォルダへのパス !!! 使用しているパソコンのパスに書き換えてください !!!!
-SNAP_WORK_DIR_PATH = "E:\Kakemoto\kozosystem\SNAPV8\work"
+SNAP_WORK_DIR_PATH = "C:\\Users\\kakemoto\\kozosystem\\SNAPV8\\work"
 # 回したいSNAPファイルへのパス（テキストデータ(.i8i)で書き出したもの）
-SNAP_INPUT_FILE_PATH = "examplee.s8i"
+SNAP_INPUT_FILE_PATH = "test_impulse.s8i"
 
 # 結果として参照したいデータを設定（設定できる値は、controller/result.pyのResultConfigDictを参照）
 result_config: ResultConfig = [
