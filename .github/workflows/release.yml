@@ -1,0 +1,84 @@
+name: Release
+
+# v* タグをプッシュしたときに起動（例: v0.1.0-alpha, v1.2.3）
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write   # リリース作成・EXEアップロードに必要
+
+jobs:
+  build-and-release:
+    name: Build EXE & Create Release (Windows)
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r requirements_build.txt
+
+      - name: Build EXE with PyInstaller
+        run: python -m PyInstaller snap_controller.spec --noconfirm --workpath build_win --distpath dist_win
+
+      - name: Verify EXE was created
+        run: |
+          if (Test-Path "dist_win\snap-controller.exe") {
+            $size = (Get-Item "dist_win\snap-controller.exe").Length / 1MB
+            Write-Host "OK: snap-controller.exe ($([math]::Round($size, 1)) MB)"
+          } else {
+            Write-Error "EXE not found"
+            exit 1
+          }
+
+      - name: Smoke test (--check flag)
+        run: |
+          $proc = Start-Process `
+            -FilePath "dist_win\snap-controller.exe" `
+            -ArgumentList "--check" `
+            -Wait -PassThru `
+            -RedirectStandardOutput "check_out.txt" `
+            -RedirectStandardError  "check_err.txt"
+          Get-Content "check_out.txt"
+          if ($proc.ExitCode -ne 0) {
+            Write-Error "Smoke test failed (exit $($proc.ExitCode))"
+            Get-Content "check_err.txt"
+            exit 1
+          }
+
+      # タグ名からリリースノートのタイトルを生成
+      # v0.1.0-alpha → "snap-controller v0.1.0-alpha"
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: "snap-controller ${{ github.ref_name }}"
+          draft: false
+          # alpha / beta / rc を含むタグは自動的にプレリリース扱いにする
+          prerelease: ${{ contains(github.ref_name, 'alpha') || contains(github.ref_name, 'beta') || contains(github.ref_name, 'rc') }}
+          body: |
+            ## snap-controller ${{ github.ref_name }}
+
+            > [!WARNING]
+            > これは**α版**です。動作が不安定な箇所や未実装の機能が含まれます。実務での使用は自己責任でお願いします。
+
+            ### ダウンロード
+            下の `snap-controller.exe` をダウンロードして実行してください。Python のインストールは不要です。
+
+            ### 動作環境
+            - Windows 10 / 11
+            - SNAP Ver.8（バッチ実行対応版）
+
+            ### 初回起動について
+            onefile モードのため、初回起動時は `%TEMP%` への展開で数秒かかります。
+
+            ### 変更内容
+            https://github.com/${{ github.repository }}/commits/${{ github.ref_name }}
+          files: dist_win/snap-controller.exe

@@ -349,6 +349,18 @@ class ModelInfoWidget(QWidget):
         dg_layout.addWidget(self._damper_table)
         self._damper_group.hide()
         loaded_layout.addWidget(self._damper_group)
+
+        # ---- UX改善⑤（新）: ダンパー種別カードグリッド ----
+        # モデル読み込み直後に「このモデルにはどんなダンパーが何基あるか」を
+        # コンパクトなカード形式でひと目で確認できるようにします。
+        # STEP2 でケースを追加する前に、変更対象の装置を把握するのに役立ちます。
+        self._damper_cards_area = QWidget()
+        self._damper_cards_layout = QHBoxLayout(self._damper_cards_area)
+        self._damper_cards_layout.setContentsMargins(0, 4, 0, 4)
+        self._damper_cards_layout.setSpacing(6)
+        self._damper_cards_area.hide()  # モデル未読込時は非表示
+        loaded_layout.addWidget(self._damper_cards_area)
+
         loaded_layout.addStretch()
 
         self._info_stack.addWidget(loaded_widget)  # index 1
@@ -368,6 +380,8 @@ class ModelInfoWidget(QWidget):
         if m is None:
             self._info_stack.setCurrentIndex(0)  # CTAカードを表示
             self._damper_group.hide()
+            if hasattr(self, "_damper_cards_area"):
+                self._damper_cards_area.hide()
             if hasattr(self, '_toggle_btn'): self._toggle_btn.hide()
             if hasattr(self, '_load_btn'):
                 self._load_btn.setText("📂 .s8i ファイルを読み込む…")
@@ -415,6 +429,128 @@ class ModelInfoWidget(QWidget):
                 self._damper_table.setItem(row, 0, QTableWidgetItem(type_labels.get(ddef.keyword, ddef.keyword)))
                 self._damper_table.setItem(row, 1, QTableWidgetItem(ddef.name))
                 self._damper_table.setItem(row, 2, QTableWidgetItem(ddef.keyword))
+
+        # UX改善⑤（新）: ダンパー種別カードグリッドを更新
+        self._rebuild_damper_cards(m)
+
+    def _rebuild_damper_cards(self, model) -> None:
+        """
+        UX改善⑤（新）: ダンパー種別カードグリッドを再構築します。
+
+        s8iモデルのダンパー定義リストからカードを作成し、
+        ダンパーの種別・名称・配置箇所数・合計基数をコンパクトに表示します。
+
+        Parameters
+        ----------
+        model : S8iModel
+            読み込み済みのモデル。
+        """
+        if not hasattr(self, "_damper_cards_layout"):
+            return
+
+        # 既存カードをクリア
+        while self._damper_cards_layout.count():
+            item = self._damper_cards_layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+
+        if not model or not model.damper_defs:
+            if hasattr(self, "_damper_cards_area"):
+                self._damper_cards_area.hide()
+            return
+
+        # ダンパー種別ごとの絵文字バッジと色設定
+        _KEYWORD_STYLES = {
+            "DVOD": {"icon": "💧", "bg": "#e3f2fd", "border": "#42a5f5", "label": "粘性/オイル"},
+            "DSD":  {"icon": "🔩", "bg": "#fce4ec", "border": "#ef9a9a", "label": "鋼材"},
+            "DVHY": {"icon": "🔄", "bg": "#e8f5e9", "border": "#66bb6a", "label": "履歴型"},
+            "DVBI": {"icon": "📐", "bg": "#fff8e1", "border": "#ffca28", "label": "バイリニア"},
+            "DVSL": {"icon": "🔁", "bg": "#f3e5f5", "border": "#ce93d8", "label": "すべり"},
+            "DVFR": {"icon": "🔧", "bg": "#fbe9e7", "border": "#ff8a65", "label": "摩擦"},
+            "DVTF": {"icon": "🌀", "bg": "#e0f2f1", "border": "#4db6ac", "label": "粘弾性"},
+            "DVMS": {"icon": "⚖",  "bg": "#f1f8e9", "border": "#aed581", "label": "マスダンパー"},
+        }
+
+        # RD要素から各ダンパー定義の配置数・基数を集計
+        rd_counts: dict = {}  # {def_name: [配置箇所数, 合計基数]}
+        for elem in (model.damper_elements if model.damper_elements else []):
+            key = elem.damper_def_name
+            if key not in rd_counts:
+                rd_counts[key] = [0, 0]
+            rd_counts[key][0] += 1
+            rd_counts[key][1] += max(1, elem.quantity)
+
+        for ddef in model.damper_defs:
+            style = _KEYWORD_STYLES.get(ddef.keyword, {
+                "icon": "⚙", "bg": "#f5f5f5", "border": "#bdbdbd", "label": ddef.keyword
+            })
+
+            card = QFrame()
+            card.setFrameShape(QFrame.StyledPanel)
+            card.setStyleSheet(
+                f"QFrame {{"
+                f"  background-color: {style['bg']};"
+                f"  border: 1px solid {style['border']};"
+                f"  border-radius: 6px;"
+                f"}}"
+                "QLabel { background: transparent; border: none; }"
+            )
+            card.setMinimumWidth(110)
+            card.setMaximumWidth(160)
+
+            card_layout = QVBoxLayout(card)
+            card_layout.setContentsMargins(8, 6, 8, 6)
+            card_layout.setSpacing(2)
+
+            # ヘッダー行: アイコン + 種別名
+            header_row = QHBoxLayout()
+            header_row.setSpacing(4)
+            icon_lbl = QLabel(style["icon"])
+            icon_lbl.setStyleSheet("font-size: 14px;")
+            header_row.addWidget(icon_lbl)
+            type_lbl = QLabel(f"<b>{style['label']}</b>")
+            type_lbl.setStyleSheet(f"font-size: 10px; color: {style['border']};")
+            type_lbl.setTextFormat(Qt.RichText)
+            header_row.addWidget(type_lbl)
+            header_row.addStretch()
+            card_layout.addLayout(header_row)
+
+            # 定義名
+            name_lbl = QLabel(ddef.name)
+            name_lbl.setStyleSheet("font-size: 11px; font-weight: bold; color: #212121;")
+            name_lbl.setWordWrap(False)
+            card_layout.addWidget(name_lbl)
+
+            # 配置情報（RD要素がある場合）
+            counts = rd_counts.get(ddef.name)
+            if counts:
+                placement_lbl = QLabel(
+                    f"<span style='color:#555;font-size:10px;'>"
+                    f"配置: {counts[0]}箇所 / {counts[1]}基"
+                    f"</span>"
+                )
+                placement_lbl.setTextFormat(Qt.RichText)
+                card_layout.addWidget(placement_lbl)
+            else:
+                no_rd_lbl = QLabel(
+                    "<span style='color:#aaa;font-size:10px;'>（未配置）</span>"
+                )
+                no_rd_lbl.setTextFormat(Qt.RichText)
+                card_layout.addWidget(no_rd_lbl)
+
+            # 種別バッジ（キーワード）
+            kw_lbl = QLabel(ddef.keyword)
+            kw_lbl.setStyleSheet(
+                f"font-size: 9px; color: white; background-color: {style['border']};"
+                "border-radius: 3px; padding: 1px 4px;"
+            )
+            kw_lbl.setAlignment(Qt.AlignLeft)
+            card_layout.addWidget(kw_lbl)
+
+            self._damper_cards_layout.addWidget(card)
+
+        self._damper_cards_layout.addStretch()
+        self._damper_cards_area.show()
 
     # ------------------------------------------------------------------
     # UX改善D: ドラッグ&ドロップ対応

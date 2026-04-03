@@ -153,6 +153,46 @@ _RESPONSE_DESCRIPTIONS = {
     ),
 }
 
+# UX改善④（新）: 建築設計における指標ごとの目標値ガイドライン
+# 「どのくらいの値が良いか」を一言で示します。
+# 建築基準法・告示・実務基準に基づく参考値です（設計条件により異なります）。
+_RESPONSE_GUIDELINES = {
+    "max_disp": (
+        "🎯 目安: 免震建物のアイソレーター最大変位を確認。"
+        "  告示波 50cm/s 入力での水平変位 400〜600mm が設計の目安。"
+    ),
+    "max_vel": (
+        "🎯 目安: 速度依存型ダンパーの最大速度を確認。"
+        "  最大速度 0.5〜1.0 m/s 程度が油圧ダンパーの設計域。"
+    ),
+    "max_acc": (
+        "🎯 目安: 人体感覚・機器耐震の確認。"
+        "  居住性: ≦ 100 gal (1.0 m/s²) / 機器保護: ≦ 200 gal (2.0 m/s²)"
+        "  免震建物の制振目標: 入力の 1/3〜1/5 程度に低減。"
+    ),
+    "max_story_disp": (
+        "🎯 目安: 外装・内装材の損傷検討に使います。"
+        "  層高 3m のとき 1/200 変形角 = 15mm / 1/100 = 30mm。"
+    ),
+    "max_story_drift": (
+        "🎯 建基法の目安値（参考）:"
+        "  弾性設計用 1/200 = 0.005 rad"
+        "  / 損傷制限 1/120 ≈ 0.0083 rad"
+        "  / 崩壊防止 1/50 = 0.02 rad"
+        "  ※ 免震建物では上部構造を 1/200 以下に抑えることが多いです。"
+    ),
+    "shear_coeff": (
+        "🎯 目安: 柱・梁の設計せん断力確認。"
+        "  弾性設計: ≦ 0.2〜0.3 / 降伏耐力（許容): ≦ 0.4〜0.6"
+        "  ※ 免震建物の上部構造: Ci ≦ 0.3 程度を目標とすることが多いです。"
+    ),
+    "max_otm": (
+        "🎯 目安: 基礎・杭の引抜き力確認に使います。"
+        "  转倒モーメント ÷ 建物重量 × 建物幅 → 「柱軸力比」を確認。"
+        "  引抜き力が生じないこと（≦ 0）が理想です。"
+    ),
+}
+
 # グラフ応答値キー → 性能基準キーのマッピング
 _CHART_KEY_TO_CRITERIA_KEY = {
     "max_disp": "max_disp",
@@ -329,6 +369,21 @@ class CompareChartWidget(QWidget):
         self._update_metric_description(0)  # 初期説明を表示
         layout.addWidget(self._metric_desc_label)
 
+        # ---- UX改善④（新）: 建築基準値ガイドラインラベル ----
+        # 選択中の指標に対する建築設計実務での目安値を常時表示します。
+        # 「自分の解析結果が良いのか悪いのか」をグラフを見ながら即座に判断できます。
+        self._metric_guideline_label = QLabel()
+        self._metric_guideline_label.setWordWrap(True)
+        self._metric_guideline_label.setStyleSheet(
+            "color: #1565c0; font-size: 10px; padding: 3px 8px 3px 8px;"
+            "background-color: #e3f2fd;"
+            "border-left: 3px solid #42a5f5;"
+            "border-radius: 0px 3px 3px 0px;"
+        )
+        self._metric_guideline_label.setTextFormat(Qt.PlainText)
+        self._update_metric_description(0)
+        layout.addWidget(self._metric_guideline_label)
+
         # --- メインエリア: チェックリスト（左）+ グラフ右エリア（右）---
         main_row = QHBoxLayout()
 
@@ -462,6 +517,7 @@ class CompareChartWidget(QWidget):
     def _update_metric_description(self, index: int = -1) -> None:
         """
         UX改善（新①）: コンボで選択中の応答値指標の説明をラベルに反映します。
+        UX改善④（新）: 建築基準値ガイドラインラベルも同時に更新します。
 
         指標名・単位だけでは分かりにくい建築的意義を1〜2行で補足することで、
         SNAP の専門用語に不慣れなユーザーでも迷わず指標を選べるようにします。
@@ -474,8 +530,16 @@ class CompareChartWidget(QWidget):
             desc = _RESPONSE_DESCRIPTIONS.get(key, "")
             self._metric_desc_label.setText(desc)
             self._metric_desc_label.setVisible(bool(desc))
+
+            # UX改善④（新）: 建築基準値ガイドラインを更新
+            if hasattr(self, "_metric_guideline_label"):
+                guideline = _RESPONSE_GUIDELINES.get(key, "")
+                self._metric_guideline_label.setText(guideline)
+                self._metric_guideline_label.setVisible(bool(guideline))
         else:
             self._metric_desc_label.setVisible(False)
+            if hasattr(self, "_metric_guideline_label"):
+                self._metric_guideline_label.setVisible(False)
 
     # ------------------------------------------------------------------
     # Checklist management

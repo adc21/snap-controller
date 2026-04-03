@@ -32,6 +32,16 @@ app/ui/case_edit_dialog.py
   [UX改善⑤: 変更なし保存の確認]
   - 新規ケースをデフォルトのまま（パラメータ変更なし）で保存しようとした場合、
     確認ダイアログを表示してユーザーに意図の確認を促します。
+
+  [UX改善（新①）: 各タブにコンテキストガイドバナー追加]
+  - 各タブの先頭に「このタブで何をするか」を一言で説明するガイドバナーを追加。
+  - 初めて使うユーザーや操作に迷ったときに各タブの役割が即座にわかります。
+  - カラーコーディングでタブの種類を視覚的に区別できます。
+
+  [UX改善（新②）: ダンパー定義テーブルのパラメータヒントパネル追加]
+  - ダンパー定義タブで行を選択すると、そのパラメータの工学的説明・典型値・
+    設計上の注意点を下部のヒントパネルに表示します。
+  - 「Ce」「α」などSNAP特有の記号の意味が即座に確認でき、入力ミスを防ぎます。
 """
 
 from __future__ import annotations
@@ -167,6 +177,61 @@ class CaseEditDialog(QDialog):
     # UI 構築
     # ──────────────────────────────────────────
 
+    def _make_tab_guide_banner(
+        self,
+        icon: str,
+        text: str,
+        bg: str = "#e3f2fd",
+        border: str = "#90caf9",
+        text_color: str = "#1565c0",
+    ) -> QFrame:
+        """
+        UX改善（新①）: 各タブの先頭に表示するコンテキストガイドバナーを作成します。
+
+        Parameters
+        ----------
+        icon : str
+            バナー左端に表示する絵文字またはテキストアイコン。
+        text : str
+            ガイドテキスト（1〜2文程度）。
+        bg : str
+            背景色（CSSカラー文字列）。
+        border : str
+            左ボーダー色（CSSカラー文字列）。
+        text_color : str
+            テキスト色（CSSカラー文字列）。
+        """
+        frame = QFrame()
+        frame.setFrameShape(QFrame.NoFrame)
+        frame.setStyleSheet(
+            f"QFrame {{"
+            f"  background-color: {bg};"
+            f"  border-left: 3px solid {border};"
+            f"  border-radius: 0px;"
+            f"  margin: 0px;"
+            f"}}"
+        )
+        h = QHBoxLayout(frame)
+        h.setContentsMargins(10, 6, 10, 6)
+        h.setSpacing(8)
+
+        icon_lbl = QLabel(icon)
+        icon_lbl.setStyleSheet(
+            "font-size: 16px; background: transparent; border: none;"
+        )
+        icon_lbl.setFixedWidth(22)
+        h.addWidget(icon_lbl)
+
+        text_lbl = QLabel(text)
+        text_lbl.setStyleSheet(
+            f"color: {text_color}; font-size: 11px;"
+            "background: transparent; border: none;"
+        )
+        text_lbl.setWordWrap(True)
+        h.addWidget(text_lbl, stretch=1)
+
+        return frame
+
     def _setup_ui(self) -> None:
         layout = QVBoxLayout(self)
         layout.setSpacing(6)
@@ -206,6 +271,20 @@ class CaseEditDialog(QDialog):
     # ────── Tab 1: 基本設定 ──────────────────
 
     def _make_basic_tab(self) -> QWidget:
+        # UX改善（新①）: 外側コンテナで「ガイドバナー + フォーム」の構成にする
+        outer = QWidget()
+        outer_layout = QVBoxLayout(outer)
+        outer_layout.setContentsMargins(0, 0, 0, 0)
+        outer_layout.setSpacing(0)
+
+        outer_layout.addWidget(self._make_tab_guide_banner(
+            "⚙",
+            "このケースの識別名を設定します。"
+            "ダンパーパラメータや配置を変更しなければ、元の .s8i モデルと同じ条件で解析されます。"
+            "まずはわかりやすいケース名を付けて、次のタブへ進みましょう。",
+            bg="#e8f5e9", border="#66bb6a", text_color="#1b5e20",
+        ))
+
         w = QWidget()
         form = QFormLayout(w)
         form.setLabelAlignment(Qt.AlignRight)
@@ -243,13 +322,24 @@ class CaseEditDialog(QDialog):
             info_form.addRow("総基数:",    QLabel(str(self._s8i.total_damper_units)))
             form.addRow(info_box)
 
-        return w
+        outer_layout.addWidget(w)
+        outer_layout.addStretch()
+        return outer
 
     # ────── Tab 2: ダンパー定義 ──────────────
 
     def _make_def_tab(self) -> QWidget:
         outer = QWidget()
         outer_layout = QVBoxLayout(outer)
+
+        # UX改善（新①）: タブガイドバナー
+        outer_layout.addWidget(self._make_tab_guide_banner(
+            "🔧",
+            "ダンパーの物性値（減衰係数・降伏荷重など）を変更します。"
+            "変更しなければ .s8i ファイルの元の値がそのまま使われます。"
+            "行を選択すると下部にパラメータの説明が表示されます。",
+            bg="#fff8e1", border="#ffca28", text_color="#e65100",
+        ))
 
         if not (self._s8i and self._s8i.damper_defs):
             outer_layout.addWidget(QLabel(
@@ -283,7 +373,101 @@ class CaseEditDialog(QDialog):
         content_layout.addStretch()
         scroll.setWidget(content)
         outer_layout.addWidget(scroll)
+
+        # UX改善（新②）: パラメータ説明ヒントパネル（行選択時に更新）
+        self._def_hint_panel = QFrame()
+        self._def_hint_panel.setFrameShape(QFrame.StyledPanel)
+        self._def_hint_panel.setStyleSheet(
+            "QFrame {"
+            "  background-color: #f3e5f5;"
+            "  border: 1px solid #ce93d8;"
+            "  border-radius: 4px;"
+            "  margin: 4px;"
+            "}"
+        )
+        self._def_hint_panel.setMaximumHeight(100)
+        _hint_layout = QHBoxLayout(self._def_hint_panel)
+        _hint_layout.setContentsMargins(10, 6, 10, 6)
+        _hint_layout.setSpacing(8)
+
+        _hint_icon = QLabel("💡")
+        _hint_icon.setStyleSheet(
+            "font-size: 16px; background: transparent; border: none;"
+        )
+        _hint_icon.setFixedWidth(22)
+        _hint_layout.addWidget(_hint_icon)
+
+        self._def_hint_label = QLabel(
+            "↑ テーブルの行を選択すると、そのパラメータの工学的な説明がここに表示されます。"
+        )
+        self._def_hint_label.setStyleSheet(
+            "color: #6a1b9a; font-size: 11px; background: transparent; border: none;"
+        )
+        self._def_hint_label.setWordWrap(True)
+        self._def_hint_label.setAlignment(Qt.AlignTop | Qt.AlignLeft)
+        _hint_layout.addWidget(self._def_hint_label, stretch=1)
+
+        outer_layout.addWidget(self._def_hint_panel)
+
+        # 各テーブルの行選択シグナルをヒントパネル更新に接続
+        for ddef_name, tbl in self._damper_def_tables.items():
+            tbl.itemSelectionChanged.connect(
+                lambda t=tbl, kw=ddef_name: self._on_def_table_row_selected(t, kw)
+            )
+
         return outer
+
+    def _on_def_table_row_selected(self, tbl: QTableWidget, keyword: str) -> None:
+        """
+        UX改善（新②）: ダンパー定義テーブルの行が選択されたとき、
+        そのパラメータの説明をヒントパネルに表示します。
+
+        Parameters
+        ----------
+        tbl : QTableWidget
+            シグナルを発行したテーブル。
+        keyword : str
+            ダンパー定義のキーワード（例: "DVOD", "DSD"）。
+        """
+        if not hasattr(self, "_def_hint_label"):
+            return
+        selected = tbl.selectionModel().selectedRows()
+        if not selected:
+            self._def_hint_label.setText(
+                "↑ テーブルの行を選択すると、そのパラメータの工学的な説明がここに表示されます。"
+            )
+            return
+
+        row = selected[0].row()
+        field_idx = row + 1  # 1-indexed
+
+        # キーワードを参照するためにddef名からキーワードを取得
+        ddef_kw = keyword
+        # ddef_nameからkeywordを取得（s8iから）
+        if self._s8i:
+            for ddef in self._s8i.damper_defs:
+                if ddef.name == keyword:
+                    ddef_kw = ddef.keyword
+                    break
+
+        hints = _DAMPER_FIELD_HINTS.get(ddef_kw, {})
+        hint_text = hints.get(field_idx)
+
+        # フィールド名を取得
+        field_labels = _get_damper_field_labels(ddef_kw)
+        field_label = field_labels.get(field_idx, f"フィールド {field_idx}")
+
+        if hint_text:
+            self._def_hint_label.setText(
+                f"<b>#{field_idx} {field_label.split('（')[0].split('(')[0].strip()}</b><br>"
+                f"<span style='color:#4a148c;'>{hint_text.replace(chr(10), '<br>')}</span>"
+            )
+            self._def_hint_label.setTextFormat(Qt.RichText)
+        else:
+            self._def_hint_label.setText(
+                f"<b>#{field_idx}</b>  {field_label}"
+            )
+            self._def_hint_label.setTextFormat(Qt.RichText)
 
     def _make_damper_def_table(self, ddef: DamperDefinition) -> QTableWidget:
         """ダンパー定義の値を編集するテーブルを作成します。"""
@@ -361,6 +545,15 @@ class CaseEditDialog(QDialog):
         w = QWidget()
         layout = QVBoxLayout(w)
         layout.setSpacing(8)
+
+        # UX改善（新①）: タブガイドバナー
+        layout.addWidget(self._make_tab_guide_banner(
+            "📐",
+            "RD（免制振装置）ごとに「装置定義（ダンパー種類）」と「基数（本数）」を変更します。"
+            "変更しない行は元の .s8i の配置のまま解析されます。"
+            "行を選択すると下部に紐づくダンパー定義パラメータが表示されます。",
+            bg="#fce4ec", border="#f48fb1", text_color="#880e4f",
+        ))
 
         # 説明
         desc = QLabel(
@@ -514,6 +707,16 @@ class CaseEditDialog(QDialog):
     def _make_memo_tab(self) -> QWidget:
         w = QWidget()
         layout = QVBoxLayout(w)
+
+        # UX改善（新①）: タブガイドバナー
+        layout.addWidget(self._make_tab_guide_banner(
+            "📝",
+            "このケースの設計意図・変更内容・気づきをメモします。"
+            "メモはプロジェクトファイルに保存され、後から参照できます。"
+            "例: 「Ce を 500→600 に増やして加速度低減を狙う」など。",
+            bg="#e8eaf6", border="#7986cb", text_color="#283593",
+        ))
+
         self._notes_edit = QTextEdit()
         self._notes_edit.setPlaceholderText(
             "このケースに関するメモを入力してください…\n"
@@ -1162,6 +1365,108 @@ def _type_badge(keyword: str) -> str:
         "DVMS": "⚖",
     }
     return badges.get(keyword, "⚙")
+
+
+# ─────────────────────────────────────────────
+#  UX改善（新②）: ダンパーフィールドヒント辞書
+#  各フィールドに対する工学的説明・典型値を定義します。
+# ─────────────────────────────────────────────
+
+_DAMPER_FIELD_HINTS: Dict[str, Dict[int, str]] = {
+    "DVOD": {
+        1:  (
+            "【種別】ダンパーの用途を指定します。\n"
+            "52: 免震用オイルダンパー / 53: 免震用粘性ダンパー\n"
+            "72: 制振用オイルダンパー / 73: 制振用粘性ダンパー"
+        ),
+        5:  (
+            "【減衰モデル】力学モデルの種類を指定します。\n"
+            "0: ダッシュポット単体（単純） / 1: Voigt（バネ+ダッシュポット並列）\n"
+            "2: Maxwell（バネ+ダッシュポット直列） / 3: D+M複合型\n"
+            "通常はオイルダンパーに 0 または 1 を使います。"
+        ),
+        7:  (
+            "【装置特性種別】力-変位（または力-速度）特性の形状を指定します。\n"
+            "0: 線形弾性 / 1: バイリニア（2折れ線）/ 2: トリリニア / 3: 曲線型\n"
+            "免震用オイルダンパーは 0（線形）が多く使われます。"
+        ),
+        8:  (
+            "【C0 / 減衰係数】速度に対する抵抗力の比例定数 [kN·s/m] です。\n"
+            "F = C₀ × V^α で決まる減衰力の基準値。\n"
+            "典型値: 油圧系制振ダンパー 500〜5000 kN·s/m\n"
+            "         免震用大型オイルダンパー 1000〜10000 kN·s/m"
+        ),
+        9:  (
+            "【Fc / リリーフ力】ダンパーが最大で発生する力（カットオフ力）[kN] です。\n"
+            "この力を超えるとリリーフバルブが開き、力が一定に保たれます。\n"
+            "典型値: 制振ダンパー 100〜2000 kN / 免震用 500〜5000 kN"
+        ),
+        10: (
+            "【Fv / 最大ダンパー力】ダンパーが発生できる絶対最大力 [kN] です。\n"
+            "Fc（リリーフ力）≦ Fv となります。\n"
+            "典型値: 制振ダンパー 200〜3000 kN"
+        ),
+        11: (
+            "【Vs / 基準速度】α（速度指数）を適用する基準となる速度 [m/s] です。\n"
+            "F = C₀ × (V/Vs)^α の形で用いられます。\n"
+            "典型値: 0.01〜0.5 m/s（実装置の仕様書から取得）"
+        ),
+        12: (
+            "【α / 速度指数】力-速度関係の非線形指数（無次元）です。\n"
+            "α = 1.0: 線形粘性 / α < 1.0: 非線形（大変形時の力増大を抑制）\n"
+            "典型値: オイルダンパー 0.3〜1.0\n"
+            "        α = 0.3〜0.5 が制振設計でよく使われます。"
+        ),
+        14: (
+            "【剛性】ダンパー本体の軸剛性 [kN/m] です（内部バネ成分）。\n"
+            "Maxwell モデルの場合のみ有効です。\n"
+            "通常は取付け剛性（F15）と組み合わせて評価します。"
+        ),
+        15: (
+            "【取付け剛性】ダンパーを架構に取り付けるブレース・金具の剛性 [kN/m] です。\n"
+            "直列に配置されるため、値が小さいと有効な減衰性能が低下します。\n"
+            "通常はダンパー本体剛性の 10 倍以上が推奨されます。"
+        ),
+    },
+    "DSD": {
+        1:  (
+            "【種別】鋼材ダンパーの形式を指定します。\n"
+            "1: ブレース型 / 2: 間柱型 / 3: 摩擦型\n"
+            "形式によって復元力特性の解釈が変わります。"
+        ),
+        6:  (
+            "【復元力特性種別】履歴モデルの形状を指定します。\n"
+            "0: BL2（バイリニア）/ 1: AL(Y)2（別降伏型）/ 2: BL(Y)3\n"
+            "3: RD4 / 4: VHD / 5: K2 など\n"
+            "一般的な低降伏点鋼材ダンパーには 0（BL2）または 2（BL(Y)3）を使います。"
+        ),
+        7:  (
+            "【K0 / 初期剛性】弾性域での剛性 [kN/m] です。\n"
+            "降伏前の変形に抵抗する剛性値。\n"
+            "典型値: 低降伏点鋼ブレース 50000〜500000 kN/m"
+        ),
+        8:  (
+            "【Fe / 弾性限界力】弾性限界を超える力 [kN] です（一部モデルのみ使用）。\n"
+            "Fy（降伏荷重）より小さい場合があります。"
+        ),
+        9:  (
+            "【Fy / 降伏荷重】ダンパーが降伏する力 [kN] です。\n"
+            "これ以上の力が作用すると塑性変形（エネルギー吸収）が始まります。\n"
+            "典型値: 低降伏点鋼材ブレース 50〜2000 kN\n"
+            "設計では「Fy ≦ ダンパー設計力 ≦ Fu」を確認します。"
+        ),
+        10: (
+            "【Fu / 最大荷重】ダンパーの最大耐力 [kN] です。\n"
+            "Fy < Fu の関係が必要です。\n"
+            "典型値: Fy の 1.2〜1.5 倍程度"
+        ),
+        11: (
+            "【α / 2次剛性比】降伏後の剛性 / 初期剛性の比（無次元）です。\n"
+            "α = 0: 完全弾塑性 / α > 0: ひずみ硬化あり\n"
+            "典型値: 低降伏点鋼材 0.01〜0.05（ほぼ完全弾塑性）"
+        ),
+    },
+}
 
 
 def _get_damper_field_labels(keyword: str) -> Dict[int, str]:

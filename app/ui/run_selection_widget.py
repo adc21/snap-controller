@@ -198,6 +198,53 @@ class RunSelectionWidget(QWidget):
 
         layout.addWidget(check_group)
 
+        # ---- UX改善③（新）: 全チェックOK時「準備完了」バナー ----
+        # すべての前提条件が満たされたとき、目立つ緑バナーで
+        # 「解析の準備ができました」とユーザーに伝えます。
+        # ケースの実行状況（未実行/完了/エラー件数）も一目で確認できます。
+        self._ready_banner = QFrame()
+        self._ready_banner.setFrameShape(QFrame.StyledPanel)
+        self._ready_banner.setStyleSheet(
+            "QFrame {"
+            "  background-color: #e8f5e9;"
+            "  border: 1px solid #66bb6a;"
+            "  border-left: 4px solid #2e7d32;"
+            "  border-radius: 4px;"
+            "  margin: 0px 0px 2px 0px;"
+            "}"
+        )
+        _ready_layout = QHBoxLayout(self._ready_banner)
+        _ready_layout.setContentsMargins(10, 6, 10, 6)
+        _ready_layout.setSpacing(8)
+
+        _ready_icon = QLabel("✅")
+        _ready_icon.setStyleSheet(
+            "font-size: 16px; background: transparent; border: none;"
+        )
+        _ready_layout.addWidget(_ready_icon)
+
+        _ready_col = QVBoxLayout()
+        _ready_col.setSpacing(1)
+        _ready_col.setContentsMargins(0, 0, 0, 0)
+
+        _ready_title = QLabel("<b>解析の準備ができました</b>")
+        _ready_title.setStyleSheet(
+            "color: #1b5e20; font-size: 12px; background: transparent; border: none;"
+        )
+        _ready_title.setTextFormat(Qt.RichText)
+        _ready_col.addWidget(_ready_title)
+
+        self._ready_status_lbl = QLabel("")
+        self._ready_status_lbl.setStyleSheet(
+            "color: #388e3c; font-size: 10px; background: transparent; border: none;"
+        )
+        self._ready_status_lbl.setTextFormat(Qt.RichText)
+        _ready_col.addWidget(self._ready_status_lbl)
+
+        _ready_layout.addLayout(_ready_col, stretch=1)
+        self._ready_banner.hide()  # 初期は非表示（前提条件未達のため）
+        layout.addWidget(self._ready_banner)
+
         # ---- ケース選択エリア ----
         group = QGroupBox("解析実行対象の選択")
         g_layout = QVBoxLayout(group)
@@ -661,6 +708,9 @@ class RunSelectionWidget(QWidget):
         # UX改善（新）: ボタンラベルにリアルタイム件数を反映
         self._update_run_button_label()
 
+        # UX改善③（新）: 「準備完了」バナーを更新
+        self._update_ready_banner(all_ok)
+
     def _set_check_state(self, label: QLabel, ok: bool, text: str) -> None:
         """チェックラベルの状態（✅/❌）とテキストを更新します。"""
         if ok:
@@ -700,6 +750,49 @@ class RunSelectionWidget(QWidget):
         else:
             self._btn_run.setText(f"🚀  {checked_count} 件を解析する")
             self._btn_run.setEnabled(True)
+
+    def _update_ready_banner(self, all_ok: bool) -> None:
+        """
+        UX改善③（新）: 前提条件が全てOKのとき「解析の準備ができました」バナーを表示します。
+
+        バナーにはケースの実行状況サマリー（未実行・完了・エラー件数）も表示し、
+        「どのケースをこれから走らせるか」が一目でわかるようにします。
+
+        Parameters
+        ----------
+        all_ok : bool
+            s8i・SNAP・ケース存在の3条件が全てOKなら True。
+        """
+        if not hasattr(self, "_ready_banner"):
+            return
+
+        if not all_ok:
+            self._ready_banner.hide()
+            return
+
+        # ケースの状態集計
+        cases = list(self._project.cases) if self._project else []
+        pending = sum(1 for c in cases if getattr(c.status, "name", "") == "PENDING")
+        completed = sum(1 for c in cases if getattr(c.status, "name", "") == "COMPLETED")
+        error = sum(1 for c in cases if getattr(c.status, "name", "") == "ERROR")
+        running = sum(1 for c in cases if getattr(c.status, "name", "") == "RUNNING")
+        total = len(cases)
+
+        parts = []
+        if pending > 0:
+            parts.append(f"<span style='color:#e65100;'>⏳ 未実行 {pending}件</span>")
+        if completed > 0:
+            parts.append(f"<span style='color:#2e7d32;'>✅ 完了 {completed}件</span>")
+        if error > 0:
+            parts.append(f"<span style='color:#c62828;'>❌ エラー {error}件</span>")
+        if running > 0:
+            parts.append(f"<span style='color:#1565c0;'>▶ 実行中 {running}件</span>")
+
+        status_text = "　/　".join(parts) if parts else f"合計 {total}件"
+        if hasattr(self, "_ready_status_lbl"):
+            self._ready_status_lbl.setText(status_text)
+
+        self._ready_banner.show()
 
     # ------------------------------------------------------------------
     # Internals
