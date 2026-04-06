@@ -75,6 +75,14 @@ class AnalysisCase:
     output_dir: str = ""
     parameters: Dict[str, Any] = field(default_factory=dict)
     damper_params: Dict[str, Any] = field(default_factory=dict)
+    extra_defs: List[Dict[str, Any]] = field(default_factory=list)
+    # extra_defs の各要素:
+    #   {
+    #     "keyword":   "DVOD",          # SNAP キーワード
+    #     "name":      "C1_heavy",       # ユーザーが付けた一意な定義名
+    #     "base_name": "C1",             # コピー元の定義名
+    #     "overrides": {"8": "800000"}   # 変更フィールド (1-indexed文字列→値)
+    #   }
     status: AnalysisCaseStatus = AnalysisCaseStatus.PENDING
     return_code: Optional[int] = None
     notes: str = ""
@@ -96,9 +104,11 @@ class AnalysisCase:
         """辞書から AnalysisCase を復元します。"""
         data = dict(data)
         data["status"] = AnalysisCaseStatus(data.get("status", "pending"))
-        # 旧バージョンとの互換性: dyc_results が存在しない場合は空リストで初期化
+        # 旧バージョンとの互換性
         if "dyc_results" not in data:
             data["dyc_results"] = []
+        if "extra_defs" not in data:
+            data["extra_defs"] = []
         return cls(**data)
 
     # ------------------------------------------------------------------

@@ -18,6 +18,16 @@ UX改善（新）: リアルタイムケース数プレビュー。
   パラメータの最小値・最大値・刻み幅を変更するたびに、
   「生成（プレビュー）」ボタンを押す前に推定生成ケース数をリアルタイムで表示します。
   大量ケースになる前に気づけるようになり、操作ミスを防ぎます。
+
+UX改善（新⑤）: 3段階警告レベル + 推定解析時間表示。
+  ケース数に応じて警告色とアイコンを段階的に変化させます:
+  - 1〜20件: 緑（✅ 安全範囲）
+  - 21〜50件: 青（ℹ️ 中程度）
+  - 51〜99件: 橙（⚠ 時間がかかります）
+  - 100件以上: 赤（🔴 上限 — 解析時間が非常に長くなります）
+  また、1ケースあたりの解析時間（デフォルト: 30秒）から推定所要時間を計算し、
+  「推定解析時間: 約X分」を常時表示します。
+  ユーザーが「このまま生成して大丈夫か？」を判断しやすくなります。
 """
 
 from __future__ import annotations
@@ -422,15 +432,32 @@ class SweepDialog(QDialog):
 
     def _update_live_count(self) -> None:
         """
-        UX改善（新）: リアルタイムケース数プレビューラベルを更新します。
+        UX改善（新）+ UX改善（新⑤）: リアルタイムケース数プレビューラベルを更新します。
 
         パラメータの最小値・最大値・刻み幅が変わるたびに呼び出され、
-        「生成（プレビュー）」ボタンを押す前に推定ケース数をユーザーに示します。
+        「生成（プレビュー）」ボタンを押す前に推定ケース数と所要時間をユーザーに示します。
+
+        警告レベル（UX改善新⑤）:
+          1〜20件  : ✅ 緑 — 安全範囲
+          21〜50件 : ℹ️ 青 — 中程度
+          51〜99件 : ⚠ 橙 — 時間がかかります
+          100件以上: 🔴 赤 — 上限・長時間警告
         """
         if not hasattr(self, "_live_count_label"):
             return
         count = self._estimate_case_count()
         has_valid_key = any(r.param_key for r in self._param_rows)
+
+        # 推定解析時間（UX改善新⑤）: 1ケース30秒と仮定
+        _SEC_PER_CASE = 30
+        est_sec = count * _SEC_PER_CASE
+        if est_sec < 60:
+            time_str = f"約 {est_sec} 秒"
+        elif est_sec < 3600:
+            time_str = f"約 {est_sec // 60} 分"
+        else:
+            time_str = f"約 {est_sec // 3600} 時間 {(est_sec % 3600) // 60} 分"
+
         if not has_valid_key:
             self._live_count_label.setText(
                 "⬅ パラメータキーを入力してください"
@@ -440,15 +467,43 @@ class SweepDialog(QDialog):
             self._live_count_label.setText("⚠ 有効な値域が設定されていません（最大値 > 最小値にしてください）")
             self._live_count_label.setStyleSheet("color: #ff9800; font-size: 11px;")
         elif count >= 100:
+            # UX改善新⑤: 赤 — 上限警告
             self._live_count_label.setText(
-                f"⚠ 推定 <b>{count}</b> 件（上限 100 件でクリップされます）"
+                f"🔴 推定 <b>{count}</b> 件（上限 100 件でクリップされます）"
+                f" — 推定解析時間: <b>{time_str}</b>以上  "
+                f"<i>パラメータ範囲を狭めるか刻み幅を大きくすることを推奨します</i>"
             )
-            self._live_count_label.setStyleSheet("color: #ff9800; font-size: 12px; font-weight: bold;")
+            self._live_count_label.setStyleSheet(
+                "color: #b71c1c; font-size: 11px; font-weight: bold;"
+            )
+        elif count > 50:
+            # UX改善新⑤: 橙 — 時間がかかる
+            self._live_count_label.setText(
+                f"⚠ 推定 <b>{count}</b> 件のケースが生成されます"
+                f" — 推定解析時間: <b>{time_str}</b>  "
+                f"<i>解析に時間がかかります。PC を稼働したまま待機してください。</i>"
+            )
+            self._live_count_label.setStyleSheet(
+                "color: #e65100; font-size: 11px; font-weight: bold;"
+            )
+        elif count > 20:
+            # UX改善新⑤: 青 — 中程度
+            self._live_count_label.setText(
+                f"ℹ️ 推定 <b>{count}</b> 件のケースが生成されます"
+                f" — 推定解析時間: <b>{time_str}</b>"
+            )
+            self._live_count_label.setStyleSheet(
+                "color: #1565c0; font-size: 11px; font-weight: bold;"
+            )
         else:
+            # UX改善新⑤: 緑 — 安全範囲
             self._live_count_label.setText(
-                f"→ 推定 <b>{count}</b> 件のケースが生成されます"
+                f"✅ 推定 <b>{count}</b> 件のケースが生成されます"
+                f" — 推定解析時間: <b>{time_str}</b>"
             )
-            self._live_count_label.setStyleSheet("color: #1976d2; font-size: 12px; font-weight: bold;")
+            self._live_count_label.setStyleSheet(
+                "color: #2e7d32; font-size: 11px; font-weight: bold;"
+            )
         # ラベルはRichText形式
         from PySide6.QtCore import Qt as _Qt
         self._live_count_label.setTextFormat(_Qt.RichText)

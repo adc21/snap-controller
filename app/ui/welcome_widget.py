@@ -5,6 +5,12 @@ app/ui/welcome_widget.py
 アプリ起動時やプロジェクトが開かれていない時に表示される画面です。
 最近使ったプロジェクトのリスト、クイックアクション、ヒントを提供します。
 
+UX改善（第7回①）: 見つからないプロジェクトの一括削除ボタン追加。
+  「❌ 見つからない項目を削除」ボタンを追加し、存在しないパスの履歴を
+  一括で削除できるようにします。現在は「履歴をクリア」で全件削除するか
+  手動で管理するしかありませんでしたが、このボタンで不要なリストを
+  自動クリーンアップできます。削除件数を「X件削除しました」でフィードバック。
+
 UX改善①: シングルクリック選択 + 「開く」ボタン追加。
   - 最近のプロジェクトをシングルクリックするだけで「開く」ボタンが有効化されます。
   - 「開く」ボタンを押すか、Enterキー / ダブルクリックで即座に開けます。
@@ -138,8 +144,6 @@ class WelcomeWidget(QWidget):
     recentProjectSelected = Signal(str)
     # UX改善（スマートデフォルト）: 設定ダイアログを開くよう外部に要求
     snapSettingsRequested = Signal()
-    # UX改善⑤: デモ体験を開始するよう外部に要求
-    demoRequested = Signal()
 
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
@@ -245,64 +249,6 @@ class WelcomeWidget(QWidget):
 
         container_layout.addLayout(actions_layout)
 
-        # ---- UX改善⑤: デモ体験ボタン ----
-        # SNAP が未インストールでも「モックデータ」で全ワークフローを体験できます。
-        # 初めてのユーザーがアプリの動作を確認するための入口として機能します。
-        _demo_frame = QFrame()
-        _demo_frame.setFrameShape(QFrame.StyledPanel)
-        _demo_frame.setStyleSheet(
-            "QFrame {"
-            "  background-color: #e8f5e9;"
-            "  border: 1px solid #a5d6a7;"
-            "  border-radius: 6px;"
-            "  padding: 2px;"
-            "}"
-        )
-        _demo_layout = QHBoxLayout(_demo_frame)
-        _demo_layout.setContentsMargins(14, 8, 14, 8)
-        _demo_layout.setSpacing(12)
-
-        _demo_icon = QLabel("🚀")
-        _demo_icon.setStyleSheet("font-size: 18px; background: transparent;")
-        _demo_layout.addWidget(_demo_icon)
-
-        _demo_text_col = QVBoxLayout()
-        _demo_text_col.setSpacing(1)
-        _demo_title = QLabel("<b>まずデモで体験してみる</b>")
-        _demo_title.setStyleSheet("color: #1b5e20; font-size: 12px; background: transparent;")
-        _demo_title.setTextFormat(Qt.RichText)
-        _demo_text_col.addWidget(_demo_title)
-        _demo_desc = QLabel(
-            "SNAP や .s8i ファイルがなくても、モックデータで①〜④ の全ワークフローを体験できます。"
-        )
-        _demo_desc.setStyleSheet("color: #2e7d32; font-size: 10px; background: transparent;")
-        _demo_desc.setWordWrap(True)
-        _demo_text_col.addWidget(_demo_desc)
-        _demo_layout.addLayout(_demo_text_col, stretch=1)
-
-        _demo_btn = QPushButton("デモを開始する →")
-        _demo_btn.setFixedHeight(34)
-        _demo_btn.setMinimumWidth(140)
-        _demo_btn.setStyleSheet(
-            "QPushButton {"
-            "  font-size: 12px; font-weight: bold; padding: 6px 16px;"
-            "  background-color: #43a047; color: white;"
-            "  border: none; border-radius: 5px;"
-            "}"
-            "QPushButton:hover { background-color: #388e3c; }"
-            "QPushButton:pressed { background-color: #2e7d32; }"
-        )
-        _demo_btn.setToolTip(
-            "モックデータを使ってアプリの全機能をデモ体験します。\n\n"
-            "・SNAP 実行ファイルや .s8i ファイルは不要です\n"
-            "・3つのサンプルケースが自動生成され、仮想の解析結果が表示されます\n"
-            "・実際の解析は行われませんが、UI と結果表示の使い方を確認できます"
-        )
-        _demo_btn.clicked.connect(self.demoRequested.emit)
-        _demo_layout.addWidget(_demo_btn)
-
-        container_layout.addWidget(_demo_frame)
-
         container_layout.addSpacing(10)
 
         # ---- 最近使ったプロジェクト ----
@@ -359,6 +305,26 @@ class WelcomeWidget(QWidget):
         self._open_btn.clicked.connect(self._on_open_selected)
         btn_row.addWidget(self._open_btn)
         btn_row.addStretch()
+
+        # UX改善（第7回①）: 「見つからない項目を削除」ボタン
+        self._cleanup_btn = QPushButton("❌ 見つからない項目を削除")
+        self._cleanup_btn.setMaximumWidth(210)
+        self._cleanup_btn.setToolTip(
+            "存在しないファイルパスの履歴エントリを一括削除します。\n"
+            "「[見つかりません]」と表示されている項目をまとめて消去します。\n\n"
+            "※ 現在開いているプロジェクトには影響しません。"
+        )
+        self._cleanup_btn.setStyleSheet(
+            "QPushButton {"
+            "  font-size: 11px; padding: 3px 10px;"
+            "  color: #c62828; border: 1px solid #ef9a9a; border-radius: 4px;"
+            "}"
+            "QPushButton:hover { background-color: #ffebee; }"
+            "QPushButton:disabled { color: palette(dark); border-color: palette(mid); }"
+        )
+        self._cleanup_btn.clicked.connect(self._on_cleanup_missing)
+        btn_row.addWidget(self._cleanup_btn)
+
         self._clear_btn = QPushButton("履歴をクリア")
         self._clear_btn.setMaximumWidth(120)
         self._clear_btn.clicked.connect(self._on_clear_recent)
@@ -537,9 +503,23 @@ class WelcomeWidget(QWidget):
             item.setForeground(Qt.gray)
             self._recent_list.addItem(item)
             self._clear_btn.setEnabled(False)
+            # UX改善（第7回①）: プロジェクトがない場合はクリーンアップも無効
+            if hasattr(self, "_cleanup_btn"):
+                self._cleanup_btn.setEnabled(False)
             return
 
         self._clear_btn.setEnabled(True)
+
+        # UX改善（第7回①）: 見つからないエントリが1件以上あればクリーンアップボタンを有効化
+        if hasattr(self, "_cleanup_btn"):
+            missing_count = sum(1 for r in recents if not Path(r.get("path", "")).exists())
+            self._cleanup_btn.setEnabled(missing_count > 0)
+            self._cleanup_btn.setText(
+                f"❌ 見つからない項目を削除 ({missing_count}件)"
+                if missing_count > 0
+                else "❌ 見つからない項目を削除"
+            )
+
         for entry in recents:
             path = entry.get("path", "")
             name = entry.get("name", Path(path).stem)
@@ -608,4 +588,33 @@ class WelcomeWidget(QWidget):
 
     def _on_clear_recent(self) -> None:
         clear_recent_projects()
+        self.refresh()
+
+    # UX改善（第7回①）: 見つからないプロジェクトを一括削除
+    def _on_cleanup_missing(self) -> None:
+        """
+        UX改善（第7回①）: 存在しないパスの履歴エントリを一括削除します。
+
+        削除件数を「X件削除しました」のメッセージでユーザーにフィードバックし、
+        リストを更新します。削除対象がない場合はボタンが無効のため呼ばれません。
+        """
+        from PySide6.QtWidgets import QMessageBox
+        recents = get_recent_projects()
+        missing = [r for r in recents if not Path(r.get("path", "")).exists()]
+        valid = [r for r in recents if Path(r.get("path", "")).exists()]
+
+        if not missing:
+            return  # 削除対象なし
+
+        # QSettings に有効エントリだけ書き戻す
+        from PySide6.QtCore import QSettings as _QSettings
+        s = _QSettings(SETTINGS_ORG, SETTINGS_APP)
+        s.setValue(KEY_RECENT_PROJECTS, valid)
+
+        # フィードバック
+        QMessageBox.information(
+            self,
+            "削除完了",
+            f"{len(missing)} 件の見つからないプロジェクトを履歴から削除しました。",
+        )
         self.refresh()

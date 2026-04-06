@@ -2,6 +2,12 @@
 app/ui/template_dialog.py
 ケーステンプレート管理ダイアログ。
 
+UX改善（第6回①）: ダブルクリック即適用 + カテゴリ色分けバッジ + テンプレート件数バッジ追加。
+  - テンプレートリストをダブルクリックすると確認なしにすぐ適用（templateApplied発行→ダイアログ閉じる）
+  - ビルトイン/ユーザーおよびカテゴリ（免震・制振・共通・その他）で行背景を色分け
+  - ヘッダーにビルトイン件数・ユーザー件数バッジを表示し、テンプレート全体の構成を一目で把握
+  - 「適用」ボタンをよりわかりやすく: 選択時は青で強調、未選択時はグレーアウト
+
 テンプレートの一覧表示、選択適用、新規保存、削除を行います。
 
 レイアウト:
@@ -75,6 +81,20 @@ class TemplateDialog(QDialog):
         self._current_template: Optional[CaseTemplate] = None
         self._current_is_builtin: bool = False
 
+        # UX改善（第6回①）: カテゴリ色分けマップ（ライト・ダーク兼用の薄い背景色）
+        self._CATEGORY_BG: dict = {
+            "免震":   "#e8f4f8",  # 水色
+            "制振":   "#fff3e0",  # 橙色
+            "共通":   "#f3e5f5",  # 紫色
+            "その他": "#f5f5f5",  # グレー
+        }
+        self._CATEGORY_FG: dict = {
+            "免震":   "#01579b",
+            "制振":   "#bf360c",
+            "共通":   "#4a148c",
+            "その他": "#616161",
+        }
+
         self._setup_ui()
         self._refresh_list()
 
@@ -98,6 +118,24 @@ class TemplateDialog(QDialog):
         self._search_edit.setPlaceholderText("名前・タグで検索…")
         self._search_edit.textChanged.connect(self._on_filter_changed)
         filter_row.addWidget(self._search_edit, stretch=1)
+
+        # UX改善（第6回①）: ビルトイン件数・ユーザー件数バッジ
+        self._builtin_badge = QLabel()
+        self._builtin_badge.setStyleSheet(
+            "background:#e3f2fd; color:#0d47a1; border-radius:8px;"
+            "padding:1px 7px; font-size:10px; font-weight:bold;"
+        )
+        self._builtin_badge.setToolTip("ビルトインテンプレート件数")
+        filter_row.addWidget(self._builtin_badge)
+
+        self._user_badge = QLabel()
+        self._user_badge.setStyleSheet(
+            "background:#e8f5e9; color:#1b5e20; border-radius:8px;"
+            "padding:1px 7px; font-size:10px; font-weight:bold;"
+        )
+        self._user_badge.setToolTip("ユーザーテンプレート件数")
+        filter_row.addWidget(self._user_badge)
+
         layout.addLayout(filter_row)
 
         # ---- メイン: リスト + 詳細 ----
@@ -106,6 +144,12 @@ class TemplateDialog(QDialog):
         # 左: テンプレートリスト
         self._list = QListWidget()
         self._list.currentItemChanged.connect(self._on_selection_changed)
+        # UX改善（第6回①）: ダブルクリックで即適用
+        self._list.itemDoubleClicked.connect(self._on_double_click)
+        self._list.setToolTip(
+            "テンプレートをダブルクリックするとすぐに適用できます。\n"
+            "シングルクリックで詳細を確認してから[選択ケースに適用]ボタンで適用します。"
+        )
         splitter.addWidget(self._list)
 
         # 右: 詳細プレビュー
@@ -145,10 +189,14 @@ class TemplateDialog(QDialog):
         # ---- ボタン行 ----
         btn_row = QHBoxLayout()
 
-        self._apply_btn = QPushButton("選択ケースに適用")
-        self._apply_btn.setToolTip("選択中のテンプレートを現在のケースに適用します")
+        self._apply_btn = QPushButton("✅ 選択ケースに適用")
+        self._apply_btn.setToolTip(
+            "選択中のテンプレートを現在のケースに適用します\n"
+            "（ダブルクリックでも即適用できます）"
+        )
         self._apply_btn.clicked.connect(self._on_apply)
         self._apply_btn.setEnabled(False)
+        self._apply_btn.setMinimumHeight(32)
         btn_row.addWidget(self._apply_btn)
 
         self._delete_btn = QPushButton("削除")
@@ -202,7 +250,12 @@ class TemplateDialog(QDialog):
             item = QListWidgetItem(f"{prefix}{tpl.name}")
             item.setData(Qt.UserRole, tpl)
             item.setData(Qt.UserRole + 1, is_builtin)
+            # UX改善（第6回①）: カテゴリ色分け背景
+            self._apply_category_color(item, tpl.category)
             self._list.addItem(item)
+
+        # UX改善（第6回①）: 件数バッジ更新
+        self._update_count_badges()
 
     def _get_filtered_templates(self) -> List[CaseTemplate]:
         """フィルタ条件に合うテンプレートを返します。"""
@@ -233,7 +286,11 @@ class TemplateDialog(QDialog):
             item = QListWidgetItem(f"{prefix}{tpl.name}")
             item.setData(Qt.UserRole, tpl)
             item.setData(Qt.UserRole + 1, is_builtin)
+            # UX改善（第6回①）: カテゴリ色分け背景
+            self._apply_category_color(item, tpl.category)
             self._list.addItem(item)
+        # UX改善（第6回①）: 件数バッジ更新
+        self._update_count_badges()
 
     def _on_selection_changed(self, current: Optional[QListWidgetItem], _) -> None:
         """テンプレート選択変更時のハンドラ。"""
@@ -241,6 +298,7 @@ class TemplateDialog(QDialog):
             self._current_template = None
             self._current_is_builtin = False
             self._apply_btn.setEnabled(False)
+            self._apply_btn.setStyleSheet("")  # UX改善（第6回①）: スタイルリセット
             self._delete_btn.setEnabled(False)
             self._clear_detail()
             return
@@ -250,6 +308,12 @@ class TemplateDialog(QDialog):
         self._current_template = tpl
         self._current_is_builtin = is_builtin
         self._apply_btn.setEnabled(True)
+        # UX改善（第6回①）: 選択時に適用ボタンを青強調
+        self._apply_btn.setStyleSheet(
+            "QPushButton { background-color: #1976d2; color: white; "
+            "font-weight: bold; border-radius: 4px; padding: 4px 12px; }"
+            "QPushButton:hover { background-color: #1565c0; }"
+        )
         self._delete_btn.setEnabled(not is_builtin)
         self._show_detail(tpl, is_builtin)
 
@@ -286,8 +350,56 @@ class TemplateDialog(QDialog):
         self._params_text.clear()
 
     # ------------------------------------------------------------------
+    # UX改善（第6回①）: ヘルパーメソッド
+    # ------------------------------------------------------------------
+
+    def _apply_category_color(self, item: QListWidgetItem, category: str) -> None:
+        """
+        UX改善（第6回①）: リストアイテムにカテゴリ別背景色を設定します。
+
+        カテゴリ（免震/制振/共通/その他）に合った薄い背景色を付けることで、
+        スクロールしながらでも分類をひと目で把握できます。
+        """
+        from PySide6.QtGui import QColor
+        bg = self._CATEGORY_BG.get(category, "#f5f5f5")
+        fg = self._CATEGORY_FG.get(category, "#333333")
+        item.setBackground(QColor(bg))
+        item.setForeground(QColor(fg))
+
+    def _update_count_badges(self) -> None:
+        """
+        UX改善（第6回①）: ビルトイン件数・ユーザー件数バッジを更新します。
+
+        現在のフィルター適用後の一覧に含まれる件数を表示し、
+        どのくらいのテンプレートがあるかを一目で把握できます。
+        """
+        if not hasattr(self, "_builtin_badge") or not hasattr(self, "_user_badge"):
+            return
+        builtin_count = sum(
+            1 for i in range(self._list.count())
+            if self._list.item(i).data(Qt.UserRole + 1)
+        )
+        user_count = self._list.count() - builtin_count
+        self._builtin_badge.setText(f"📦 ビルトイン {builtin_count}件")
+        self._user_badge.setText(f"📝 ユーザー {user_count}件")
+        self._user_badge.setVisible(user_count > 0)
+
+    # ------------------------------------------------------------------
     # Actions
     # ------------------------------------------------------------------
+
+    def _on_double_click(self, item: QListWidgetItem) -> None:
+        """
+        UX改善（第6回①）: ダブルクリックで選択テンプレートを即適用します。
+
+        シングルクリックで詳細を確認してから[適用]ボタンを押すフローに加え、
+        よく使うテンプレートはダブルクリック1操作で即適用できます。
+        """
+        tpl = item.data(Qt.UserRole)
+        if tpl:
+            self._current_template = tpl
+            self.templateApplied.emit(tpl)
+            self.accept()
 
     def _on_apply(self) -> None:
         """テンプレートを適用します。"""

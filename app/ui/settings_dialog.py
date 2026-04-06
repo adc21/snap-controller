@@ -8,10 +8,19 @@ QSettings を利用して以下の設定を永続化します:
   - グラフのデフォルトフォントサイズ
   - 解析完了時の通知サウンド ON/OFF
   - 解析完了後にSTEP4へ自動遷移するか（UX改善⑤）
+
+UX改善③ 第5回 (settings_dialog.py):
+  SNAP.exe / workフォルダのリアルタイム存在確認バッジ追加。
+  パスが変更されるたびに右側のバッジラベルが即座に更新されます。
+    - ファイル/フォルダが存在する場合: 緑「✓ 確認済み」
+    - 空欄の場合: グレー「（未設定）」
+    - 存在しないパスの場合: 赤「✗ 見つかりません」
+  タイポや誤ったパス設定によるトラブルを設定直後に気付けます。
 """
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Optional
 
 from PySide6.QtCore import QSettings
@@ -139,6 +148,7 @@ class SettingsDialog(QDialog):
         snap_group = QGroupBox("SNAP 解析エンジン")
         snap_form = QFormLayout(snap_group)
 
+        # UX改善③ 第5回: exe パス行 + リアルタイムバッジ
         exe_row = QHBoxLayout()
         self._exe_edit = QLineEdit()
         self._exe_edit.setPlaceholderText("SNAP.exe のフルパスを指定してください")
@@ -149,6 +159,12 @@ class SettingsDialog(QDialog):
         exe_row.addWidget(exe_btn)
         snap_form.addRow("デフォルト SNAP.exe:", exe_row)
 
+        # バッジラベル（行の次の行に配置）
+        self._exe_badge = QLabel("（未設定）")
+        self._exe_badge.setStyleSheet("color: #757575; font-size: 10px;")
+        snap_form.addRow("", self._exe_badge)
+
+        # UX改善③ 第5回: work dir 行 + リアルタイムバッジ
         work_row = QHBoxLayout()
         self._work_dir_edit = QLineEdit()
         self._work_dir_edit.setPlaceholderText("例: C:\\Users\\xxx\\kozosystem\\SNAPV8\\work")
@@ -159,6 +175,10 @@ class SettingsDialog(QDialog):
         work_row.addWidget(work_btn)
         snap_form.addRow("SNAP work フォルダ:", work_row)
 
+        self._work_badge = QLabel("（未設定）")
+        self._work_badge.setStyleSheet("color: #757575; font-size: 10px;")
+        snap_form.addRow("", self._work_badge)
+
         snap_form.addRow(
             QLabel(
                 "<small>※ SNAP.exe と同じフォルダにある「work」フォルダを指定してください。<br>"
@@ -166,6 +186,14 @@ class SettingsDialog(QDialog):
             )
         )
         layout.addWidget(snap_group)
+
+        # UX改善③ 第5回: テキスト変化でリアルタイム更新
+        self._exe_edit.textChanged.connect(
+            lambda text: self._refresh_path_badge(text, self._exe_badge, is_file=True)
+        )
+        self._work_dir_edit.textChanged.connect(
+            lambda text: self._refresh_path_badge(text, self._work_badge, is_file=False)
+        )
 
         # ---- デモ/解析設定 ----
         demo_group = QGroupBox("デモ・解析設定")
@@ -260,6 +288,9 @@ class SettingsDialog(QDialog):
         """現在の設定を UI に反映します。"""
         self._exe_edit.setText(self._current["snap_exe_path"])
         self._work_dir_edit.setText(self._current.get("snap_work_dir", ""))
+        # UX改善③ 第5回: 初期ロード時にバッジを更新
+        self._refresh_path_badge(self._current["snap_exe_path"], self._exe_badge, is_file=True)
+        self._refresh_path_badge(self._current.get("snap_work_dir", ""), self._work_badge, is_file=False)
         self._floors_spin.setValue(self._current["demo_floors"])
         self._font_spin.setValue(self._current["chart_font_size"])
         self._sound_check.setChecked(self._current["sound_notify"])
@@ -331,3 +362,38 @@ class SettingsDialog(QDialog):
         )
         if path:
             self._work_dir_edit.setText(path)
+
+    # ------------------------------------------------------------------
+    # UX改善③ 第5回: リアルタイムパスバッジ
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _refresh_path_badge(path_text: str, badge: QLabel, is_file: bool) -> None:
+        """
+        UX改善③ 第5回: パス入力内容に応じてバッジラベルのテキスト・色をリアルタイム更新。
+
+        Parameters
+        ----------
+        path_text : str
+            入力中のパス文字列。
+        badge : QLabel
+            更新対象のバッジラベル。
+        is_file : bool
+            True のとき「ファイルとして存在するか」、False のとき「ディレクトリとして存在するか」を確認します。
+        """
+        text = path_text.strip()
+        if not text:
+            badge.setText("（未設定）")
+            badge.setStyleSheet("color: #757575; font-size: 10px;")
+            return
+        p = Path(text)
+        if is_file:
+            ok = p.is_file()
+        else:
+            ok = p.is_dir()
+        if ok:
+            badge.setText("✓ 確認済み — ファイル/フォルダが見つかりました")
+            badge.setStyleSheet("color: #2e7d32; font-size: 10px; font-weight: bold;")
+        else:
+            badge.setText("✗ 見つかりません — パスを確認してください")
+            badge.setStyleSheet("color: #c62828; font-size: 10px; font-weight: bold;")

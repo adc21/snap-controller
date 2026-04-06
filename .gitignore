@@ -46,3 +46,6 @@ build_log.txt
 # ===== Windows =====
 Thumbs.db
 Desktop.ini
+
+# ===== Test results =====
+example_*Case*

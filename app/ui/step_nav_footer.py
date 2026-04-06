@@ -2,6 +2,16 @@
 app/ui/step_nav_footer.py
 ワークフローステップのナビゲーションフッター。
 
+UX改善（第7回⑤）: 自動保存ステータスインジケーター追加。
+  フッターのストレッチ部分に小さな自動保存状態ラベルを追加します。
+  `update_autosave_status(state, path)` メソッドで外部から更新します。
+  - "saved"    → 「💾 保存済み HH:MM」（グレー小文字）
+  - "saving"   → 「⏳ 保存中...」（グレー小文字）
+  - "unsaved"  → 「● 未保存の変更あり」（橙色・やや目立つ）
+  - "error"    → 「⚠ 自動保存失敗」（赤・クリックで詳細表示）
+  これにより、ユーザーは常に「今の作業内容がプロジェクトに保存されているか」を
+  ステップをまたいで確認できます。
+
 UX改善①新: 各ステップのコンテンツ下部に「← 戻る」「次へ →」ボタンを追加し、
 ユーザーがサイドバーを使わなくても自然にステップを進められるようにします。
 
@@ -99,6 +109,23 @@ class StepNavFooter(QWidget):
         self._btn_back.setVisible(show_back)
         layout.addWidget(self._btn_back)
 
+        # UX改善（第7回⑤）: 自動保存ステータスインジケーター
+        # プロジェクトの保存状態（保存済み / 未保存 / 保存中 / エラー）を
+        # フッター中央に常時表示します。update_autosave_status() で外部から更新します。
+        self._autosave_lbl = QLabel("")
+        self._autosave_lbl.setStyleSheet(
+            "color: #9e9e9e; font-size: 10px; background: transparent;"
+        )
+        self._autosave_lbl.setToolTip(
+            "プロジェクトの自動保存状態を表示します。\n\n"
+            "💾 保存済み: 最新の変更がファイルに保存されています\n"
+            "⏳ 保存中: 自動保存を実行中です\n"
+            "● 未保存: まだ保存されていない変更があります\n"
+            "⚠ 失敗: 自動保存に失敗しました（手動保存: Ctrl+S）"
+        )
+        self._autosave_lbl.setVisible(False)  # update_autosave_status() 呼び出し時に表示
+        layout.addWidget(self._autosave_lbl)
+
         layout.addStretch()
 
         # UX改善: 「次へ進むには」インラインヒントラベル（無効時のみ表示）
@@ -195,3 +222,73 @@ class StepNavFooter(QWidget):
             self._btn_back.setText(back_label)
         if next_label:
             self._btn_next.setText(next_label)
+
+    def update_autosave_status(self, state: str, path: str = "") -> None:
+        """
+        UX改善（第7回⑤）: 自動保存ステータスインジケーターを更新します。
+
+        フッター中央のステータスラベルを更新し、現在のプロジェクト保存状態を
+        ユーザーに視覚的に伝えます。
+
+        Parameters
+        ----------
+        state : str
+            保存状態を示す文字列:
+            - "saved"   : 正常に保存済み
+            - "saving"  : 自動保存中
+            - "unsaved" : 未保存の変更あり
+            - "error"   : 自動保存失敗
+            - ""        : 表示なし（プロジェクト未読み込み等）
+        path : str
+            保存済みの場合、ファイルパスを渡すと「保存済み HH:MM」にパス名を
+            ツールチップに表示します。省略可能。
+        """
+        if not hasattr(self, "_autosave_lbl"):
+            return
+
+        from datetime import datetime as _dt
+
+        if not state:
+            self._autosave_lbl.setVisible(False)
+            return
+
+        _state_map = {
+            "saved": {
+                "text": f"💾 保存済み {_dt.now().strftime('%H:%M')}",
+                "color": "#9e9e9e",
+            },
+            "saving": {
+                "text": "⏳ 保存中...",
+                "color": "#9e9e9e",
+            },
+            "unsaved": {
+                "text": "● 未保存の変更あり",
+                "color": "#f57c00",
+            },
+            "error": {
+                "text": "⚠ 自動保存失敗",
+                "color": "#ef5350",
+            },
+        }
+
+        cfg = _state_map.get(state, {"text": state, "color": "#9e9e9e"})
+        self._autosave_lbl.setText(cfg["text"])
+        self._autosave_lbl.setStyleSheet(
+            f"color: {cfg['color']}; font-size: 10px; background: transparent;"
+        )
+
+        # パスが指定された場合はツールチップを詳細に
+        if path and state == "saved":
+            import os
+            self._autosave_lbl.setToolTip(
+                f"保存済み: {os.path.basename(path)}\n場所: {path}\n\n"
+                "Ctrl+S で手動保存もできます。"
+            )
+        elif state == "error":
+            self._autosave_lbl.setToolTip(
+                "⚠ 自動保存に失敗しました。\n\n"
+                "Ctrl+S で手動保存を試してください。\n"
+                "保存先フォルダへの書き込み権限を確認してください。"
+            )
+
+        self._autosave_lbl.setVisible(True)

@@ -2,6 +2,17 @@
 app/ui/dashboard_widget.py
 プロジェクトサマリーダッシュボードウィジェット。
 
+UX改善（第10回③）: 最良・最悪ケース統計カードにダンパー設定バッジを追加。
+  最良ケース・最悪ケースの統計カードに、そのケースが持つダンパー設定の
+  種別と変更有無を示すカラーバッジを追加します。
+  - ダンパーパラメータ変更あり → 「🔧 パラメータ変更あり」（青バッジ）
+  - 配置計画変更あり          → 「📐 配置変更あり」（オレンジバッジ）
+  - 両方変更あり              → 複数バッジを並列表示
+  - 変更なし                  → 「📊 ベースライン」（グレーバッジ）
+  ひと目でそのケースの特徴（どのようなダンパー設定か）が把握できます。
+  `_StatCard` に `set_damper_badge()` メソッドを追加。
+  `_update_stat_cards()` でバッジ更新を実施。
+
 全ケースの概要を一目で確認できるダッシュボードです。
 ヒートマップ、最良/最悪ケース表示、統計情報を提供します。
 
@@ -21,6 +32,20 @@ app/ui/dashboard_widget.py
   ├──────────────────────────────────────────────────────────┤
   │ 応答値分布（箱ひげ図）                                   │
   └──────────────────────────────────────────────────────────┘
+
+UX改善（第4回）⑤: プロジェクト状態別「次のアクション」誘導バナー追加。
+  統計カードの直下に、プロジェクトの現在状態を判定して適切な
+  次のステップを案内するバナーを表示します。
+
+  状態別メッセージ:
+  - ケースなし:        「① s8iファイルを開いてモデルを指定してください」
+  - 全ケースPENDING:  「② 解析を実行してください（実行タブ → 解析開始）」
+  - 実行中:           「⏳ 解析実行中... 完了後にここで結果を確認できます」
+  - 完了1件のみ:      「③ ケースを追加して複数条件を比較しましょう」
+  - 完了2件以上:      「④ ヒートマップ・グラフで各ケースを比較してみましょう」
+  - エラーあり:       「❌ エラーあり → ログタブでエラー内容を確認してください」
+
+  `_update_next_step_banner()` メソッドと `_next_step_banner` QFrame を追加。
 """
 
 from __future__ import annotations
@@ -135,6 +160,12 @@ class _StatCard(QFrame):
         self._subtitle_label.setStyleSheet("color: gray; font-size: 10px;")
         text_layout.addWidget(self._subtitle_label)
 
+        # UX改善（第10回③）: ダンパー設定バッジ行
+        self._badge_row = QHBoxLayout()
+        self._badge_row.setSpacing(4)
+        self._badge_row.setContentsMargins(0, 2, 0, 0)
+        text_layout.addLayout(self._badge_row)
+
         text_layout.addStretch()
         main_layout.addLayout(text_layout)
         main_layout.addStretch()
@@ -143,6 +174,48 @@ class _StatCard(QFrame):
         self._value_label.setText(value)
         self._subtitle_label.setText(subtitle)
         self._case_id = case_id
+
+    def set_damper_badge(self, has_params: bool, has_placement: bool) -> None:
+        """
+        UX改善（第10回③）: ダンパー設定バッジを更新します。
+
+        Parameters
+        ----------
+        has_params : bool
+            ダンパーパラメータ変更がある場合 True。
+        has_placement : bool
+            配置計画変更がある場合 True。
+        """
+        # 既存バッジをクリア
+        while self._badge_row.count():
+            item = self._badge_row.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+
+        if not has_params and not has_placement:
+            # ベースラインバッジ
+            badge = QLabel("📊 ベースライン")
+            badge.setStyleSheet(
+                "font-size: 9px; color: #757575;"
+                "background: #eeeeee; border-radius: 3px; padding: 1px 4px;"
+            )
+            self._badge_row.addWidget(badge)
+        else:
+            if has_params:
+                badge_p = QLabel("🔧 パラメータ変更")
+                badge_p.setStyleSheet(
+                    "font-size: 9px; color: #1565c0;"
+                    "background: #e3f2fd; border-radius: 3px; padding: 1px 4px;"
+                )
+                self._badge_row.addWidget(badge_p)
+            if has_placement:
+                badge_rd = QLabel("📐 配置変更")
+                badge_rd.setStyleSheet(
+                    "font-size: 9px; color: #e65100;"
+                    "background: #fff3e0; border-radius: 3px; padding: 1px 4px;"
+                )
+                self._badge_row.addWidget(badge_rd)
+        self._badge_row.addStretch()
 
     def mousePressEvent(self, event) -> None:
         if self._case_id:
@@ -220,6 +293,7 @@ class DashboardWidget(QWidget):
 
     def refresh(self) -> None:
         self._update_stat_cards()
+        self._update_next_step_banner()  # UX改善（第4回）⑤
         self._draw_heatmap()
         self._draw_boxplot()
 
@@ -260,6 +334,18 @@ class DashboardWidget(QWidget):
         card_row.addWidget(self._card_worst)
         layout.addLayout(card_row)
 
+        # UX改善（第4回）⑤: 「次のアクション」誘導バナー
+        self._next_step_banner = QFrame()
+        self._next_step_banner.setFrameShape(QFrame.StyledPanel)
+        self._next_step_banner.setMaximumHeight(56)
+        next_banner_layout = QHBoxLayout(self._next_step_banner)
+        next_banner_layout.setContentsMargins(12, 6, 12, 6)
+        self._next_step_label = QLabel("")
+        self._next_step_label.setWordWrap(True)
+        self._next_step_label.setStyleSheet("font-size: 11px;")
+        next_banner_layout.addWidget(self._next_step_label)
+        layout.addWidget(self._next_step_banner)
+
         # ヒートマップ
         heatmap_label = QLabel("<b>応答値ヒートマップ</b>（正規化: 青=小, 赤=大）")
         heatmap_label.setStyleSheet("font-size: 11px;")
@@ -275,6 +361,73 @@ class DashboardWidget(QWidget):
 
         self._boxplot_canvas = _BoxplotCanvas(self)
         layout.addWidget(self._boxplot_canvas, stretch=1)
+
+    # ------------------------------------------------------------------
+    # UX改善（第4回）⑤: 次のアクション誘導バナー
+    # ------------------------------------------------------------------
+
+    def _update_next_step_banner(self) -> None:
+        """
+        プロジェクトの現在状態に応じて「次のアクション」バナーを更新します。
+
+        ユーザーが今何をすべきかをワンセンテンスで伝え、
+        複雑なUIで迷子になるのを防ぎます。
+        状態は以下の優先順で判定します:
+        1. ケースなし → モデル指定を促す
+        2. エラーあり → ログ確認を促す
+        3. 実行中あり → 待機を促す
+        4. 全てPENDING → 解析実行を促す
+        5. 完了1件のみ → ケース追加を促す
+        6. 完了2件以上 → 比較・グラフを促す
+        """
+        cases = self._cases
+        total = len(cases)
+        completed = [c for c in cases if c.status == AnalysisCaseStatus.COMPLETED and c.result_summary]
+        errors = [c for c in cases if c.status == AnalysisCaseStatus.ERROR]
+        running = [c for c in cases if c.status.name == "RUNNING"] if hasattr(AnalysisCaseStatus, "RUNNING") else []
+
+        # 状態判定
+        if total == 0:
+            bg, border = "#fff3e0", "#fb8c00"
+            msg = (
+                "① まず <b>「モデル・設定」タブ</b> で解析したい s8i ファイルを開いて、"
+                "解析ケースを追加してください。"
+            )
+        elif errors and not completed:
+            bg, border = "#ffebee", "#e53935"
+            msg = (
+                f"❌ <b>{len(errors)}件のエラー</b>が発生しています。"
+                "　→ <b>「ログ」タブ</b>でエラー内容を確認し、ケース設定を見直してください。"
+            )
+        elif running:
+            bg, border = "#e3f2fd", "#1976d2"
+            msg = "⏳ 解析実行中... 完了後にこのダッシュボードで結果を確認できます。"
+        elif not completed and total > 0:
+            bg, border = "#f3e5f5", "#7b1fa2"
+            msg = (
+                "② ケースが設定されました。"
+                "<b>「解析実行」タブ</b>から解析を開始してください。"
+            )
+        elif len(completed) == 1:
+            bg, border = "#e8f5e9", "#43a047"
+            msg = (
+                "③ 1件の解析が完了しました。<b>ケースを追加して複数条件を比較</b>すると、"
+                "制振効果の違いを把握できます。「ケース管理」タブでケースを複製・追加してください。"
+            )
+        else:
+            n = len(completed)
+            bg, border = "#e8f5e9", "#1b5e20"
+            msg = (
+                f"④ <b>{n}件</b>の解析が完了しました！"
+                "　下のヒートマップや<b>「比較グラフ」タブ</b>で各ケースの応答値を比較してみましょう。"
+                + (f"　（⚠ {len(errors)}件のエラーあり）" if errors else "")
+            )
+
+        self._next_step_banner.setStyleSheet(
+            f"QFrame {{ background-color: {bg}; border: 1px solid {border}; border-radius: 5px; }}"
+        )
+        self._next_step_label.setText(msg)
+        self._next_step_label.setStyleSheet(f"font-size: 11px; color: {border};")
 
     # ------------------------------------------------------------------
     # Stat cards
@@ -312,9 +465,21 @@ class DashboardWidget(QWidget):
                 f"層間変形角: {worst_val:.6f} rad" if worst_val is not None else "",
                 case_id=worst.id,
             )
+
+            # UX改善（第10回③）: ダンパー設定バッジを更新
+            self._card_best.set_damper_badge(
+                has_params=bool(best.damper_params),
+                has_placement=bool(best.parameters.get("_rd_overrides")),
+            )
+            self._card_worst.set_damper_badge(
+                has_params=bool(worst.damper_params),
+                has_placement=bool(worst.parameters.get("_rd_overrides")),
+            )
         else:
             self._card_best.set_value("—", "完了ケースなし")
             self._card_worst.set_value("—", "完了ケースなし")
+            self._card_best.set_damper_badge(False, False)
+            self._card_worst.set_damper_badge(False, False)
 
     # ------------------------------------------------------------------
     # Heatmap

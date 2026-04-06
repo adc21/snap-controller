@@ -21,11 +21,12 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Optional
 
-from PySide6.QtCore import Qt, QSettings
+from PySide6.QtCore import Qt, QSettings, QTimer
 from PySide6.QtGui import QAction, QCloseEvent, QIcon, QKeySequence
 from PySide6.QtWidgets import (
     QApplication,
     QFileDialog,
+    QFrame,
     QLabel,
     QMainWindow,
     QMessageBox,
@@ -50,7 +51,6 @@ from .envelope_chart_widget import EnvelopeChartWidget
 from .criteria_dialog import CriteriaDialog
 from .damper_catalog_dialog import DamperCatalogDialog
 from .dashboard_widget import DashboardWidget
-from .earthquake_wave_dialog import EarthquakeWaveDialog
 from .export_dialog import ExportDialog
 from .file_preview_widget import FilePreviewWidget
 from .log_widget import LogWidget
@@ -60,8 +60,6 @@ from .radar_chart_widget import RadarChartWidget
 from .ranking_widget import RankingWidget
 from .result_chart_widget import ResultChartWidget
 from .result_table_widget import ResultTableWidget
-from .sensitivity_widget import SensitivityWidget
-from .time_history_widget import TimeHistoryWidget
 from .model_info_widget import ModelInfoWidget
 from .settings_dialog import SettingsDialog, load_settings
 from .sweep_dialog import SweepDialog
@@ -156,9 +154,7 @@ class MainWindow(QMainWindow):
         self._radar_chart = RadarChartWidget()
         self._result_table = ResultTableWidget()
         self._ranking = RankingWidget()
-        self._time_history = TimeHistoryWidget()
         self._dashboard = DashboardWidget()
-        self._sensitivity = SensitivityWidget()
         self._file_preview = FilePreviewWidget()
         self._run_selection = RunSelectionWidget()
         self._batch_queue = BatchQueueWidget()
@@ -171,8 +167,6 @@ class MainWindow(QMainWindow):
         self._welcome.recentProjectSelected.connect(self._open_recent_project)
         # UX改善（スマートデフォルト）: SNAP未設定警告バナーから設定ダイアログへ誘導
         self._welcome.snapSettingsRequested.connect(self._open_settings)
-        # UX改善⑤: デモ体験ボタンからデモフローを開始
-        self._welcome.demoRequested.connect(self._start_demo_experience)
 
         # ---- ワークフローの4ステップ構築 ----
         from PySide6.QtWidgets import QTabWidget as _QTabWidget, QStackedWidget
@@ -211,105 +205,6 @@ class MainWindow(QMainWindow):
         self._hint_banner_step2 = StepHintBanner(step_index=1)
         step2_layout.addWidget(self._hint_banner_step2)
 
-        # ---- UX改善⑤（段階的開示）: 空ケースリスト時クイックスタートパネル ----
-        # ケースが0件 かつ s8i ファイルが読み込まれているとき、
-        # ケーステーブルの上部にガイドパネルを表示し「最初の一歩」を促します。
-        # ケースが追加されると自動的に非表示になります。
-        from PySide6.QtWidgets import QFrame as _QFrame2
-        self._step2_quickstart_panel = _QFrame2()
-        self._step2_quickstart_panel.setFrameShape(_QFrame2.StyledPanel)
-        self._step2_quickstart_panel.setStyleSheet(
-            "QFrame {"
-            "  background-color: #e8f4fd;"
-            "  border: 1px solid #90caf9;"
-            "  border-radius: 6px;"
-            "  margin: 8px 8px 0px 8px;"
-            "}"
-        )
-        self._step2_quickstart_panel.setVisible(False)  # 初期非表示（モデル未読込）
-
-        _qs_layout = QVBoxLayout(self._step2_quickstart_panel)
-        _qs_layout.setContentsMargins(16, 12, 16, 12)
-        _qs_layout.setSpacing(8)
-
-        # タイトル
-        _qs_title = QLabel("🚀  まずはケースを追加してみましょう")
-        _qs_title_font = _qs_title.font()
-        _qs_title_font.setPointSize(12)
-        _qs_title_font.setBold(True)
-        _qs_title.setFont(_qs_title_font)
-        _qs_title.setStyleSheet("color: #1565c0; background: transparent;")
-        _qs_layout.addWidget(_qs_title)
-
-        _qs_desc = QLabel(
-            "上の「＋ 追加」ボタンでケースを作成するか、"
-            "よく使われる設定で素早く追加できます:"
-        )
-        _qs_desc.setStyleSheet("color: #333; font-size: 11px; background: transparent;")
-        _qs_desc.setWordWrap(True)
-        _qs_layout.addWidget(_qs_desc)
-
-        # クイック追加ボタン行
-        _qs_btn_row = QHBoxLayout()
-        _qs_btn_row.setSpacing(8)
-
-        _qs_templates = [
-            {
-                "label": "📊 ベースライン",
-                "tooltip": (
-                    "ダンパーなしの素モデルを追加します。\n"
-                    "ベースラインとして比較の基準値に使います。"
-                ),
-                "name": "ベースライン（ダンパーなし）",
-            },
-            {
-                "label": "🔧 複製して追加",
-                "tooltip": (
-                    "現在選択中のケースを複製します。\n"
-                    "パラメータをわずかに変えて比較したいときに便利です。"
-                ),
-                "name": "_duplicate",  # 特殊フラグ
-            },
-            {
-                "label": "📐 スイープ生成",
-                "tooltip": (
-                    "パラメータを自動的に変化させ、複数ケースを一括生成します。\n"
-                    "スイープ設定ダイアログが開きます。"
-                ),
-                "name": "_sweep",  # 特殊フラグ
-            },
-        ]
-
-        for _tmpl in _qs_templates:
-            _btn = QPushButton(_tmpl["label"])
-            _btn.setToolTip(_tmpl["tooltip"])
-            _btn.setStyleSheet(
-                "QPushButton {"
-                "  background: white; color: #1565c0;"
-                "  border: 1px solid #90caf9; border-radius: 4px;"
-                "  padding: 6px 14px; font-size: 11px; font-weight: bold;"
-                "}"
-                "QPushButton:hover {"
-                "  background-color: #1976d2; color: white;"
-                "  border-color: #1976d2;"
-                "}"
-            )
-            _name = _tmpl["name"]
-            if _name == "_duplicate":
-                _btn.clicked.connect(lambda: self._case_table._duplicate_selected_case()
-                                     if hasattr(self._case_table, "_duplicate_selected_case")
-                                     else self._case_table._add_case())
-            elif _name == "_sweep":
-                _btn.clicked.connect(self._open_sweep_dialog)
-            else:
-                # 「ベースライン」クイック追加: 追加後にケース名を自動設定
-                _btn.clicked.connect(lambda: self._add_baseline_case())
-            _qs_btn_row.addWidget(_btn)
-
-        _qs_btn_row.addStretch()
-        _qs_layout.addLayout(_qs_btn_row)
-
-        step2_layout.addWidget(self._step2_quickstart_panel)
         step2_layout.addWidget(self._case_table)
         # STEP2 フッター
         self._step2_footer = StepNavFooter(
@@ -334,6 +229,69 @@ class MainWindow(QMainWindow):
         # UX改善（新）: 初回ヒントバナー
         self._hint_banner_step3 = StepHintBanner(step_index=2)
         step3_layout.addWidget(self._hint_banner_step3)
+
+        # ── UX改善（第12回④）: STEP2→STEP3 遷移時ケース設定確認トーストバナー ────────
+        # STEP3 に切り替えるたびに、デフォルト名のままのケースや設定不完全なケースを
+        # 自動検出してオレンジ色のトーストバナーで知らせます。
+        # ユーザーが STEP3 に入るときに「直しそびれ」を防ぎます。
+        # バナーは「✕」で手動非表示、または5秒後に自動フェードアウトします。
+        self._case_readiness_toast = QFrame()
+        self._case_readiness_toast.setFrameShape(QFrame.NoFrame)
+        self._case_readiness_toast.setStyleSheet(
+            "QFrame {"
+            "  background-color: #fff8e1;"
+            "  border: 1px solid #ffca28;"
+            "  border-left: 4px solid #f57c00;"
+            "  border-radius: 4px;"
+            "  margin: 4px 4px 0px 4px;"
+            "}"
+        )
+        _toast_row = QHBoxLayout(self._case_readiness_toast)
+        _toast_row.setContentsMargins(10, 6, 10, 6)
+        _toast_row.setSpacing(8)
+
+        _toast_icon = QLabel("⚠")
+        _toast_icon.setStyleSheet(
+            "font-size: 14px; background: transparent; border: none;"
+        )
+        _toast_icon.setFixedWidth(20)
+        _toast_row.addWidget(_toast_icon)
+
+        self._case_readiness_toast_lbl = QLabel("")
+        self._case_readiness_toast_lbl.setStyleSheet(
+            "color: #e65100; font-size: 11px; background: transparent; border: none;"
+        )
+        self._case_readiness_toast_lbl.setWordWrap(True)
+        self._case_readiness_toast_lbl.setTextFormat(Qt.RichText)
+        _toast_row.addWidget(self._case_readiness_toast_lbl, stretch=1)
+
+        _toast_back_btn = QPushButton("← STEP2 に戻って確認")
+        _toast_back_btn.setFixedHeight(24)
+        _toast_back_btn.setStyleSheet(
+            "QPushButton {"
+            "  font-size: 10px; padding: 2px 8px;"
+            "  border: 1px solid #ffca28; border-radius: 3px;"
+            "  background: #fff3e0; color: #e65100;"
+            "}"
+            "QPushButton:hover { background: #ffe0b2; }"
+        )
+        _toast_back_btn.clicked.connect(lambda: self._sidebar.set_current_step(1))
+        _toast_row.addWidget(_toast_back_btn)
+
+        _toast_close_btn = QPushButton("✕")
+        _toast_close_btn.setFixedSize(20, 20)
+        _toast_close_btn.setStyleSheet(
+            "QPushButton {"
+            "  font-size: 11px; background: transparent; border: none; color: #888;"
+            "}"
+            "QPushButton:hover { color: #333; }"
+        )
+        _toast_close_btn.clicked.connect(self._case_readiness_toast.hide)
+        _toast_row.addWidget(_toast_close_btn)
+
+        self._case_readiness_toast.hide()  # 初期非表示
+        self._case_readiness_toast_timer = None  # 自動非表示タイマー
+        step3_layout.addWidget(self._case_readiness_toast)
 
         step3_layout.addWidget(self._run_selection)
 
@@ -377,8 +335,6 @@ class MainWindow(QMainWindow):
             (self._radar_chart,    "fa5s.spider",            "レーダーチャート",     True,  2),
             (self._result_table,   "fa5s.table",             "結果テーブル",         True,  1),
             (self._ranking,        "fa5s.trophy",            "ランキング",           True,  1),
-            (self._time_history,   "fa5s.chart-area",        "時刻歴応答",           True,  1),
-            (self._sensitivity,    "fa5s.search",            "感度分析",             True,  2),
         ]
         self._tab_result_requirements: dict = {}
         icon_color = "#d4d4d4" if ThemeManager.is_dark() else "#333333"
@@ -593,8 +549,6 @@ class MainWindow(QMainWindow):
         self._case_table.projectModified.connect(self._run_selection.refresh)
         self._case_table.projectModified.connect(self._update_sidebar_badges)  # UX改善1: ケース変更でバッジ更新
         self._case_table.projectModified.connect(self._on_project_modified_groups)  # UX改善⑤新: グループ変更時に比較グラフを更新
-        # UX改善⑤（段階的開示）: ケース追加/削除時にクイックスタートパネルを更新
-        self._case_table.projectModified.connect(self._update_quickstart_panel)
         self._ranking.caseSelected.connect(self._on_case_selected)
         # UX改善①新: ランキングから「基点として再設計」ボタン
         self._ranking.useAsStartingPointRequested.connect(self._on_use_ranking_case_as_base)
@@ -693,11 +647,6 @@ class MainWindow(QMainWindow):
         act_catalog.triggered.connect(self._open_damper_catalog)
         analysis_menu.addAction(act_catalog)
 
-        act_wave = QAction("地震波選択(&E)…", self)
-        act_wave.setShortcut("Ctrl+Shift+E")
-        act_wave.triggered.connect(self._open_wave_dialog)
-        analysis_menu.addAction(act_wave)
-
         act_optimize = QAction("ダンパー最適化(&O)…", self)
         act_optimize.setShortcut("Ctrl+Shift+O")
         act_optimize.triggered.connect(self._open_optimizer_dialog)
@@ -725,13 +674,6 @@ class MainWindow(QMainWindow):
 
         analysis_menu.addSeparator()
 
-        act_multi_wave = QAction("複数地震波一括解析(&M)…", self)
-        act_multi_wave.setShortcut("Ctrl+Shift+M")
-        act_multi_wave.triggered.connect(self._open_multi_wave_dialog)
-        analysis_menu.addAction(act_multi_wave)
-
-        analysis_menu.addSeparator()
-
         act_validate = QAction("入力チェック(&V)", self)
         act_validate.setShortcut("Ctrl+Shift+V")
         act_validate.triggered.connect(self._validate_selected)
@@ -752,16 +694,6 @@ class MainWindow(QMainWindow):
         act_run_all.triggered.connect(self._run_all)
         analysis_menu.addAction(act_run_all)
 
-        analysis_menu.addSeparator()
-
-        act_demo = QAction("デモ実行（モックデータ）(&D)", self)
-        act_demo.setShortcut("F6")
-        act_demo.triggered.connect(self._run_demo)
-        analysis_menu.addAction(act_demo)
-
-        act_demo_all = QAction("全ケースをデモ実行(&M)", self)
-        act_demo_all.triggered.connect(self._run_demo_all)
-        analysis_menu.addAction(act_demo_all)
 
         # ---- Settings ----
         settings_menu = mb.addMenu("設定(&S)")
@@ -798,16 +730,6 @@ class MainWindow(QMainWindow):
         act_add.triggered.connect(self._add_case)
         tb.addAction(act_add)
 
-        act_sweep = QAction(qta.icon("fa5s.stream", color=icon_color), "スイープ", self)
-        act_sweep.setToolTip("パラメータスイープで複数ケースを一括生成  [Ctrl+W]")
-        act_sweep.triggered.connect(self._open_sweep_dialog)
-        tb.addAction(act_sweep)
-
-        act_catalog = QAction(qta.icon("fa5s.box-open", color=icon_color), "カタログ", self)
-        act_catalog.setToolTip("ダンパーカタログを開く  [Ctrl+K]")
-        act_catalog.triggered.connect(self._open_damper_catalog)
-        tb.addAction(act_catalog)
-
         tb.addSeparator()
 
         # ---- グループ2: 解析実行 ----
@@ -816,46 +738,13 @@ class MainWindow(QMainWindow):
         act_run.triggered.connect(self._run_selected)
         tb.addAction(act_run)
 
-        act_demo = QAction(qta.icon("fa5s.dice", color=icon_color), "デモ実行", self)
-        act_demo.setToolTip("選択ケースをモックデータで実行（SNAP 不要）  [F6]")
-        act_demo.triggered.connect(self._run_demo)
-        tb.addAction(act_demo)
-
-        act_multi_wave = QAction(qta.icon("fa5s.random", color=icon_color), "多波解析", self)
-        act_multi_wave.setToolTip("複数地震波に対して一括ケース生成・解析  [Ctrl+Shift+M]")
-        act_multi_wave.triggered.connect(self._open_multi_wave_dialog)
-        tb.addAction(act_multi_wave)
-
         tb.addSeparator()
 
         # ---- グループ3: 設定・条件 ----
-        act_wave = QAction(qta.icon("fa5s.water", color=icon_color), "地震波", self)
-        act_wave.setToolTip("入力地震波を選択・管理します  [Ctrl+Shift+E]")
-        act_wave.triggered.connect(self._open_wave_dialog)
-        tb.addAction(act_wave)
-
         act_criteria = QAction(qta.icon("fa5s.bullseye", color=icon_color), "基準設定", self)
         act_criteria.setToolTip("目標性能基準を設定します  [Ctrl+T]")
         act_criteria.triggered.connect(self._open_criteria_dialog)
         tb.addAction(act_criteria)
-
-        act_template = QAction(qta.icon("fa5s.folder-open", color=icon_color), "テンプレート", self)
-        act_template.setToolTip("ケーステンプレートの管理・適用  [Ctrl+Shift+T]")
-        act_template.triggered.connect(self._open_template_dialog)
-        tb.addAction(act_template)
-
-        tb.addSeparator()
-
-        # ---- グループ4: 解析・比較 ----
-        act_optimize = QAction(qta.icon("fa5s.search", color=icon_color), "最適化", self)
-        act_optimize.setToolTip("ダンパーパラメータの自動最適化  [Ctrl+Shift+O]")
-        act_optimize.triggered.connect(self._open_optimizer_dialog)
-        tb.addAction(act_optimize)
-
-        act_compare = QAction(qta.icon("fa5s.arrows-alt-h", color=icon_color), "比較", self)
-        act_compare.setToolTip("2ケースの詳細比較ダイアログ  [Ctrl+D]")
-        act_compare.triggered.connect(self._open_case_compare)
-        tb.addAction(act_compare)
 
         tb.addSeparator()
 
@@ -1147,27 +1036,6 @@ class MainWindow(QMainWindow):
             "【活用ヒント】\n"
             "目標性能基準（Ctrl+T）を設定してから使うと、自動的に合否が判定されます。"
         ),
-        # 7: 時刻歴応答
-        (
-            "📉 時刻歴応答",
-            "各ケースの時刻歴応答（時間と応答の関係）を確認できます。\n\n"
-            "【見方】\n"
-            "・横軸が時間（秒）、縦軸が各応答値です\n"
-            "・ピーク時の応答挙動や振動の継続時間を確認できます\n\n"
-            "【活用ヒント】\n"
-            "「なぜ最大値が出たか」を時刻歴レベルで分析したいときに使います。"
-        ),
-        # 8: 感度分析
-        (
-            "🔍 感度分析",
-            "パラメータを変化させたときの応答変化（感度）を確認できます。\n\n"
-            "【見方】\n"
-            "・横軸がパラメータ値、縦軸が応答指標です\n"
-            "・傾きが急な部分ほど、そのパラメータの影響が大きいことを意味します\n\n"
-            "【活用ヒント】\n"
-            "パラメータスイープ（Ctrl+W）で複数ケースを生成してからこのタブを使うと、\n"
-            "最も効果的なパラメータ範囲を特定できます。"
-        ),
     ]
 
     def _show_current_tab_guide(self) -> None:
@@ -1219,6 +1087,8 @@ class MainWindow(QMainWindow):
         # STEP3（index=2）に切り替えるたびにチェックリストを最新化
         if step == 2:
             self._run_selection.refresh()
+            # UX改善（第12回④）: ケース設定確認トーストバナーを更新
+            self._show_case_readiness_toast()
         # UX改善③新: STEP4（index=3）へ切り替わったとき、最適なタブを自動選択
         elif step == 3:
             self._auto_select_result_tab()
@@ -1233,6 +1103,91 @@ class MainWindow(QMainWindow):
         banner = _hint_map.get(step)
         if banner is not None:
             banner.show_if_first_visit()
+
+    def _show_case_readiness_toast(self) -> None:
+        """
+        UX改善（第12回④）: STEP3 に遷移するたびにケース設定の問題を検出して
+        オレンジ色のトーストバナーを表示します。
+
+        検出内容:
+        - デフォルト名（Case-NN / 新規ケース）のままのケース数
+        - ダンパー設定が全くないケースが全件の場合（ベースラインのみ）
+        問題なければバナーは非表示のままにします。
+        バナーが表示された場合は 8 秒後に自動的に消えます。
+        """
+        if not hasattr(self, "_case_readiness_toast"):
+            return
+        if self._project is None:
+            self._case_readiness_toast.hide()
+            return
+
+        import re as _re_mw
+        _def_pat = _re_mw.compile(
+            r"^(新規ケース|Case-?\d+|case-?\d+)$", _re_mw.IGNORECASE
+        )
+        cases = self._project.cases
+        if not cases:
+            self._case_readiness_toast.hide()
+            return
+
+        # 問題のあるケースを集計
+        default_name_cases = [
+            c for c in cases
+            if _def_pat.match((c.name or "").strip()) or not (c.name or "").strip()
+        ]
+        no_damper_cases = [
+            c for c in cases
+            if not (c.damper_params and isinstance(c.damper_params, dict))
+            and not (
+                c.parameters and isinstance(c.parameters, dict)
+                and c.parameters.get("_rd_overrides")
+            )
+        ]
+
+        issues: list = []
+        if default_name_cases:
+            n = len(default_name_cases)
+            names_preview = "、".join(
+                f"「{c.name}」" for c in default_name_cases[:2]
+            )
+            if n > 2:
+                names_preview += f" 他{n-2}件"
+            issues.append(
+                f"ケース名がデフォルトのままです: {names_preview}"
+                "（後から内容がわかる名前に変更することをお勧めします）"
+            )
+
+        # 全件がベースラインの場合は警告（比較目的での制振検討の場合は意図的な場合もあるため弱い警告）
+        if len(no_damper_cases) == len(cases) and len(cases) > 1:
+            issues.append(
+                "すべてのケースにダンパー設定変更がありません。"
+                "比較検討をする場合はダンパーパラメータや配置を変更したケースを追加してください。"
+            )
+
+        if not issues:
+            self._case_readiness_toast.hide()
+            return
+
+        # バナーにメッセージを設定して表示
+        msg = "<br>".join(f"・{i}" for i in issues)
+        self._case_readiness_toast_lbl.setText(
+            f"<b>STEP3 に進む前に確認してください</b><br>{msg}"
+        )
+        self._case_readiness_toast.show()
+
+        # 既存タイマーをキャンセル
+        if self._case_readiness_toast_timer is not None:
+            try:
+                self._case_readiness_toast_timer.stop()
+            except Exception:
+                pass
+
+        # 8秒後に自動非表示
+        timer = QTimer(self)
+        timer.setSingleShot(True)
+        timer.timeout.connect(self._case_readiness_toast.hide)
+        timer.start(8000)
+        self._case_readiness_toast_timer = timer
 
     def _auto_select_result_tab(self) -> None:
         """
@@ -1500,45 +1455,6 @@ class MainWindow(QMainWindow):
             6000,
         )
 
-    def _update_quickstart_panel(self) -> None:
-        """
-        UX改善⑤（段階的開示）: STEP2のクイックスタートパネルの表示/非表示を更新します。
-
-        条件:
-          - s8i ファイルが読み込まれている
-          - かつ解析ケースが0件
-        の場合のみクイックスタートパネルを表示します。
-        ケースが追加されたら自動的に非表示にします。
-        """
-        if not hasattr(self, "_step2_quickstart_panel"):
-            return
-        if self._project is None:
-            self._step2_quickstart_panel.setVisible(False)
-            return
-        model_loaded = bool(self._project.s8i_path)
-        no_cases = len(self._project.cases) == 0
-        self._step2_quickstart_panel.setVisible(model_loaded and no_cases)
-
-    def _add_baseline_case(self) -> None:
-        """
-        UX改善⑤（スマートデフォルト）: ベースラインケースをクイック追加します。
-
-        「ベースライン（ダンパーなし）」という名前のケースを追加します。
-        クイックスタートパネルのボタンから呼び出されます。
-        通常の追加フロー（編集ダイアログ）を経て確認できます。
-        """
-        if self._project is None or not self._project.s8i_path:
-            return
-        # _add_case_from_template を使って名前付きでケースを追加
-        if hasattr(self._case_table, "_add_case_from_template"):
-            self._case_table._add_case_from_template(
-                name_prefix="ベースライン",
-                notes="ダンパーなし基準ケース。他ケースとの比較基準として使用します。"
-            )
-        else:
-            # フォールバック: 通常の追加ダイアログを開く
-            self._case_table.add_case()
-
     def _on_project_modified_groups(self) -> None:
         """
         UX改善⑤新: ケース変更（グループ追加・削除など）時に
@@ -1585,8 +1501,6 @@ class MainWindow(QMainWindow):
             Alt+5 → レーダーチャート
             Alt+6 → 結果テーブル
             Alt+7 → ランキング
-            Alt+8 → 時刻歴応答
-            Alt+9 → 感度分析
         """
         if self._main_stack.currentIndex() != 1:
             return
@@ -1766,8 +1680,6 @@ class MainWindow(QMainWindow):
             # UX改善1+2: バッジ更新 & STEP2（ケース設計）へ自動ナビゲート
             self._update_sidebar_badges()
             self._sidebar.set_current_step(1)
-            # UX改善⑤（段階的開示）: モデル読み込み後にクイックスタートパネルを表示
-            self._update_quickstart_panel()
             # UX改善⑤新: 読み込んだファイルを最近使ったs8iファイル履歴に追加
             self._model_info.add_recent_s8i(path)
             self.statusBar().showMessage(
@@ -1805,8 +1717,6 @@ class MainWindow(QMainWindow):
             self._run_selection.refresh()
             self._update_sidebar_badges()
             self._sidebar.set_current_step(1)
-            # UX改善⑤（段階的開示）: モデル読み込み後にクイックスタートパネルを更新
-            self._update_quickstart_panel()
             # UX改善⑤新: 読み込んだファイルを最近使ったs8iファイル履歴に追加
             self._model_info.add_recent_s8i(path)
             self.statusBar().showMessage(
@@ -1846,9 +1756,7 @@ class MainWindow(QMainWindow):
         self._radar_chart.set_cases([])
         self._result_table.set_cases([])
         self._ranking.set_cases([])
-        self._time_history.set_cases([])
         self._dashboard.set_cases([])
-        self._sensitivity.set_cases([])
 
     def _new_project_dialog(self) -> None:
         """変更確認後に新規プロジェクトを作成します。"""
@@ -2010,114 +1918,6 @@ class MainWindow(QMainWindow):
             self._log.clear()
             self._service.run_case(case)
 
-    def _run_demo(self) -> None:
-        """選択ケースをモックデータで実行します（SNAP 不要のデモ用）。"""
-        if self._project is None:
-            return
-        case_ids = self._case_table.selected_case_ids()
-        if not case_ids:
-            # 選択なし → ケースがなければ新規追加してデモ
-            if not self._project.cases:
-                from app.models import AnalysisCase
-                case = AnalysisCase(name="デモケース")
-                self._project.add_case(case)
-                self._case_table.refresh()
-                case_ids = [case.id]
-            else:
-                QMessageBox.information(self, "情報", "デモ実行するケースを選択してください。")
-                return
-        cases = [
-            self._project.get_case(cid)
-            for cid in case_ids
-            if self._project.get_case(cid) is not None
-        ]
-        if not cases:
-            return
-        self._log.clear()
-        floors = load_settings().get("demo_floors", 5)
-        if len(cases) == 1:
-            self._service.run_mock(cases[0], floors=floors)
-        else:
-            self._service.run_mock_all(cases, floors=floors)
-
-    def _run_demo_all(self) -> None:
-        """全ケースをモックデータで実行します（進捗バー付き）。"""
-        if self._project is None:
-            return
-        if not self._project.cases:
-            QMessageBox.information(self, "情報", "ケースがありません。")
-            return
-        self._log.clear()
-        floors = load_settings().get("demo_floors", 5)
-        self._service.run_mock_all(self._project.cases, floors=floors)
-
-    def _start_demo_experience(self) -> None:
-        """
-        UX改善⑤: デモ体験フローを開始します。
-
-        ウェルカム画面の「デモを開始する」ボタンから呼び出されます。
-        SNAP や .s8i ファイルがなくても、以下のデモを実行します:
-
-        1. 新規プロジェクトを作成
-        2. 3つのサンプルケース（ベースライン・中規模ダンパー・大規模ダンパー）を自動生成
-        3. STEP3（解析実行）へ移動
-        4. モックデータで全ケースを自動実行
-        5. 完了後に STEP4（結果・戦略）へ自動遷移
-
-        このデモにより、UIの操作フローと結果の見方を実際のデータで体験できます。
-        """
-        from app.models import AnalysisCase
-
-        # 既存プロジェクトの変更を確認
-        if not self._confirm_discard():
-            return
-
-        # 新規プロジェクト作成
-        self._new_project()
-
-        # サンプルケースを3件生成
-        _demo_cases = [
-            {
-                "name": "Demo-01_ベースライン（ダンパーなし）",
-                "notes": "デモ用: ダンパーなしの基準ケース。他のケースと比較するための基準値です。",
-            },
-            {
-                "name": "Demo-02_粘性ダンパー_Cd500",
-                "notes": "デモ用: 粘性ダンパー(Cd=500kN・s/m)を全層に設置した場合の解析です。",
-            },
-            {
-                "name": "Demo-03_粘性ダンパー_Cd1000",
-                "notes": "デモ用: 粘性ダンパー(Cd=1000kN・s/m)をより多く設置した場合の解析です。",
-            },
-        ]
-
-        for _c in _demo_cases:
-            case = AnalysisCase(name=_c["name"], notes=_c["notes"])
-            self._project.add_case(case)
-
-        # UIを更新
-        self._case_table.refresh()
-        self._run_selection.refresh()
-        self._update_sidebar_badges()
-
-        # STEP3へ移動（解析実行ステップ）
-        self._sidebar.set_current_step(2)
-        self._main_stack.setCurrentIndex(1)
-
-        # ステータスバーでデモモードを案内
-        self.statusBar().showMessage(
-            "🚀 デモモード: 3件のサンプルケースを自動実行します。SNAPは不要です。",
-            8000,
-        )
-
-        # モックデータで全ケースを自動実行（少し遅延して画面が整ってから）
-        from PySide6.QtCore import QTimer as _QTimer
-        floors = load_settings().get("demo_floors", 5)
-        _QTimer.singleShot(
-            600,  # 0.6秒後に実行開始
-            lambda: self._service.run_mock_all(self._project.cases, floors=floors)
-                    if self._project and self._project.cases else None,
-        )
 
     # ------------------------------------------------------------------
     # Event handlers
@@ -2195,9 +1995,7 @@ class MainWindow(QMainWindow):
             self._ranking.set_cases(self._project.cases)
             self._ranking.set_criteria(self._project.criteria)
             self._ranking.set_case_groups(self._project.case_groups)
-            self._time_history.set_cases(self._project.cases)
             self._dashboard.set_cases(self._project.cases)
-            self._sensitivity.set_cases(self._project.cases)
         if success and self._project:
             case = self._project.get_case(case_id)
             if case:
@@ -2478,9 +2276,7 @@ class MainWindow(QMainWindow):
                     self._compare_chart.update_theme()
                     self._radar_chart.update_theme()
                     self._result_table.update_theme()
-                    self._time_history.update_theme()
                     self._dashboard.update_theme()
-                    self._sensitivity.update_theme()
                     self._envelope_chart.update_theme()
                     self._file_preview.update_theme()
                 QMessageBox.information(
@@ -2620,47 +2416,6 @@ class MainWindow(QMainWindow):
         dlg.exec()
         self._case_table.refresh()
         self._ranking.set_case_groups(self._project.case_groups)
-
-    def _open_wave_dialog(self) -> None:
-        """地震波選択ダイアログを開きます。"""
-        if self._project is None:
-            return
-        dlg = EarthquakeWaveDialog(parent=self)
-        dlg.waveSelected.connect(self._on_wave_selected)
-        dlg.exec()
-
-    def _on_wave_selected(self, wave) -> None:
-        """地震波が選択された際の処理。"""
-        if self._project is None:
-            return
-        # 選択中のケースに適用、なければ新規ケース作成
-        case_id = self._case_table.selected_case_id()
-        if case_id:
-            case = self._project.get_case(case_id)
-        else:
-            from app.models import AnalysisCase
-            case = AnalysisCase(name=f"{wave.name} ケース")
-            self._project.add_case(case)
-            self._case_table.refresh()
-
-        if case:
-            # 地震波情報をケースのパラメータに格納
-            case.parameters["EQ_WAVE"] = wave.name
-            case.parameters["EQ_WAVE_ID"] = wave.id
-            case.parameters["EQ_DIRECTION"] = wave.direction
-            case.parameters["EQSCALE"] = str(wave.scale_factor)
-            if wave.file_path:
-                case.parameters["EQFILE"] = wave.file_path
-            self._project._touch()
-            self._case_table.refresh()
-            self._log.append_line(
-                f"=== 地震波設定: {wave.name} "
-                f"(方向={wave.direction}, 倍率={wave.scale_factor}) "
-                f"→ ケース「{case.name}」 ==="
-            )
-            self.statusBar().showMessage(
-                f"地震波「{wave.name}」をケース「{case.name}」に設定しました"
-            )
 
     def _open_optimizer_dialog(self) -> None:
         """ダンパー最適化ダイアログを開きます。"""
@@ -2830,35 +2585,6 @@ class MainWindow(QMainWindow):
                 self.statusBar().showMessage(
                     f"テンプレート「{tpl.name}」を保存しました"
                 )
-
-    def _open_multi_wave_dialog(self) -> None:
-        """複数地震波一括解析ダイアログを開きます。"""
-        if self._project is None:
-            return
-        # 選択中のケースをベースケースとして使う
-        base_case = None
-        case_id = self._case_table.selected_case_id()
-        if case_id:
-            base_case = self._project.get_case(case_id)
-        dlg = MultiWaveDialog(
-            base_case=base_case,
-            parent=self,
-        )
-        if dlg.exec():
-            for case in dlg.generated_cases:
-                self._project.add_case(case)
-            self._case_table.refresh()
-            n = len(dlg.generated_cases)
-            self._log.append_line(
-                f"=== 複数地震波一括生成: {n} ケースを追加 ==="
-            )
-            self.statusBar().showMessage(
-                f"複数地震波一括解析: {n} ケースを生成しました"
-            )
-            # 自動デモ実行が要求された場合
-            if dlg.auto_run_requested and dlg.generated_cases:
-                floors = load_settings().get("demo_floors", 5)
-                self._service.run_mock_all(dlg.generated_cases, floors=floors)
 
     def _validate_selected(self) -> None:
         """選択中のケースの入力チェックを行います。"""

@@ -5,6 +5,23 @@ UX改善:
   改善A: グラフ画像クリップボードコピーボタン（📋）を追加。
   改善B: Matplotlibナビゲーションツールバーを追加（ズーム・パン・保存）。
 
+UX改善（新③）: ピーク時刻縦線マーカー + テキスト注釈追加。
+  各ケースの最大応答時刻に垂直な破線を描画し、
+  「▲ ピーク: X.XXm\n@T=X.Xs」のテキスト注釈をグラフ上に直接表示します。
+  これにより「どの時刻に最大応答が発生したか」がひと目で把握でき、
+  地震動の特定の位相や共振帯域の特定に役立ちます。
+  - ケースごとにカラーを統一した破線（--）で縦線を描画
+  - 注釈テキストは上部余白に配置してグラフを見やすく保ちます
+  - 複数ケースが重なる場合は縦線を少しずらして視認性を確保します
+
+UX改善（第11回⑤）: 正規化表示トグルチェックボックス追加。
+  コントロール行に「正規化（最大=1.0）」チェックボックスを追加しました。
+  ONにすると各ケースの波形を最大絶対値=1.0にスケーリングして表示します。
+  絶対値の大きさではなく「波形の形状・収束速度・位相」を比較する際に有効です。
+  ダンパーの有無による振動の減衰特性の違いが一目でわかります。
+  `_normalize` フラグと `_on_normalize_toggled()` メソッドを追加。
+  `_draw()` に正規化スケーリングロジックを追加。Y軸ラベルとタイトルも更新。
+
 解析結果の時刻歴波形（変位・速度・加速度など）をグラフ表示します。
 複数ケース・複数層の比較表示にも対応します。
 
@@ -185,6 +202,8 @@ class TimeHistoryWidget(QWidget):
         super().__init__(parent)
         self._all_cases: List[AnalysisCase] = []
         self._checkboxes: List[Tuple[QCheckBox, AnalysisCase]] = []
+        # UX改善（第11回⑤）: 正規化表示フラグ（最大絶対値=1.0に正規化）
+        self._normalize: bool = False
         self._setup_ui()
 
     # ------------------------------------------------------------------
@@ -242,6 +261,18 @@ class TimeHistoryWidget(QWidget):
         btn_none.setMaximumWidth(64)
         btn_none.clicked.connect(self._deselect_all)
         ctrl_row.addWidget(btn_none)
+
+        # UX改善（第11回⑤）: 正規化表示トグルボタン
+        self._normalize_cb = QCheckBox("正規化（最大=1.0）")
+        self._normalize_cb.setChecked(False)
+        self._normalize_cb.setToolTip(
+            "各ケースの波形を最大絶対値=1.0に正規化して表示します。\n"
+            "絶対値ではなく「波形の形状・位相・減衰特性」を比較するときに有効です。\n"
+            "例: ダンパー有無での振動の収まり方の違いが一目でわかります。"
+        )
+        self._normalize_cb.setStyleSheet("font-size: 11px;")
+        self._normalize_cb.stateChanged.connect(self._on_normalize_toggled)
+        ctrl_row.addWidget(self._normalize_cb)
 
         # 改善A: グラフ画像クリップボードコピーボタン
         btn_copy_chart = QPushButton("📋 コピー")
@@ -312,6 +343,21 @@ class TimeHistoryWidget(QWidget):
 
         # 初期描画
         self._show_empty()
+
+    # ------------------------------------------------------------------
+    # UX改善（第11回⑤）: 正規化表示トグル
+    # ------------------------------------------------------------------
+
+    def _on_normalize_toggled(self, state: int) -> None:
+        """
+        正規化表示チェックボックスの状態変化を処理します。
+
+        ON: 各ケースの波形を最大絶対値=1.0に正規化して表示します。
+        OFF: 元の単位（[m], [m/s] 等）で表示します。
+        """
+        from PySide6.QtCore import Qt as _Qt
+        self._normalize = (state == _Qt.Checked)
+        self._draw()
 
     # ------------------------------------------------------------------
     # 改善A: グラフ画像クリップボードコピー
@@ -448,6 +494,14 @@ class TimeHistoryWidget(QWidget):
             if len(t_plot) == 0:
                 continue
 
+            # UX改善（第11回⑤）: 正規化表示モードでは最大絶対値=1.0にスケーリング
+            normalize_factor = 1.0
+            if getattr(self, "_normalize", False):
+                max_abs = np.max(np.abs(v_plot))
+                if max_abs > 1e-15:
+                    normalize_factor = max_abs
+                    v_plot = v_plot / normalize_factor
+
             ax.plot(t_plot, v_plot,
                     label=case.name,
                     color=color,
@@ -463,17 +517,48 @@ class TimeHistoryWidget(QWidget):
                 f"{case.name}: peak={peak_val:.4g} @ {peak_time:.2f}s"
             )
 
-            # ピーク位置にマーカー
-            ax.plot(peak_time, peak_val, 'o', color=color, markersize=4)
+            # ピーク位置にマーカー（円）
+            ax.plot(peak_time, peak_val, 'o', color=color, markersize=5, zorder=5)
+
+            # UX改善（新③）: ピーク時刻に縦破線を追加
+            ax.axvline(
+                x=peak_time,
+                color=color,
+                linestyle="--",
+                linewidth=0.8,
+                alpha=0.5,
+                zorder=3,
+            )
+
+            # UX改善（新③）: ピーク値をグラフ上にテキスト注釈
+            # xycoords='data' / textcoords='axes fraction' で y位置を固定して重ならないようにする
+            ax.annotate(
+                f"▲{peak_val:.3g}\n@{peak_time:.1f}s",
+                xy=(peak_time, peak_val),
+                xycoords="data",
+                xytext=(peak_time, 0.88),
+                textcoords=("data", "axes fraction"),
+                fontsize=6,
+                color=color,
+                ha="center",
+                va="bottom",
+                arrowprops=dict(arrowstyle="->", color=color, lw=0.6),
+                bbox=dict(boxstyle="round,pad=0.2", fc="white", alpha=0.65, ec=color, lw=0.5),
+            )
 
         if not has_data:
             self._show_empty("選択されたケースにデータがありません")
             return
 
         ax.set_xlabel("時間 [sec]", fontsize=9)
-        ax.set_ylabel(y_label, fontsize=9)
+        # UX改善（第11回⑤）: 正規化時はY軸ラベルを変更
+        if getattr(self, "_normalize", False):
+            ax.set_ylabel(f"{y_label.split('[')[0].strip()} [正規化値]", fontsize=9)
+        else:
+            ax.set_ylabel(y_label, fontsize=9)
         floor_str = f" ({floor_val}層)" if floor_val and floor_val != -1 else ""
-        ax.set_title(f"時刻歴応答 — {type_label}{floor_str}", fontsize=10)
+        norm_str = "（正規化）" if getattr(self, "_normalize", False) else ""
+        ax.set_title(f"時刻歴応答 — {type_label}{floor_str}{norm_str}", fontsize=10)
         ax.tick_params(labelsize=8)
         ax.grid(linestyle="--", alpha=0.4)
         ax.legend(fontsize=7, loc="upper right")

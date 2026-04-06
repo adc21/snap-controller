@@ -2,12 +2,28 @@
 app/ui/run_selection_widget.py
 解析実行ケース選択ウィジェット。
 
+UX改善④ 第5回 (run_selection_widget.py):
+  「エラーのみ選択（再実行）」ボタン + ケース状態ライブ集計ラベル追加。
+  既存の「未実行を選択」は PENDING+ERROR を一括選択しますが、
+  エラーケースだけを絞って再実行したい場面（原因修正後の確認実行）に
+  「❌ エラーのみ選択」ボタンを追加します。
+  また、ケースリストの下部にリアルタイム状態集計ラベルを追加します。
+  「待機: X件 / 完了: Y件 / エラー: Z件 / 選択中: W件」を常時表示し、
+  実行前に「今から何件走らせるのか」と「プロジェクト全体の進捗」を
+  ひと目で把握できます。
+
 UX改善（今回追加）②: 解析完了後の自動STEP4遷移カウントダウン。
   解析完了バナーに5秒カウントダウンを追加しました。
   タイマーが0になると自動的にSTEP4（結果・戦略）へ移動します。
   「キャンセル」ボタンまたはバナーの「✕」で自動遷移を停止できます。
   手動で「結果を確認する →」を押してもすぐに遷移できます。
   解析を走らせたまま他の作業をしていても、完了したら自動でSTEP4に誘導されます。
+
+UX改善（第9回②）: 選択ケース推定所要時間バナー追加。
+  実行ボタンの直上に「🕐 推定所要時間: 約X分（X件 × 約60秒/件）」を表示する
+  ミニバナーを追加します。チェックされたケース数が変化するたびにリアルタイム更新されます。
+  0件選択時は「ケースを選択してください」、1件以上で時間を表示します。
+  `_est_time_banner` QFrame と `_update_est_time_banner()` メソッドを追加。
 
 UX改善4: 解析実行前チェックリストパネルを上部に追加。
   解析に必要な設定が整っているかをチェックリスト形式で表示し、
@@ -162,6 +178,8 @@ class RunSelectionWidget(QWidget):
             self._list.addItem(item)
         self._refresh_checklist()
         self._update_error_panel()
+        # UX改善④ 第5回: ケース状態集計ラベルを更新
+        self._update_case_status_label()
 
     # ------------------------------------------------------------------
     # UI Construction
@@ -258,12 +276,26 @@ class RunSelectionWidget(QWidget):
         btn_none.setToolTip("すべてのケースの選択を解除します")
         btn_none.clicked.connect(lambda: self._set_all_checked(False))
         btn_pending = QPushButton("未実行を選択")
-        btn_pending.setToolTip("PENDING/ERROR 状態のケースだけを選択します")
+        btn_pending.setToolTip("PENDING / ERROR 状態のケースだけを選択します")
         btn_pending.clicked.connect(self._select_pending)
+
+        # UX改善④ 第5回: エラーのみ選択ボタン
+        btn_errors = QPushButton("❌ エラーのみ選択")
+        btn_errors.setToolTip(
+            "エラーが発生したケースだけを選択します。\n"
+            "原因を修正したあとエラーケースだけを再実行したい場合に便利です。"
+        )
+        btn_errors.setStyleSheet(
+            "QPushButton { color: #c62828; border: 1px solid #ef9a9a;"
+            "  border-radius: 3px; padding: 2px 8px; font-size: 11px; }"
+            "QPushButton:hover { background: #ffebee; }"
+        )
+        btn_errors.clicked.connect(self._select_errors_only)
 
         btn_row.addWidget(btn_all)
         btn_row.addWidget(btn_none)
         btn_row.addWidget(btn_pending)
+        btn_row.addWidget(btn_errors)
         btn_row.addStretch()
         g_layout.addLayout(btn_row)
 
@@ -271,7 +303,86 @@ class RunSelectionWidget(QWidget):
         self._list.setMaximumHeight(150)
         # UX改善（新）: チェック状態変化時にボタンラベルをリアルタイム更新
         self._list.itemChanged.connect(self._update_run_button_label)
+        # UX改善④ 第5回: チェック変化時に集計ラベルも更新
+        self._list.itemChanged.connect(self._update_case_status_label)
+        # UX改善（第9回②）: チェック変化時に推定所要時間バナーも更新
+        self._list.itemChanged.connect(self._update_est_time_banner)
         g_layout.addWidget(self._list)
+
+        # UX改善④ 第5回: ケース状態ライブ集計ラベル
+        self._case_status_label = QLabel("　")
+        self._case_status_label.setTextFormat(Qt.RichText)
+        self._case_status_label.setStyleSheet("font-size: 10px; padding: 1px 4px;")
+        g_layout.addWidget(self._case_status_label)
+
+        # ---- UX改善（第9回②）: 選択ケース推定所要時間バナー ----
+        self._est_time_banner = QFrame()
+        self._est_time_banner.setFrameShape(QFrame.NoFrame)
+        self._est_time_banner.setStyleSheet(
+            "QFrame {"
+            "  background-color: #e8eaf6;"
+            "  border: 1px solid #9fa8da;"
+            "  border-radius: 4px;"
+            "  margin: 0px;"
+            "}"
+        )
+        _est_time_layout = QHBoxLayout(self._est_time_banner)
+        _est_time_layout.setContentsMargins(10, 4, 10, 4)
+        _est_time_layout.setSpacing(6)
+
+        _est_icon = QLabel("🕐")
+        _est_icon.setStyleSheet("font-size: 13px; background: transparent; border: none;")
+        _est_icon.setFixedWidth(20)
+        _est_time_layout.addWidget(_est_icon)
+
+        self._est_time_lbl = QLabel("ケースを選択すると推定所要時間が表示されます")
+        self._est_time_lbl.setStyleSheet(
+            "color: #283593; font-size: 10px; background: transparent; border: none;"
+        )
+        _est_time_layout.addWidget(self._est_time_lbl, stretch=1)
+
+        g_layout.addWidget(self._est_time_banner)
+
+        # ── UX改善（第12回③）: 実行前ケース種別内訳サマリーカード ──────────────────
+        # 選択中のケースを「ダンパー変更あり / 配置変更あり / ベースライン / 要確認」に
+        # 分類してコンパクトなカードで表示します。何を実行するかを事前に確認できます。
+        self._pre_run_summary_frame = QFrame()
+        self._pre_run_summary_frame.setFrameShape(QFrame.NoFrame)
+        self._pre_run_summary_frame.setStyleSheet(
+            "QFrame {"
+            "  background-color: #fafafa;"
+            "  border: 1px solid #e0e0e0;"
+            "  border-radius: 4px;"
+            "  margin: 0px 0px 2px 0px;"
+            "}"
+        )
+        _pre_run_layout = QHBoxLayout(self._pre_run_summary_frame)
+        _pre_run_layout.setContentsMargins(8, 4, 8, 4)
+        _pre_run_layout.setSpacing(6)
+
+        _pre_run_title = QLabel("実行内容:")
+        _pre_run_title.setStyleSheet(
+            "font-size: 10px; font-weight: bold; color: #555; "
+            "background: transparent; border: none;"
+        )
+        _pre_run_layout.addWidget(_pre_run_title)
+
+        self._pre_run_summary_lbl = QLabel("—")
+        self._pre_run_summary_lbl.setStyleSheet(
+            "font-size: 10px; color: #333; background: transparent; border: none;"
+        )
+        self._pre_run_summary_lbl.setWordWrap(False)
+        _pre_run_layout.addWidget(self._pre_run_summary_lbl, stretch=1)
+
+        self._pre_run_warn_lbl = QLabel("")
+        self._pre_run_warn_lbl.setStyleSheet(
+            "font-size: 10px; color: #c62828; background: transparent; border: none;"
+        )
+        self._pre_run_warn_lbl.hide()
+        _pre_run_layout.addWidget(self._pre_run_warn_lbl)
+
+        self._pre_run_summary_frame.hide()  # 初期は非表示（ケース選択前）
+        g_layout.addWidget(self._pre_run_summary_frame)
 
         self._btn_run = QPushButton("🚀 選択したケースを解析実行")
         self._btn_run.setStyleSheet("font-weight: bold; padding: 6px; font-size: 14px;")
@@ -751,6 +862,102 @@ class RunSelectionWidget(QWidget):
             self._btn_run.setText(f"🚀  {checked_count} 件を解析する")
             self._btn_run.setEnabled(True)
 
+        # UX改善（第12回③）: 実行前サマリーカードも更新
+        self._update_pre_run_summary()
+
+    def _update_pre_run_summary(self) -> None:
+        """
+        UX改善（第12回③）: 選択中のケースを種別分類してサマリーカードに表示します。
+
+        分類:
+        - 🔧 ダンパー変更あり: damper_params が設定されているケース
+        - 📐 配置変更あり:  _rd_overrides が設定されているケース
+        - 📊 ベースライン: パラメータ変更なし（基準モデルのまま）
+        - ⚠ 要確認: ケース名がデフォルトのまま
+
+        「要確認」が1件でもあれば警告ラベルを表示します。
+        選択なし（0件）はカードを非表示にします。
+        """
+        if not hasattr(self, "_pre_run_summary_frame"):
+            return
+
+        # 選択ケースを収集
+        selected_case_ids: List[str] = []
+        for i in range(self._list.count()):
+            item = self._list.item(i)
+            if item and item.checkState() == Qt.Checked:
+                cid = item.data(Qt.UserRole)
+                if cid:
+                    selected_case_ids.append(cid)
+
+        if not selected_case_ids:
+            self._pre_run_summary_frame.hide()
+            return
+
+        # プロジェクトからケースオブジェクトを取得
+        cases = []
+        if self._project:
+            for cid in selected_case_ids:
+                c = self._project.get_case(cid)
+                if c:
+                    cases.append(c)
+
+        if not cases:
+            self._pre_run_summary_frame.hide()
+            return
+
+        # 分類カウント
+        import re as _re_run
+        _default_pat = _re_run.compile(
+            r"^(新規ケース|Case-?\d+|case-?\d+)$", _re_run.IGNORECASE
+        )
+        count_damper = 0
+        count_rd = 0
+        count_baseline = 0
+        count_warn_name = 0
+
+        for case in cases:
+            name = (case.name or "").strip()
+            is_default = bool(_default_pat.match(name)) or name == ""
+            if is_default:
+                count_warn_name += 1
+
+            has_damper = bool(
+                case.damper_params and isinstance(case.damper_params, dict)
+            )
+            has_rd = False
+            if case.parameters and isinstance(case.parameters, dict):
+                has_rd = bool(case.parameters.get("_rd_overrides"))
+
+            if has_damper:
+                count_damper += 1
+            elif has_rd:
+                count_rd += 1
+            else:
+                count_baseline += 1
+
+        # サマリーテキストを構築
+        parts: List[str] = []
+        if count_damper:
+            parts.append(f"🔧 パラメータ変更: {count_damper}件")
+        if count_rd:
+            parts.append(f"📐 配置変更: {count_rd}件")
+        if count_baseline:
+            parts.append(f"📊 ベースライン: {count_baseline}件")
+        summary = "  /  ".join(parts) if parts else f"{len(cases)}件"
+        self._pre_run_summary_lbl.setText(summary)
+
+        # 要確認警告
+        if count_warn_name > 0:
+            self._pre_run_warn_lbl.setText(
+                f"⚠ デフォルト名のケース {count_warn_name}件（名前を変更することをお勧めします）"
+            )
+            self._pre_run_warn_lbl.show()
+        else:
+            self._pre_run_warn_lbl.hide()
+
+        self._pre_run_summary_frame.show()
+
     def _update_ready_banner(self, all_ok: bool) -> None:
         """
         UX改善③（新）: 前提条件が全てOKのとき「解析の準備ができました」バナーを表示します。
@@ -814,6 +1021,110 @@ class RunSelectionWidget(QWidget):
                 item.setCheckState(Qt.Checked)
             else:
                 item.setCheckState(Qt.Unchecked)
+
+    def _select_errors_only(self) -> None:
+        """
+        UX改善④ 第5回: エラーが発生したケースのみを選択します。
+
+        PENDING / COMPLETED ケースはすべてチェックを外し、
+        ERROR ケースのみチェックします。
+        原因修正後のエラーケース再実行ワークフローを高速化します。
+        """
+        if not self._project:
+            return
+        for i in range(self._list.count()):
+            item = self._list.item(i)
+            case_id = item.data(Qt.UserRole)
+            case = self._project.get_case(case_id)
+            if case and case.status.name == "ERROR":
+                item.setCheckState(Qt.Checked)
+            else:
+                item.setCheckState(Qt.Unchecked)
+
+    def _update_case_status_label(self, *_args) -> None:
+        """
+        UX改善④ 第5回: ケースリストの下部集計ラベルを更新します。
+
+        「待機: X / 完了: Y / エラー: Z / 選択中: W件」をリアルタイムに表示します。
+        ケースが存在しない場合は空白を表示します。
+        """
+        if not hasattr(self, "_case_status_label"):
+            return
+        if not self._project or not self._project.cases:
+            self._case_status_label.setText("　")
+            return
+        cases = list(self._project.cases)
+        pending = sum(1 for c in cases if getattr(c.status, "name", "") == "PENDING")
+        completed = sum(1 for c in cases if getattr(c.status, "name", "") == "COMPLETED")
+        error = sum(1 for c in cases if getattr(c.status, "name", "") == "ERROR")
+        checked = sum(
+            1 for i in range(self._list.count())
+            if self._list.item(i).checkState() == Qt.Checked
+        )
+        parts = []
+        if pending:
+            parts.append(f"<span style='color:#e65100;'>⏳ 待機 {pending}</span>")
+        if completed:
+            parts.append(f"<span style='color:#2e7d32;'>✅ 完了 {completed}</span>")
+        if error:
+            parts.append(f"<span style='color:#c62828;'>❌ エラー {error}</span>")
+        summary = "　/　".join(parts) if parts else "ケースなし"
+        selected_text = (
+            f"　<b style='color:#1565c0;'>（{checked}件 選択中）</b>"
+            if checked > 0 else ""
+        )
+        self._case_status_label.setText(summary + selected_text)
+
+    def _update_est_time_banner(self, *_args) -> None:
+        """
+        UX改善（第9回②）: 選択ケース数に基づいて推定所要時間バナーを更新します。
+
+        チェックされたケース数 × 約60秒/件 で推定時間を計算し、
+        「🕐 推定所要時間: 約X分（X件 × 約60秒/件）」形式で表示します。
+        """
+        if not hasattr(self, "_est_time_lbl"):
+            return
+        checked = sum(
+            1 for i in range(self._list.count())
+            if self._list.item(i).checkState() == Qt.Checked
+        )
+        if checked == 0:
+            self._est_time_lbl.setText("ケースを選択すると推定所要時間が表示されます")
+            self._est_time_banner.setStyleSheet(
+                "QFrame {"
+                "  background-color: #e8eaf6;"
+                "  border: 1px solid #9fa8da;"
+                "  border-radius: 4px;"
+                "}"
+            )
+        else:
+            secs_per_case = 60
+            total_secs = checked * secs_per_case
+            if total_secs < 60:
+                time_str = f"約{total_secs}秒"
+            else:
+                mins = total_secs // 60
+                time_str = f"約{mins}分"
+            self._est_time_lbl.setText(
+                f"推定所要時間: {time_str}（{checked}件 × 約{secs_per_case}秒/件）"
+            )
+            # 件数に応じて色を変化させる（5件超で橙、15件超で赤）
+            if checked > 15:
+                bg, border, fg = "#ffebee", "#ef9a9a", "#b71c1c"
+            elif checked > 5:
+                bg, border, fg = "#fff3e0", "#ffcc80", "#e65100"
+            else:
+                bg, border, fg = "#e8f5e9", "#a5d6a7", "#1b5e20"
+            self._est_time_banner.setStyleSheet(
+                f"QFrame {{"
+                f"  background-color: {bg};"
+                f"  border: 1px solid {border};"
+                f"  border-radius: 4px;"
+                f"}}"
+            )
+            self._est_time_lbl.setStyleSheet(
+                f"color: {fg}; font-size: 10px; background: transparent; border: none;"
+            )
 
     def _on_run_clicked(self) -> None:
         selected_ids = []

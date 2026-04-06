@@ -70,7 +70,7 @@ class _AnalysisWorker(QThread):
 
             has_overrides = bool(case.damper_params) or bool(
                 case.parameters.get("_rd_overrides")
-            )
+            ) or bool(getattr(case, "extra_defs", None))
 
             if has_overrides:
                 model = parse_s8i(str(src))
@@ -92,6 +92,39 @@ class _AnalysisWorker(QThread):
                                 self.log_emitted.emit(
                                     f"  {def_name}[{idx + 1}]: {old_val} → {new_val}"
                                 )
+
+                # 追加ダンパー定義（コピー元から派生 or 新規作成）
+                for edef in getattr(case, "extra_defs", []):
+                    base_name = edef.get("base_name", "")
+                    new_name = edef.get("name", "")
+                    keyword = edef.get("keyword", "")
+                    overrides = edef.get("overrides", {})
+
+                    if base_name == "(新規)":
+                        # 完全新規定義
+                        new_def = model.add_damper_def_new(
+                            keyword=keyword,
+                            new_name=new_name,
+                            overrides=overrides,
+                        )
+                        self.log_emitted.emit(
+                            f"  新規定義: {new_def.name} ({keyword})"
+                        )
+                    else:
+                        # コピー元から派生
+                        new_def = model.add_damper_def_copy(
+                            base_name=base_name,
+                            new_name=new_name,
+                            overrides=overrides,
+                        )
+                        if new_def:
+                            self.log_emitted.emit(
+                                f"  追加定義: {new_def.name} (ベース: {base_name})"
+                            )
+                        else:
+                            self.log_emitted.emit(
+                                f"  [WARN] 追加定義のベース '{base_name}' が見つかりません"
+                            )
 
                 # RD 配置・基数変更
                 rd_overrides = case.parameters.get("_rd_overrides", {})

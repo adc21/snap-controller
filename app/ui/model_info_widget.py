@@ -8,6 +8,15 @@ app/ui/model_info_widget.py
   - ダンパー定義一覧
   - ダンパー装置数・合計基数
 
+UX改善（新）: 層別ダンパー配置分布ミニチャート追加。
+  ダンパー種別カードの下に、各層（フロア）に何基のダンパーが配置されているかを
+  コンパクトな横棒グラフで常時表示します。
+  - 各バーの長さと色がダンパー本数を視覚的に表します（最多層=濃い青、他=水色）
+  - 「6F: ████████ 8基」のようなシンプルなレイアウトで識別しやすくします
+  - ダンパーが0本の層は表示を省略して重要情報を目立たせます
+  - モデル未読み込み時は非表示
+  `_floor_chart_area` QFrame と `_rebuild_floor_chart()` メソッドを追加。
+
 UX改善D: .s8iファイルのドラッグ&ドロップ対応。
   パネル上に .s8i ファイルをドロップすると、ファイルダイアログを開かずに
   直接ファイルを読み込めます。ドラッグ中は枠線を青くハイライトし、
@@ -361,6 +370,16 @@ class ModelInfoWidget(QWidget):
         self._damper_cards_area.hide()  # モデル未読込時は非表示
         loaded_layout.addWidget(self._damper_cards_area)
 
+        # ---- UX改善（新）: 層別ダンパー配置分布ミニチャート ----
+        self._floor_chart_area = QFrame()
+        self._floor_chart_area.setFrameShape(QFrame.NoFrame)
+        self._floor_chart_area.setStyleSheet("QFrame { margin: 0px; }")
+        self._floor_chart_layout = QVBoxLayout(self._floor_chart_area)
+        self._floor_chart_layout.setContentsMargins(0, 4, 0, 2)
+        self._floor_chart_layout.setSpacing(1)
+        self._floor_chart_area.hide()
+        loaded_layout.addWidget(self._floor_chart_area)
+
         loaded_layout.addStretch()
 
         self._info_stack.addWidget(loaded_widget)  # index 1
@@ -382,6 +401,8 @@ class ModelInfoWidget(QWidget):
             self._damper_group.hide()
             if hasattr(self, "_damper_cards_area"):
                 self._damper_cards_area.hide()
+            if hasattr(self, "_floor_chart_area"):
+                self._floor_chart_area.hide()
             if hasattr(self, '_toggle_btn'): self._toggle_btn.hide()
             if hasattr(self, '_load_btn'):
                 self._load_btn.setText("📂 .s8i ファイルを読み込む…")
@@ -432,6 +453,8 @@ class ModelInfoWidget(QWidget):
 
         # UX改善⑤（新）: ダンパー種別カードグリッドを更新
         self._rebuild_damper_cards(m)
+        # UX改善（新）: 層別ダンパー配置分布ミニチャートを更新
+        self._rebuild_floor_chart(m)
 
     def _rebuild_damper_cards(self, model) -> None:
         """
@@ -551,6 +574,142 @@ class ModelInfoWidget(QWidget):
 
         self._damper_cards_layout.addStretch()
         self._damper_cards_area.show()
+
+    def _rebuild_floor_chart(self, model) -> None:
+        """
+        UX改善（新）: 層別ダンパー配置分布ミニチャートを再構築します。
+
+        s8iモデルの damper_elements を読み取り、各ノードの z_grid から
+        フロア（層）ごとのダンパー数を集計し、横棒グラフ形式で表示します。
+
+        フロアの識別には節点Jの z_grid を使用します（上部節点 = 取付け先フロア）。
+        z_grid が空の場合は「未定義」として扱います。
+
+        Parameters
+        ----------
+        model : S8iModel
+            読み込み済みのモデル。
+        """
+        if not hasattr(self, "_floor_chart_layout"):
+            return
+
+        # 既存ウィジェットをクリア
+        while self._floor_chart_layout.count():
+            item = self._floor_chart_layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+
+        if not model or not model.damper_elements:
+            if hasattr(self, "_floor_chart_area"):
+                self._floor_chart_area.hide()
+            return
+
+        # 各ダンパー要素の「上側節点(node_j)の z_grid」をフロアキーとして集計
+        from collections import defaultdict, OrderedDict
+        floor_counts: dict = defaultdict(int)
+        floor_units: dict = defaultdict(int)
+        for elem in model.damper_elements:
+            node_j_data = model.get_node(elem.node_j)
+            if node_j_data and node_j_data.z_grid:
+                floor_key = node_j_data.z_grid.strip()
+            else:
+                # z_grid がない場合は node_j の ID を使用
+                floor_key = f"N{elem.node_j}"
+            floor_counts[floor_key] += 1
+            floor_units[floor_key] += max(1, elem.quantity)
+
+        if not floor_counts:
+            self._floor_chart_area.hide()
+            return
+
+        # フロアを z_grid の数値順（または文字列順）でソート
+        def _floor_sort_key(k: str):
+            """フロアキーを数値優先でソートするキー関数。"""
+            import re
+            digits = re.sub(r"[^0-9.]", "", k)
+            try:
+                return (0, float(digits))
+            except ValueError:
+                return (1, k)
+
+        sorted_floors = sorted(floor_counts.keys(), key=_floor_sort_key)
+
+        max_count = max(floor_units.values()) if floor_units else 1
+
+        # タイトル行
+        title_lbl = QLabel("📊 層別ダンパー配置数")
+        title_lbl.setStyleSheet(
+            "font-size: 10px; font-weight: bold; color: #1565c0; padding: 2px 0;"
+        )
+        self._floor_chart_layout.addWidget(title_lbl)
+
+        # 各フロアの横棒グラフ行（上階から表示）
+        for floor_key in reversed(sorted_floors):
+            units = floor_units[floor_key]
+            count = floor_counts[floor_key]
+            ratio = units / max_count if max_count > 0 else 0
+
+            # 色: 最多層は濃い青、他は水色グラデーション
+            if units == max_count:
+                bar_color = "#1565c0"
+                text_color = "#0d47a1"
+            elif ratio >= 0.7:
+                bar_color = "#1976d2"
+                text_color = "#1565c0"
+            elif ratio >= 0.4:
+                bar_color = "#42a5f5"
+                text_color = "#1976d2"
+            else:
+                bar_color = "#90caf9"
+                text_color = "#1976d2"
+
+            row_widget = QWidget()
+            row_h = QHBoxLayout(row_widget)
+            row_h.setContentsMargins(0, 0, 0, 0)
+            row_h.setSpacing(4)
+
+            # フロアラベル (固定幅)
+            floor_lbl = QLabel(floor_key)
+            floor_lbl.setFixedWidth(40)
+            floor_lbl.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+            floor_lbl.setStyleSheet(f"font-size: 10px; color: {text_color}; font-weight: bold;")
+            row_h.addWidget(floor_lbl)
+
+            # バー（幅をratioに比例させた固定QLabel）
+            bar_max_width = 120
+            bar_width = max(8, int(bar_max_width * ratio))
+            bar_lbl = QLabel()
+            bar_lbl.setFixedSize(bar_width, 12)
+            bar_lbl.setStyleSheet(
+                f"background-color: {bar_color}; border-radius: 3px;"
+            )
+            bar_lbl.setToolTip(f"{floor_key}: {count}箇所 / {units}基")
+            row_h.addWidget(bar_lbl)
+
+            # 数値ラベル
+            count_lbl = QLabel(f"{units}基")
+            count_lbl.setStyleSheet(f"font-size: 10px; color: {text_color};")
+            row_h.addWidget(count_lbl)
+
+            # 最多層マーカー
+            if units == max_count and len(sorted_floors) > 1:
+                peak_lbl = QLabel("← 最多")
+                peak_lbl.setStyleSheet("font-size: 9px; color: #c62828; font-weight: bold;")
+                row_h.addWidget(peak_lbl)
+
+            row_h.addStretch()
+            self._floor_chart_layout.addWidget(row_widget)
+
+        # 合計表示
+        total_units = sum(floor_units.values())
+        total_lbl = QLabel(f"合計: {total_units}基 / {len(sorted_floors)}層に配置")
+        total_lbl.setStyleSheet(
+            "font-size: 9px; color: #555; padding-top: 2px;"
+            "border-top: 1px solid #e0e0e0; margin-top: 2px;"
+        )
+        self._floor_chart_layout.addWidget(total_lbl)
+
+        self._floor_chart_area.show()
 
     # ------------------------------------------------------------------
     # UX改善D: ドラッグ&ドロップ対応

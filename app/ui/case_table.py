@@ -3,92 +3,13 @@ app/ui/case_table.py
 解析ケース一覧テーブルウィジェット。
 
 ケースの追加・削除・複製・実行要求・編集をここから行います。
-
-UX改善（今回追加）①: 選択ケースのインラインパラメータサマリーパネル。
-         テーブル下部にトグル式のパネルを追加し、選択中のケースのダンパーパラメータ・
-         解析結果をダイアログを開かずに一目で確認できます。
-         「▼ 選択ケースの詳細」をクリックするとパネルが展開/折り畳まれます。
-         基点ケースが設定されている場合は差分（%）も表示します。
-
-UX改善（今回追加）⑤: 基点ケースからの差分ハイライト表示。
-         右クリックメニューの「⭐ 基点ケースに設定」でケースを基点に指定できます。
-         設定後は、テーブル上部に「基点ケース: ケース名」バッジが表示され、
-         各ケースのケース名ホバーツールチップに基点との差分（%）が表示されます。
-         制振効果の比較や「ノーダンパーを基点として各ケースがどれだけ改善したか」を
-         一目で把握するのに便利です。
-
-UX改善①新: フィルターバーに「全選択/全解除」ボタン追加。
-         テキスト検索・ステータスフィルターの右側に配置し、
-         表示中のケースをワンクリックで全選択・全解除できます。
-         絞り込み後の複数ケースを一括削除・一括実行する際に便利です。
-         ステータスフィルター使用中もヘッダーバッジに件数を表示します。
-
-UX改善②新: コンテキストメニューに「状態をリセット（再実行可能に）」アクション追加。
-         完了済みまたはエラーのケースを PENDING に戻します。
-         同じパラメータで再解析したいとき、編集ダイアログを開かずに
-         右クリック一発でリセットできます。
-
-改善⑧: 行ホバー時にケースのパラメータ・結果をリッチHTMLツールチップで表示。
-        マウスオーバーするだけで編集ダイアログを開かずに概要を確認できます。
-
-UX改善A: ステータスフィルタードロップダウン追加。
-         テキスト検索バーの右側に「全て/待機中/実行中/完了/エラー」の
-         ドロップダウンを追加し、状態別の絞り込みをワンクリックで実行できます。
-
-UX改善B: グループ別行カラーコーディング。
-         同じグループに属するケースの「グループ」列セルを同じアクセントカラーで
-         色付けすることで、グループ構造を直感的に把握できます。
-
-UX改善C: 複数ケース選択時の件数バッジ表示と一括削除の強化。
-         複数ケースを選択したとき、アクションバーに「3件選択中」のバッジを
-         表示し、まとめて削除できるようにします。
-
-UX改善②: F2キーでケース名クイックリネーム。
-         重いCaseEditDialogを開かずに、F2キーまたはコンテキストメニュー
-         「名前を変更…」からケース名だけをその場でテキスト入力できます。
-
-UX改善③: ケーステーブル列幅の永続化。
-         列幅の変更をQSettingsに自動保存し、次回起動時に復元します。
-         毎回デフォルト幅にリセットされる煩わしさを解消します。
-
-UX改善⑥新: ケースの並び順変更ボタン（↑上へ / ↓下へ）。
-         アクションバーに「↑ 上へ」「↓ 下へ」ボタンを追加し、
-         選択ケースをワンクリックで隣のケースと入れ替えて順序を変更できます。
-         パラメータスタディの優先順位や実行順序の整理に役立ちます。
-
-UX改善⑦新: メモ列ダブルクリックで直接インライン編集。
-         メモ列（最右列）をダブルクリックすると、重い CaseEditDialog を
-         開かずに小さな入力ダイアログでメモだけを素早く更新できます。
-         それ以外の列のダブルクリックは従来通り全編集ダイアログを開きます。
-
-UX改善③新: 解析完了進捗プログレスバー。
-         ヘッダーとフィルターの間にスリムなプログレスバーを追加し、
-         「X/N件 完了」を視覚的に一目で把握できます。
-         解析が進むたびに自動更新され、全完了で緑に変わります。
-
-UX改善⑧新: 性能基準判定テキストマーク（✅/⚠/❌）。
-         性能基準が設定されており解析結果がある場合、「最大層間変形角」「最大加速度」
-         列の数値テキストの先頭に ✅/⚠/❌ マークを付与します。
-         背景色だけでなくテキストにもマークを出すことで、印刷時やモノクロ表示でも
-         合否が一目で分かります。また、右クリックメニューにも判定情報が表示されます。
-
-UX改善⑨新: アクションバーに「複製して編集」ボタンを追加。
-         Ctrl+Shift+D のショートカットとコンテキストメニューには既に「複製して編集」
-         機能がありましたが、アクションバーにボタンを追加することで機能を発見しやすく
-         します。「複製」ボタンの隣に配置し、押すと複製後すぐに編集ダイアログが開きます。
-
-UX改善（新②）: 列ヘッダーに建築専門用語の説明ツールチップを追加。
-         「最大層間変形角」「最大絶対加速度」などの各列ヘッダーに、
-         その数値の物理的意味・単位・建築基準法上の目安値をツールチップで表示します。
-         ヘッダー上にマウスを乗せるだけで用語の意味が確認でき、
-         SNAP の出力値の読み方に不慣れなユーザーでも迷わず確認できます。
 """
 
 from __future__ import annotations
 
 from typing import Optional
 
-from PySide6.QtCore import QEvent, QModelIndex, QPoint, QSettings, Qt, Signal
+from PySide6.QtCore import QEvent, QModelIndex, QPoint, QSettings, QTimer, Qt, Signal
 from PySide6.QtGui import QColor, QFont, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -243,6 +164,41 @@ def _build_changes_label(case) -> str:
     return "  ".join(parts)
 
 
+# UX改善（第12回②）: ケース準備度を判定するヘルパー関数
+import re as _re
+
+_DEFAULT_NAME_PATTERN = _re.compile(
+    r"^(新規ケース|Case-?\d+|case-?\d+)$", _re.IGNORECASE
+)
+
+
+def _calc_readiness(case) -> str:
+    """
+    UX改善（第12回②）: ケースの「準備度」を3段階で返します。
+
+    Returns
+    -------
+    str
+        "warn_name"  — ケース名がデフォルトのまま（内容不明）
+        "ready"      — カスタム名＋ダンパー変更あり（設定完了）
+        "baseline"   — カスタム名だがダンパー設定変更なし（ベースラインとして有効）
+    """
+    name = (case.name or "").strip()
+    is_default_name = bool(_DEFAULT_NAME_PATTERN.match(name)) or name == ""
+
+    has_damper_changes = bool(case.damper_params and isinstance(case.damper_params, dict))
+    has_rd_changes = False
+    if case.parameters and isinstance(case.parameters, dict):
+        has_rd_changes = bool(case.parameters.get("_rd_overrides"))
+    has_any_change = has_damper_changes or has_rd_changes
+
+    if is_default_name:
+        return "warn_name"
+    if has_any_change:
+        return "ready"
+    return "baseline"
+
+
 class CaseTableWidget(QWidget):
     """
     解析ケース一覧を表示するテーブルウィジェット。
@@ -268,6 +224,12 @@ class CaseTableWidget(QWidget):
         self._model_loaded: bool = False
         # UX改善⑤新: 基点ケースID（差分表示用）
         self._base_case_id: Optional[str] = None
+        # UX改善（第11回④）: 複製後フラッシュバナー用タイマー
+        self._dup_flash_timer = QTimer(self)
+        self._dup_flash_timer.setSingleShot(True)
+        self._dup_flash_timer.setInterval(5000)  # 5秒後に自動非表示
+        self._dup_flash_timer.timeout.connect(self._hide_dup_flash)
+        self._pending_dup_case_id: Optional[str] = None  # フラッシュ中の複製ケースID
         self._setup_ui()
 
     # ------------------------------------------------------------------
@@ -439,6 +401,40 @@ class CaseTableWidget(QWidget):
 
         layout.addLayout(header)
 
+        # ---- UX改善（第11回④）: 複製後インライン誘導フラッシュバナー ----
+        self._dup_flash_frame = QFrame()
+        self._dup_flash_frame.setFrameShape(QFrame.StyledPanel)
+        self._dup_flash_frame.setStyleSheet(
+            "QFrame { background-color: #e8f5e9; border: 1px solid #66bb6a; border-radius: 4px; }"
+        )
+        _flash_inner = QHBoxLayout(self._dup_flash_frame)
+        _flash_inner.setContentsMargins(8, 4, 8, 4)
+        _flash_inner.setSpacing(8)
+        self._dup_flash_icon_lbl = QLabel("✅")
+        self._dup_flash_icon_lbl.setStyleSheet("font-size: 14px;")
+        _flash_inner.addWidget(self._dup_flash_icon_lbl)
+        self._dup_flash_text_lbl = QLabel()
+        self._dup_flash_text_lbl.setStyleSheet("color: #1b5e20; font-size: 11px;")
+        self._dup_flash_text_lbl.setWordWrap(True)
+        _flash_inner.addWidget(self._dup_flash_text_lbl, stretch=1)
+        self._dup_flash_edit_btn = QPushButton("今すぐ編集 →")
+        self._dup_flash_edit_btn.setMaximumWidth(110)
+        self._dup_flash_edit_btn.setFixedHeight(24)
+        self._dup_flash_edit_btn.setStyleSheet(
+            "QPushButton { background-color: #43a047; color: white; border-radius: 3px; font-size: 11px; }"
+            "QPushButton:hover { background-color: #388e3c; }"
+        )
+        self._dup_flash_edit_btn.clicked.connect(self._on_dup_flash_edit_clicked)
+        _flash_inner.addWidget(self._dup_flash_edit_btn)
+        _flash_close_btn = QPushButton("✕")
+        _flash_close_btn.setMaximumWidth(24)
+        _flash_close_btn.setFixedHeight(24)
+        _flash_close_btn.setStyleSheet("QPushButton { color: #555; border: none; background: transparent; }")
+        _flash_close_btn.clicked.connect(self._hide_dup_flash)
+        _flash_inner.addWidget(_flash_close_btn)
+        self._dup_flash_frame.hide()
+        layout.addWidget(self._dup_flash_frame)
+
         # ---- UX改善③新: 解析完了進捗プログレスバー ----
         self._completion_bar = QProgressBar()
         self._completion_bar.setMaximumHeight(7)
@@ -579,7 +575,7 @@ class CaseTableWidget(QWidget):
         empty_btn_layout.addWidget(self._empty_add_btn)
         empty_layout.addLayout(empty_btn_layout)
 
-        empty_layout.addSpacing(16)
+        empty_layout.addSpacing(8)
 
         self._stack.addWidget(empty_widget)  # index 0: 空状態
 
@@ -604,62 +600,16 @@ class CaseTableWidget(QWidget):
         # UX改善5: 列ヘッダークリックでソート（case_id は UserRole に保存されるので安全）
         self._table.setSortingEnabled(True)
         self._table.horizontalHeader().setSortIndicatorShown(True)
-        self._table.horizontalHeader().setToolTip(
-            "列ヘッダーをクリックするとその列でソートできます。\n"
-            "再度クリックで昇順/降順が切り替わります。"
-        )
         # ---- UX改善（新②）: 列ヘッダーに建築専門用語の説明ツールチップを追加 ----
         _col_tooltips = {
-            _COL_NAME: (
-                "ケース名\n"
-                "各解析ケースの識別名。\n"
-                "F2キーまたはコンテキストメニュー「名前を変更…」でクイックリネームできます。"
-            ),
-            _COL_GROUP: (
-                "グループ\n"
-                "関連するケースをまとめるためのグループ名。\n"
-                "比較グラフのグループ別選択や色分け表示に使われます。"
-            ),
-            _COL_CHANGES: (
-                "変更点\n"
-                "このケースでベースモデルから変更したダンパー設定の概要です。\n"
-                "🔧 = ダンパー定義パラメータの変更（Ce, α, 剛性 等）\n"
-                "📐 = 配置計画の変更（基数・倍数・装置定義の変更）\n"
-                "（変更なし）= ベースモデルと全く同じパラメータ\n\n"
-                "ケースをダブルクリックすると詳細を編集できます。"
-            ),
-            _COL_MODEL: (
-                "モデルファイル\n"
-                "このケースが参照する .s8i ファイルのパス。\n"
-                "SNAPはこのファイルを読み込んで解析を実行します。"
-            ),
-            _COL_STATUS: (
-                "状態\n"
-                "⏳ 待機中 (PENDING) — まだ解析していないケース\n"
-                "▶ 実行中 (RUNNING) — 現在解析中\n"
-                "✅ 完了 (COMPLETED)  — 解析が正常に終了\n"
-                "❌ エラー (ERROR)    — 解析中にエラーが発生"
-            ),
-            _COL_DRIFT: (
-                "最大層間変形角 [rad]\n"
-                "= 層間変形 ÷ 層高 の各層での最大値。\n"
-                "建築基準法施行令 82 条の 2 では、原則として 1/200 (0.005 rad) 以下が目安。\n"
-                "非構造部材（外装・内装・設備）の損傷評価の主要指標です。\n"
-                "値が小さいほど変形が抑えられています。"
-            ),
-            _COL_ACC: (
-                "最大絶対加速度 [m/s²]\n"
-                "各層の絶対加速度の最大値。\n"
-                "建物内の人・機器・什器への衝撃の大きさに相当します。\n"
-                "一般に 300 gal (3.0 m/s²) 以下を目標とすることが多い。\n"
-                "値が小さいほど揺れが穏やかです。"
-            ),
-            _COL_NOTES: (
-                "メモ\n"
-                "このケースに関するフリーメモ欄。\n"
-                "メモ列をダブルクリックすると、編集ダイアログを開かずに\n"
-                "その場でメモだけを素早く更新できます。"
-            ),
+            _COL_NAME: "ケース名",
+            _COL_GROUP: "グループ",
+            _COL_CHANGES: "変更点",
+            _COL_MODEL: "モデルファイル",
+            _COL_STATUS: "状態",
+            _COL_DRIFT: "最大層間変形角 [rad]",
+            _COL_ACC: "最大絶対加速度 [m/s²]",
+            _COL_NOTES: "メモ",
         }
         for col, tip in _col_tooltips.items():
             item = self._table.horizontalHeaderItem(col)
@@ -883,6 +833,81 @@ class CaseTableWidget(QWidget):
         _summary_layout.addWidget(self._summary_browser)
         layout.addWidget(self._summary_panel)
 
+        # ---- UX改善（新）: ケース状態サマリーフッター ----
+        # ケーステーブル最下部に全ケースの状態別件数を常時表示します。
+        # 「⏳ 待機: N | ▶ 実行中: N | ✅ 完了: N | ❌ エラー: N | 合計: N件」
+        # ケース数が多い場合でも現在の解析進捗を一目で把握できます。
+        self._status_footer = QFrame()
+        self._status_footer.setFrameShape(QFrame.NoFrame)
+        self._status_footer.setStyleSheet(
+            "QFrame { border-top: 1px solid palette(mid); background: transparent; }"
+        )
+        _footer_h = QHBoxLayout(self._status_footer)
+        _footer_h.setContentsMargins(6, 2, 6, 2)
+        _footer_h.setSpacing(12)
+
+        # 各状態のカウントラベル
+        self._footer_pending_lbl  = QLabel("⏳ 待機: 0")
+        self._footer_running_lbl  = QLabel("▶ 実行中: 0")
+        self._footer_done_lbl     = QLabel("✅ 完了: 0")
+        self._footer_error_lbl    = QLabel("❌ エラー: 0")
+        self._footer_total_lbl    = QLabel("合計: 0件")
+
+        _footer_font_style = "font-size: 10px; color: gray;"
+        for lbl in (self._footer_pending_lbl, self._footer_running_lbl,
+                    self._footer_done_lbl, self._footer_error_lbl, self._footer_total_lbl):
+            lbl.setStyleSheet(_footer_font_style)
+            _footer_h.addWidget(lbl)
+
+        _footer_h.addStretch()
+        layout.addWidget(self._status_footer)
+
+    def _update_status_footer(self) -> None:
+        """
+        UX改善（新）: ケース状態サマリーフッターのカウントラベルを更新します。
+
+        プロジェクト内の全ケースを状態別に集計し、各ラベルを更新します。
+        ケース0件の場合はグレー表示、状態が1件以上の場合は色付きで強調します。
+        """
+        if self._project is None or not hasattr(self, "_footer_total_lbl"):
+            return
+
+        from app.models import AnalysisCaseStatus as _S
+        cases = self._project.cases
+        n_pending  = sum(1 for c in cases if c.status == _S.PENDING)
+        n_running  = sum(1 for c in cases if c.status == _S.RUNNING)
+        n_done     = sum(1 for c in cases if c.status == _S.COMPLETED)
+        n_error    = sum(1 for c in cases if c.status == _S.ERROR)
+        n_total    = len(cases)
+
+        self._footer_pending_lbl.setText(f"⏳ 待機: {n_pending}")
+        self._footer_running_lbl.setText(f"▶ 実行中: {n_running}")
+        self._footer_done_lbl.setText(f"✅ 完了: {n_done}")
+        self._footer_error_lbl.setText(f"❌ エラー: {n_error}")
+        self._footer_total_lbl.setText(f"合計: {n_total}件")
+
+        # 状態別に強調色を設定
+        self._footer_pending_lbl.setStyleSheet(
+            "font-size: 10px; color: #f57c00; font-weight: bold;" if n_pending > 0
+            else "font-size: 10px; color: gray;"
+        )
+        self._footer_running_lbl.setStyleSheet(
+            "font-size: 10px; color: #1976d2; font-weight: bold;" if n_running > 0
+            else "font-size: 10px; color: gray;"
+        )
+        self._footer_done_lbl.setStyleSheet(
+            "font-size: 10px; color: #388e3c; font-weight: bold;" if n_done > 0
+            else "font-size: 10px; color: gray;"
+        )
+        self._footer_error_lbl.setStyleSheet(
+            "font-size: 10px; color: #d32f2f; font-weight: bold;" if n_error > 0
+            else "font-size: 10px; color: gray;"
+        )
+        self._footer_total_lbl.setStyleSheet(
+            "font-size: 10px; color: #212121; font-weight: bold;" if n_total > 0
+            else "font-size: 10px; color: gray;"
+        )
+
     # ------------------------------------------------------------------
     # Internals
     # ------------------------------------------------------------------
@@ -1028,6 +1053,8 @@ class CaseTableWidget(QWidget):
         # UX改善5: 行挿入中はソートを一時停止してパフォーマンスと一貫性を確保
         self._table.setSortingEnabled(False)
         self._table.setRowCount(0)
+        # UX改善（新）: ケース状態サマリーフッターを更新
+        self._update_status_footer()
         # ヘッダーラベルに件数を表示
         total_count = len(cases)
 
@@ -1282,6 +1309,30 @@ class CaseTableWidget(QWidget):
                 f"変更内容:\n{changes_label}\n\n"
                 "ダブルクリックして詳細を確認・編集できます。"
             )
+
+        # ── UX改善（第12回②）: ケース準備度インジケーター ────────────────────────
+        # ケース名がデフォルトのままであれば ⚠ プレフィックスを付けてツールチップで案内します。
+        # 基点ケース（⭐）との競合を避けるため、基点ケースでない場合のみ付与します。
+        is_base = self._base_case_id and case.id == self._base_case_id
+        if not is_base:
+            _readiness = _calc_readiness(case)
+            if _readiness == "warn_name":
+                # ケース名がデフォルトのまま → ⚠ で注意喚起
+                name_item.setText(f"⚠ {case.name}")
+                existing_tip = name_item.toolTip()
+                name_item.setToolTip(
+                    "⚠ ケース名がデフォルトのままです。\n"
+                    "内容がわかる名前（例: OIL_Ce500_α04）に変更することをお勧めします。\n"
+                    "ダブルクリック → 基本設定タブ → ケース名を編集してください。\n\n"
+                    + (existing_tip if existing_tip else "")
+                )
+            elif _readiness == "ready":
+                # 設定完了: アイコンは付けず、ツールチップに簡潔に示す
+                existing_tip = name_item.toolTip()
+                name_item.setToolTip(
+                    ("✅ 設定完了（カスタム名＋ダンパー変更あり）\n\n" + existing_tip)
+                    if not existing_tip else existing_tip
+                )
 
         self._table.setItem(row, _COL_NAME, name_item)
         self._table.setItem(row, _COL_GROUP, group_item)
@@ -1779,12 +1830,46 @@ class CaseTableWidget(QWidget):
             self.refresh()
             self.projectModified.emit()  # 改善⑤
 
+    def _show_dup_flash(self, new_case_id: str, new_case_name: str) -> None:
+        """
+        UX改善（第11回④）: 複製後インライン誘導フラッシュバナーを表示します。
+
+        複製直後に緑のバナーを5秒間表示し、「ダンパーパラメータを変更して
+        差別化しましょう」と次のアクションをガイドします。
+        「今すぐ編集」ボタンで複製されたケースの編集ダイアログをすぐに開けます。
+        """
+        self._pending_dup_case_id = new_case_id
+        self._dup_flash_text_lbl.setText(
+            f"<b>「{new_case_name}」を複製しました。</b>"
+            "　ダンパーパラメータを変更してケースを差別化しましょう。"
+        )
+        self._dup_flash_frame.show()
+        self._dup_flash_timer.start()
+
+    def _hide_dup_flash(self) -> None:
+        """UX改善（第11回④）: 複製フラッシュバナーを非表示にします。"""
+        self._dup_flash_timer.stop()
+        self._dup_flash_frame.hide()
+        self._pending_dup_case_id = None
+
+    def _on_dup_flash_edit_clicked(self) -> None:
+        """UX改善（第11回④）: フラッシュバナーの「今すぐ編集」ボタン処理。"""
+        case_id = self._pending_dup_case_id
+        self._hide_dup_flash()
+        if case_id:
+            self._edit_case(case_id)
+
     def _duplicate_case(self, case_id: str) -> None:
         if self._project is None:
             return
         self._project.duplicate_case(case_id)
         self.refresh()
         self.projectModified.emit()  # 改善⑤
+
+        # UX改善（第11回④）: 複製後フラッシュバナーを表示
+        if self._project.cases:
+            new_case = self._project.cases[-1]
+            self._show_dup_flash(new_case.id, new_case.name)
 
     def _duplicate_and_edit_case(self, case_id: str) -> None:
         """

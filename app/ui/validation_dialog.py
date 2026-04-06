@@ -4,6 +4,14 @@ app/ui/validation_dialog.py
 
 解析実行前の入力チェック結果を一覧表示します。
 エラー/警告/情報をレベル別に表示し、問題のあるフィールドを特定できます。
+
+UX改善（第4回）③: 最優先修正ガイドカード追加。
+  エラーが存在する場合、ツリー表示の上部に「今すぐ修正すべきこと」カードを表示します。
+  最も重要なエラー（先頭エラー）の「修正提案」テキストを大きく表示し、
+  複数のエラーがある場合は件数バッジを付けます。
+  警告のみの場合は「警告確認」カードを黄色で表示。
+  エラーなしの場合は「実行可能」カードを緑で表示。
+  `_make_top_action_card()` メソッドを追加。
 """
 
 from __future__ import annotations
@@ -65,6 +73,10 @@ class ValidationDialog(QDialog):
         summary = self._make_summary()
         layout.addWidget(summary)
 
+        # UX改善（第4回）③: 最優先修正ガイドカード
+        action_card = self._make_top_action_card()
+        layout.addWidget(action_card)
+
         # ---- メッセージツリー ----
         self._tree = QTreeWidget()
         self._tree.setHeaderLabels(["レベル", "カテゴリ", "メッセージ", "提案"])
@@ -102,6 +114,90 @@ class ValidationDialog(QDialog):
                 ))
 
         layout.addWidget(btn_box)
+
+    def _make_top_action_card(self) -> QWidget:
+        """
+        UX改善（第4回）③: 「今すぐ修正すべきこと」最優先ガイドカードを作成します。
+
+        エラーの有無・件数に応じて3パターンのカードを表示します:
+        1. エラーあり: 赤カード + 最初のエラーの修正提案を大きく表示
+        2. 警告のみ:   黄カード + 警告内容の確認を促す
+        3. 全てOK:    緑カード + 実行可能であることを明示
+        """
+        card = QFrame()
+        card.setFrameShape(QFrame.StyledPanel)
+        card_layout = QVBoxLayout(card)
+        card_layout.setContentsMargins(12, 8, 12, 8)
+        card_layout.setSpacing(4)
+
+        errors = [m for m in self._result.messages if m.level == ValidationLevel.ERROR]
+        warnings = [m for m in self._result.messages if m.level == ValidationLevel.WARNING]
+
+        if errors:
+            # エラーあり: 赤カード
+            card.setStyleSheet(
+                "QFrame { background-color: #ffebee; border: 1px solid #e53935; border-radius: 6px; }"
+            )
+            title_lbl = QLabel(
+                f"🔴 <b>今すぐ修正してください</b>"
+                + (f"　（エラー {len(errors)}件）" if len(errors) > 1 else "")
+            )
+            title_lbl.setStyleSheet("color: #b71c1c; font-size: 12px;")
+            card_layout.addWidget(title_lbl)
+
+            # 最初のエラーの修正提案を表示
+            first_err = errors[0]
+            msg_lbl = QLabel(f"<b>問題:</b> {first_err.message}")
+            msg_lbl.setWordWrap(True)
+            msg_lbl.setStyleSheet("color: #c62828; font-size: 11px;")
+            card_layout.addWidget(msg_lbl)
+
+            if first_err.suggestion:
+                suggestion_lbl = QLabel(f"✏ <b>修正方法:</b> {first_err.suggestion}")
+                suggestion_lbl.setWordWrap(True)
+                suggestion_lbl.setStyleSheet("color: #333; font-size: 11px;")
+                card_layout.addWidget(suggestion_lbl)
+
+            if len(errors) > 1:
+                more_lbl = QLabel(
+                    f"他に <b>{len(errors) - 1}件</b>のエラーがあります。"
+                    "下のリストで全て確認してください。"
+                )
+                more_lbl.setStyleSheet("color: #888; font-size: 10px;")
+                card_layout.addWidget(more_lbl)
+
+        elif warnings:
+            # 警告のみ: 黄カード
+            card.setStyleSheet(
+                "QFrame { background-color: #fff8e1; border: 1px solid #fb8c00; border-radius: 6px; }"
+            )
+            title_lbl = QLabel(
+                f"⚠ <b>警告を確認してください</b>　（警告 {len(warnings)}件）"
+            )
+            title_lbl.setStyleSheet("color: #e65100; font-size: 12px;")
+            card_layout.addWidget(title_lbl)
+
+            first_warn = warnings[0]
+            msg_lbl = QLabel(f"<b>主な警告:</b> {first_warn.message}")
+            msg_lbl.setWordWrap(True)
+            msg_lbl.setStyleSheet("color: #bf360c; font-size: 11px;")
+            card_layout.addWidget(msg_lbl)
+
+            hint_lbl = QLabel("警告がありますが解析は実行できます。問題なければ「OK」で続行してください。")
+            hint_lbl.setStyleSheet("color: #555; font-size: 10px;")
+            card_layout.addWidget(hint_lbl)
+
+        else:
+            # 全てOK: 緑カード
+            card.setStyleSheet(
+                "QFrame { background-color: #e8f5e9; border: 1px solid #43a047; border-radius: 6px; }"
+            )
+            ok_lbl = QLabel("✅ <b>問題なし。このまま「OK」を押して解析を開始してください。</b>")
+            ok_lbl.setStyleSheet("color: #1b5e20; font-size: 12px;")
+            ok_lbl.setWordWrap(True)
+            card_layout.addWidget(ok_lbl)
+
+        return card
 
     def _make_summary(self) -> QWidget:
         """サマリー部分のウィジェットを作成。"""

@@ -11,6 +11,14 @@ app/ui/radar_chart_widget.py
   │ [正規化方法]  [ケース選択リスト]     │
   │ matplotlib レーダーチャート           │
   └──────────────────────────────────────┘
+
+UX改善（新）: 総合スコアバナー + 最良ケース自動ゴールドハイライト。
+  各ケースの「総合スコア」（全軸の正規化値の合計）を計算し、
+  最小スコアのケース（全体的に最も有利なケース）を自動的に
+  ゴールド色・太線・大きめのマーカーでハイライトします。
+  グラフ下部に「🏆 総合最良: {ケース名}（スコア: X.XX）」バナーを表示し、
+  複数の応答値を同時考慮した場合の最適ケースを直感的に把握できます。
+  スコアが同率最良の場合は複数ケースをカンマ区切りで表示します。
 """
 
 from __future__ import annotations
@@ -23,6 +31,7 @@ from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
+    QFrame,
     QGroupBox,
     QHBoxLayout,
     QLabel,
@@ -183,6 +192,26 @@ class RadarChartWidget(QWidget):
 
         layout.addLayout(main_row, stretch=1)
 
+        # ---- UX改善（新）: 総合スコアバナー ----
+        # グラフ下部に最良ケース情報を常時表示する
+        self._score_banner = QFrame()
+        self._score_banner.setFrameShape(QFrame.StyledPanel)
+        self._score_banner.setStyleSheet(
+            "QFrame {"
+            "  background-color: #fff8e1;"
+            "  border: 1px solid #f9a825;"
+            "  border-radius: 4px;"
+            "}"
+        )
+        self._score_banner.setMaximumHeight(36)
+        _score_row = QHBoxLayout(self._score_banner)
+        _score_row.setContentsMargins(10, 4, 10, 4)
+        self._score_label = QLabel("")
+        self._score_label.setStyleSheet("color: #7f5000; font-size: 11px; background: transparent;")
+        _score_row.addWidget(self._score_label)
+        self._score_banner.setVisible(False)
+        layout.addWidget(self._score_banner)
+
         self._show_empty()
 
     # ------------------------------------------------------------------
@@ -277,15 +306,32 @@ class RadarChartWidget(QWidget):
         ax.set_xticks(angles[:-1])
         ax.set_xticklabels(labels, fontsize=9)
 
+        # ---- UX改善（新）: 総合スコア（全軸の正規化値の合計）を計算 ----
+        # スコアが最小のケースが「最も多くの指標で有利」な総合最良ケース
+        case_scores = []
         for case, color_idx, norm_vals in normalized:
-            color = _COLORS[color_idx % len(_COLORS)]
+            score = sum(norm_vals) / max(len(norm_vals), 1)
+            case_scores.append((case, color_idx, norm_vals, score))
+
+        # 最小スコアを特定
+        best_score = min(s for _, _, _, s in case_scores) if case_scores else None
+
+        for case, color_idx, norm_vals, score in case_scores:
+            is_best = (best_score is not None and abs(score - best_score) < 1e-9)
+            color = "#FFD700" if is_best else _COLORS[color_idx % len(_COLORS)]
+            linewidth = 3.0 if is_best else 1.5
+            markersize = 7 if is_best else 4
+            alpha_fill = 0.18 if is_best else 0.06
+            zorder = 5 if is_best else 3
+            label_text = f"🏆 {case.name}（最良）" if is_best else case.name
             values = norm_vals + norm_vals[:1]  # 閉じる
             ax.plot(angles, values,
-                    marker="o", markersize=4,
-                    label=case.name,
+                    marker="o", markersize=markersize,
+                    label=label_text,
                     color=color,
-                    linewidth=1.5)
-            ax.fill(angles, values, alpha=0.08, color=color)
+                    linewidth=linewidth,
+                    zorder=zorder)
+            ax.fill(angles, values, alpha=alpha_fill, color=color)
 
         ax.set_title("応答値レーダーチャート", fontsize=10, pad=20)
         ax.legend(fontsize=7, loc="upper right",
@@ -298,6 +344,62 @@ class RadarChartWidget(QWidget):
 
         self._canvas.fig.tight_layout()
         self._canvas.draw()
+
+        # ---- UX改善（新）: 総合スコアバナーを更新 ----
+        self._update_score_banner(case_scores)
+
+    def _update_score_banner(
+        self,
+        case_scores: List[tuple],
+    ) -> None:
+        """
+        UX改善（新）: 総合スコアバナーを更新します。
+
+        各ケースのスコア（全軸の正規化値の平均）でランキングし、
+        最良ケース（スコア最小）をバナーに表示します。
+
+        Parameters
+        ----------
+        case_scores : list of (case, color_idx, norm_vals, score)
+        """
+        if not case_scores:
+            self._score_banner.setVisible(False)
+            return
+
+        sorted_by_score = sorted(case_scores, key=lambda t: t[3])
+        best_score = sorted_by_score[0][3]
+        best_cases = [c for c, _, _, s in sorted_by_score if abs(s - best_score) < 1e-9]
+
+        # スコアランキングを3位まで表示
+        rank_parts = []
+        shown_scores = []
+        for case, _, _, score in sorted_by_score:
+            # 同スコアをまとめる
+            if not any(abs(score - s) < 1e-9 for s in shown_scores):
+                rank = len(shown_scores) + 1
+                same = [c.name for c, _, _, s in sorted_by_score if abs(s - score) < 1e-9]
+                label = "🏆 " if rank == 1 else ("🥈 " if rank == 2 else "🥉 ")
+                rank_parts.append(f"{label}{', '.join(same)}（{score:.3f}）")
+                shown_scores.append(score)
+            if len(shown_scores) >= 3:
+                break
+
+        banner_text = "総合スコア（小さいほど良い）: " + "  /  ".join(rank_parts)
+        if len(sorted_by_score) > len(shown_scores):
+            remaining = len(sorted_by_score) - sum(
+                1 for _, _, _, s in sorted_by_score
+                if any(abs(s - sh) < 1e-9 for sh in shown_scores[:3])
+            )
+            if remaining > 0:
+                banner_text += f"  … 他{remaining}件"
+
+        self._score_label.setText(banner_text)
+        self._score_label.setToolTip(
+            "各ケースの「総合スコア」は全応答値指標の正規化値（0〜1）の平均です。\n"
+            "0に近いほど全指標において良好なパフォーマンスを示します。\n"
+            "🏆 は最もスコアの小さい（全体的に最も有利な）ケースです。"
+        )
+        self._score_banner.setVisible(True)
 
     def _normalize(
         self,
@@ -369,3 +471,6 @@ class RadarChartWidget(QWidget):
         ax.set_axis_off()
         self._canvas.ax = ax
         self._canvas.draw()
+        # UX改善（新）: 空状態ではバナーを非表示に
+        if hasattr(self, "_score_banner"):
+            self._score_banner.setVisible(False)

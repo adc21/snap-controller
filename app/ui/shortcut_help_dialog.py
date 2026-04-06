@@ -5,6 +5,15 @@ app/ui/shortcut_help_dialog.py
 改善⑨: Ctrl+? または ヘルプメニューから開けるショートカット一覧。
         アプリ内のすべてのキーボードショートカットをカテゴリ別に表示します。
         初めて使うユーザーが機能を発見しやすくなります。
+
+UX改善（第6回⑤）: よく使うショートカットのピン留めセクション追加。
+  ダイアログ上部に「よく使うショートカット」を大きなカード形式で常時表示します。
+  - F5（解析実行）、Ctrl+D（複製）、Enter（編集）、F2（リネーム）、
+    Ctrl+W（スイープ）など最頻出5〜6件を横並びカードで強調表示
+  - カードはキー名を大きく表示し、機能説明をサブテキストで添える
+  - 検索フィルター適用時にもピン留めカードは常に表示されたままになる
+  これにより、初めてのユーザーでも「どのキーを押せばよいか」が
+  一目でわかるようになります。
 """
 
 from __future__ import annotations
@@ -12,10 +21,12 @@ from __future__ import annotations
 from typing import Optional
 
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QFont, QKeySequence
+from PySide6.QtGui import QFont, QKeySequence, QColor
 from PySide6.QtWidgets import (
     QDialog,
     QDialogButtonBox,
+    QFrame,
+    QHBoxLayout,
     QHeaderView,
     QLabel,
     QLineEdit,
@@ -26,6 +37,17 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+
+# UX改善（第6回⑤）: よく使うショートカットのピン留め定義
+# (キー表示文字列, 機能説明, 絵文字アイコン, 背景色)
+_PINNED_SHORTCUTS = [
+    ("F5",         "解析実行",     "🚀", "#e3f2fd", "#0d47a1"),
+    ("Enter",      "ケース編集",   "✏️", "#f3e5f5", "#4a148c"),
+    ("Ctrl+D",     "ケース複製",   "📋", "#e8f5e9", "#1b5e20"),
+    ("F2",         "名前リネーム", "🏷", "#fff3e0", "#e65100"),
+    ("Ctrl+W",     "スイープ生成", "🔁", "#fce4ec", "#880e4f"),
+    ("Delete",     "ケース削除",   "🗑", "#f5f5f5", "#424242"),
+]
 
 # ショートカット定義: (カテゴリ, キー表示文字列, 機能説明)
 _SHORTCUTS = [
@@ -111,6 +133,62 @@ class ShortcutHelpDialog(QDialog):
         subtitle = QLabel("よく使う操作をキーボードで素早く実行できます。")
         subtitle.setStyleSheet("color: gray; margin-bottom: 4px;")
         layout.addWidget(subtitle)
+
+        # ---- UX改善（第6回⑤）: ピン留めショートカットカード ----
+        pinned_header = QLabel("📌 よく使うショートカット")
+        pinned_header.setStyleSheet(
+            "font-size: 11px; font-weight: bold; color: #555; margin-top: 4px;"
+        )
+        layout.addWidget(pinned_header)
+
+        pinned_row = QHBoxLayout()
+        pinned_row.setSpacing(6)
+
+        for key_text, desc, icon, bg_color, fg_color in _PINNED_SHORTCUTS:
+            card = QFrame()
+            card.setFrameShape(QFrame.StyledPanel)
+            card.setStyleSheet(
+                f"QFrame {{ background:{bg_color}; border:1px solid {fg_color}40;"
+                f"border-radius:6px; }}"
+            )
+            card.setFixedHeight(56)
+            card.setMinimumWidth(80)
+
+            card_layout = QVBoxLayout(card)
+            card_layout.setContentsMargins(8, 4, 8, 4)
+            card_layout.setSpacing(1)
+
+            # キー名（大きく）
+            key_lbl = QLabel(f"{icon}  {key_text}")
+            key_font = QFont("Consolas", 11)
+            key_font.setBold(True)
+            key_lbl.setFont(key_font)
+            key_lbl.setStyleSheet(
+                f"color: {fg_color}; background: transparent;"
+            )
+            key_lbl.setAlignment(Qt.AlignCenter)
+            card_layout.addWidget(key_lbl)
+
+            # 機能説明（小さく）
+            desc_lbl = QLabel(desc)
+            desc_font = QFont()
+            desc_font.setPointSize(8)
+            desc_lbl.setFont(desc_font)
+            desc_lbl.setStyleSheet(f"color:{fg_color}; background:transparent;")
+            desc_lbl.setAlignment(Qt.AlignCenter)
+            card_layout.addWidget(desc_lbl)
+
+            card.setToolTip(f"{key_text}: {desc}")
+            pinned_row.addWidget(card)
+
+        pinned_row.addStretch()
+        layout.addLayout(pinned_row)
+
+        # セパレーター
+        sep = QFrame()
+        sep.setFrameShape(QFrame.HLine)
+        sep.setStyleSheet("color: palette(mid); margin: 4px 0;")
+        layout.addWidget(sep)
 
         # ---- 検索ボックス ----
         self._search_edit = QLineEdit()

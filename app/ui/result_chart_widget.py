@@ -2,6 +2,12 @@
 app/ui/result_chart_widget.py
 解析結果グラフウィジェット。
 
+UX改善（第10回②）: 前後ケースナビゲーションボタン（◄/►）追加。
+  ケース選択コンボボックスの両隣に「◄ 前のケース」「次のケース ►」ボタンを追加し、
+  ドロップダウンを開かずにクリックひとつで前後のケースに切り替えられます。
+  ケース数カウンター「ケース 3 / 8」を常時表示し、現在位置を把握しながら
+  結果を素早く確認できます。先頭・末尾ではボタンが自動的に無効化されます。
+
 UX改善③新2追加: 空状態オーバーレイUI。
   ケースが選択されていない、または選択ケースに結果データがない場合、
   matplotlib の薄いテキストより視認性の高い空状態ウィジェットを表示します。
@@ -33,6 +39,14 @@ UX改善:
          グラフを大きなダイアログウィンドウで拡大表示します。
          横棒グラフが小さくて読みにくいとき、層間変形角等の
          数値を確認したいときに役立ちます。
+
+UX改善（新）: 性能基準超過層数バナー + 余裕度ラベル。
+  性能基準が設定されており、かつ現在の指標に対応する基準値がある場合、
+  グラフタブの下部に「超過層数バナー」を表示します。
+  - 超過なし（全層 OK）: 緑バナー「✅ 全 N 層で基準値以内」
+  - 一部超過:     赤バナー「❌ X / N 層で基準値超過（最大 XX% オーバー）」
+  各バーのラベルに「(OK)」「(NG)」をテキストで付与し、印刷・モノクロでも
+  合否がひと目でわかります。
 """
 
 from __future__ import annotations
@@ -214,6 +228,9 @@ class ResultChartWidget(QWidget):
         # UX改善③新2: クリア時は拡大ボタンを無効化
         if hasattr(self, "_btn_popout"):
             self._btn_popout.setEnabled(False)
+        # UX改善（新）: クリア時は超過バナーも非表示
+        if hasattr(self, "_criteria_banner"):
+            self._criteria_banner.setVisible(False)
         self._dyc_panel.setVisible(False)
         self._canvas.clear_plot()
         self._canvas.ax.text(
@@ -244,13 +261,46 @@ class ResultChartWidget(QWidget):
         self._title_label = QLabel("<b>結果グラフ</b>")
         title_row.addWidget(self._title_label)
 
-        # ケース選択コンボ（解析済みケース一覧）
+        # ---- UX改善（第10回②）: ケース選択 + 前後ナビゲーションボタン ----
         title_row.addWidget(QLabel("ケース:"))
+
+        # ◄ 前のケースボタン
+        self._btn_prev_case = QPushButton("◄")
+        self._btn_prev_case.setFixedSize(28, 24)
+        self._btn_prev_case.setToolTip(
+            "前のケースに切り替えます\n"
+            "ドロップダウンを開かずにケースを順番に確認できます"
+        )
+        self._btn_prev_case.setStyleSheet("font-size: 11px; padding: 1px 4px;")
+        self._btn_prev_case.setEnabled(False)
+        self._btn_prev_case.clicked.connect(self._prev_case)
+        title_row.addWidget(self._btn_prev_case)
+
         self._case_combo = QComboBox()
         self._case_combo.setMinimumWidth(180)
         self._case_combo.setToolTip("表示するケースを選択します（解析済みケースのみ表示）")
         self._case_combo.currentIndexChanged.connect(self._on_case_combo_changed)
         title_row.addWidget(self._case_combo)
+
+        # ► 次のケースボタン
+        self._btn_next_case = QPushButton("►")
+        self._btn_next_case.setFixedSize(28, 24)
+        self._btn_next_case.setToolTip(
+            "次のケースに切り替えます\n"
+            "ドロップダウンを開かずにケースを順番に確認できます"
+        )
+        self._btn_next_case.setStyleSheet("font-size: 11px; padding: 1px 4px;")
+        self._btn_next_case.setEnabled(False)
+        self._btn_next_case.clicked.connect(self._next_case)
+        title_row.addWidget(self._btn_next_case)
+
+        # ケース番号カウンターラベル（例: 「3 / 8」）
+        self._case_counter_lbl = QLabel("")
+        self._case_counter_lbl.setStyleSheet(
+            "color: gray; font-size: 10px; padding: 0 4px;"
+        )
+        self._case_counter_lbl.setToolTip("現在のケース番号 / 解析済みケース総数")
+        title_row.addWidget(self._case_counter_lbl)
 
         title_row.addStretch()
 
@@ -409,6 +459,19 @@ class ResultChartWidget(QWidget):
 
         layout.addWidget(self._chart_stack)
 
+        # ---- UX改善（新）: 性能基準超過層数バナー ----
+        # グラフ下部に基準との比較結果を常時表示する（性能基準設定時のみ表示）
+        self._criteria_banner = QFrame()
+        self._criteria_banner.setFrameShape(QFrame.StyledPanel)
+        self._criteria_banner.setMaximumHeight(32)
+        _cb_layout = QHBoxLayout(self._criteria_banner)
+        _cb_layout.setContentsMargins(10, 4, 10, 4)
+        self._criteria_banner_label = QLabel("")
+        self._criteria_banner_label.setStyleSheet("font-size: 11px; font-weight: bold; background: transparent;")
+        _cb_layout.addWidget(self._criteria_banner_label)
+        self._criteria_banner.setVisible(False)
+        layout.addWidget(self._criteria_banner)
+
         # 初期状態
         self.clear()
 
@@ -457,6 +520,8 @@ class ResultChartWidget(QWidget):
         # 現在選択中のケースを復元
         if self._current_case:
             self._sync_case_combo(self._current_case)
+        # UX改善（第10回②）: ナビゲーションボタンの状態を更新
+        self._update_case_nav_buttons()
 
     def _sync_case_combo(self, case: AnalysisCase) -> None:
         """コンボを指定ケースに同期します（シグナルは発火しない）。"""
@@ -491,6 +556,41 @@ class ResultChartWidget(QWidget):
                 if hasattr(self, "_btn_popout"):
                     self._btn_popout.setEnabled(True)
                 break
+        # UX改善（第10回②）: ナビゲーションボタンの状態を更新
+        self._update_case_nav_buttons()
+
+    # ------------------------------------------------------------------
+    # UX改善（第10回②）: 前後ケースナビゲーション
+    # ------------------------------------------------------------------
+
+    def _prev_case(self) -> None:
+        """◄ ボタン: 前のケースに切り替えます。"""
+        current_idx = self._case_combo.currentIndex()
+        if current_idx > 0:
+            self._case_combo.setCurrentIndex(current_idx - 1)
+
+    def _next_case(self) -> None:
+        """► ボタン: 次のケースに切り替えます。"""
+        current_idx = self._case_combo.currentIndex()
+        if current_idx < self._case_combo.count() - 1:
+            self._case_combo.setCurrentIndex(current_idx + 1)
+
+    def _update_case_nav_buttons(self) -> None:
+        """
+        ◄/► ボタンの有効/無効状態とカウンターラベルを更新します。
+
+        先頭ケースでは ◄ を無効化し、末尾ケースでは ► を無効化します。
+        """
+        if not hasattr(self, "_btn_prev_case"):
+            return
+        total = self._case_combo.count()
+        current_idx = self._case_combo.currentIndex()
+        self._btn_prev_case.setEnabled(total > 1 and current_idx > 0)
+        self._btn_next_case.setEnabled(total > 1 and current_idx < total - 1)
+        if total > 0 and current_idx >= 0:
+            self._case_counter_lbl.setText(f"{current_idx + 1} / {total}")
+        else:
+            self._case_counter_lbl.setText("")
 
     # ------------------------------------------------------------------
     # DYC サブケース選択
@@ -668,6 +768,8 @@ class ResultChartWidget(QWidget):
                     ha="center", va="center",
                     transform=ax.transAxes, color="gray")
             self._canvas.draw()
+            if hasattr(self, "_criteria_banner"):
+                self._criteria_banner.setVisible(False)
             return
 
         # 0層（地盤面）を常にプロット
@@ -714,6 +816,9 @@ class ResultChartWidget(QWidget):
 
         self._canvas.fig.tight_layout()
         self._canvas.draw()
+
+        # ---- UX改善（新）: 超過層数バナーを更新 ----
+        self._update_criteria_banner(key, values, floors)
 
     def _popout_chart(self) -> None:
         """
@@ -808,6 +913,93 @@ class ResultChartWidget(QWidget):
         btns.rejected.connect(dlg.accept)
         layout.addWidget(btns)
         dlg.exec()
+
+    def _update_criteria_banner(
+        self, chart_key: str, values: list, floors: list
+    ) -> None:
+        """
+        UX改善（新）: 性能基準に対する超過層数バナーを更新します。
+
+        現在の応答指標と性能基準を比較し、超過している層の数と
+        最大超過率をバナーに表示します。
+
+        Parameters
+        ----------
+        chart_key : str
+            現在表示中の応答値キー（例: "max_story_drift"）
+        values : list
+            各層の応答値リスト（floors に対応）
+        floors : list
+            層番号リスト
+        """
+        if not hasattr(self, "_criteria_banner"):
+            return
+
+        # 性能基準がない or 非表示設定の場合は隠す
+        if not self._show_criteria or self._criteria is None:
+            self._criteria_banner.setVisible(False)
+            return
+
+        criteria_key = _CHART_KEY_TO_CRITERIA_KEY.get(chart_key)
+        if criteria_key is None:
+            self._criteria_banner.setVisible(False)
+            return
+
+        limit_value = None
+        for item in self._criteria.items:
+            if item.key == criteria_key and item.enabled and item.limit_value is not None:
+                limit_value = item.limit_value
+                break
+
+        if limit_value is None:
+            self._criteria_banner.setVisible(False)
+            return
+
+        # 0層（地盤面）を除いた層のみで超過判定
+        check_floors = [(f, v) for f, v in zip(floors, values) if f > 0]
+        if not check_floors:
+            self._criteria_banner.setVisible(False)
+            return
+
+        exceed_floors = [(f, v) for f, v in check_floors if v > limit_value]
+        total_floors = len(check_floors)
+        n_exceed = len(exceed_floors)
+
+        if n_exceed == 0:
+            # 全層OK
+            self._criteria_banner.setStyleSheet(
+                "QFrame { background-color: #e8f5e9; border: 1px solid #a5d6a7; border-radius: 4px; }"
+            )
+            self._criteria_banner_label.setStyleSheet(
+                "font-size: 11px; font-weight: bold; color: #2e7d32; background: transparent;"
+            )
+            self._criteria_banner_label.setText(
+                f"✅  全 {total_floors} 層で基準値以内（基準: {limit_value:.4g}）"
+            )
+        else:
+            # 超過あり
+            max_val = max(v for _, v in exceed_floors)
+            max_over_pct = (max_val - limit_value) / limit_value * 100 if limit_value > 0 else 0
+            self._criteria_banner.setStyleSheet(
+                "QFrame { background-color: #ffebee; border: 1px solid #ef9a9a; border-radius: 4px; }"
+            )
+            self._criteria_banner_label.setStyleSheet(
+                "font-size: 11px; font-weight: bold; color: #b71c1c; background: transparent;"
+            )
+            exceed_floor_strs = ", ".join(f"{f}層" for f, _ in exceed_floors[:5])
+            if len(exceed_floors) > 5:
+                exceed_floor_strs += f" … 他{len(exceed_floors) - 5}層"
+            self._criteria_banner_label.setText(
+                f"❌  {n_exceed} / {total_floors} 層で基準値超過"
+                f"（最大 +{max_over_pct:.1f}%）"
+                f"　超過層: {exceed_floor_strs}"
+            )
+        self._criteria_banner_label.setToolTip(
+            f"現在の指標の性能基準値: {limit_value:.4g}\n"
+            f"超過している層の数: {n_exceed} / {total_floors}\n"
+            "ダンパーを増強するか配置を変更して基準値以内に収めてください。"
+        )
+        self._criteria_banner.setVisible(True)
 
     def _draw_criteria_line(self, ax, chart_key: str) -> None:
         """現在の性能基準に基づいて、グラフ上に縦の基準線を描画します。"""

@@ -30,6 +30,29 @@ app/ui/optimizer_dialog.py
   ├─────────────────────────────────────────────────────────────┤
   │ [最良解をケースに適用] [閉じる]                            │
   └─────────────────────────────────────────────────────────────┘
+
+UX改善（第9回④）: 最適化完了後ベストソリューションサマリーカード追加。
+  最適化が完了したとき、結果テーブルの上部に「🏆 最良解が見つかりました」カードを表示します。
+  カードには最良パラメータ・目的関数値・制約満足数が大きく表示され、
+  テーブルをスクロールしなくても最終結果を一目で把握できます。
+  制約を満たす解が見つかった場合は緑、見つからなかった場合は黄色のカラーリングで
+  状態を直感的に識別できます。
+  `_best_summary_card` QFrame と `_update_best_summary_card()` メソッドを追加。
+
+UX改善（新②）: 初回ユーザー向けガイドバナー + 推定試行数・時間インジケーター追加。
+
+  ガイドバナー:
+  - ダイアログ最上部に折りたたみ可能な「最適化とは？」説明パネルを追加。
+  - 最適化の仕組み（指定パラメータを変えながら繰り返し解析して最良解を探す）を
+    3行で説明し、初めてのユーザーが「何が起きているか」を理解できます。
+  - 「▼ 最適化とは？」ボタンで展開/折りたたみを切り替えます。
+
+  推定試行数インジケーター:
+  - パラメータ範囲（最小・最大・刻み幅）が変わるたびに、
+    グリッドサーチ時の推定試行数をリアルタイムで計算して表示します。
+  - 「推定 X 回の解析を実行します（≈ Y分）」の形式で、
+    1回30秒を仮定した所要時間の目安も同時に提示します。
+  - 試行数が50超で橙色、200超で赤色に変わり、大量試行への注意を促します。
 """
 
 from __future__ import annotations
@@ -195,6 +218,37 @@ class OptimizerDialog(QDialog):
     def _setup_ui(self) -> None:
         layout = QVBoxLayout(self)
 
+        # ---- UX改善（新②）: 折りたたみ式ガイドバナー ----
+        guide_toggle_row = QHBoxLayout()
+        self._guide_toggle_btn = QPushButton("▶ 最適化とは？（初めての方へ）")
+        self._guide_toggle_btn.setFlat(True)
+        self._guide_toggle_btn.setStyleSheet(
+            "QPushButton { color: #1565c0; font-size: 11px; text-align: left; }"
+        )
+        self._guide_toggle_btn.clicked.connect(self._toggle_guide_panel)
+        guide_toggle_row.addWidget(self._guide_toggle_btn)
+        guide_toggle_row.addStretch()
+        layout.addLayout(guide_toggle_row)
+
+        self._guide_panel = QWidget()
+        self._guide_panel.setVisible(False)
+        guide_panel_layout = QVBoxLayout(self._guide_panel)
+        guide_panel_layout.setContentsMargins(8, 4, 8, 4)
+        self._guide_panel.setStyleSheet(
+            "QWidget { background: #e3f2fd; border-radius: 6px; }"
+        )
+        guide_text = QLabel(
+            "<b>ダンパー最適化の仕組み</b><br>"
+            "① 指定したパラメータの値を少しずつ変えながら、繰り返しSNAP解析を実行します。<br>"
+            "② 各試行の解析結果（例: 最大層間変形角）を目的関数として評価し、最も小さい値を探します。<br>"
+            "③ 全試行が終わると最良パラメータを「最良解をケースに適用」で既存ケースに反映できます。<br>"
+            "<i>まずはダンパー種類・目的関数・パラメータ範囲を設定して「最適化を開始」してください。</i>"
+        )
+        guide_text.setWordWrap(True)
+        guide_text.setStyleSheet("color: #0d47a1; font-size: 11px; padding: 4px;")
+        guide_panel_layout.addWidget(guide_text)
+        layout.addWidget(self._guide_panel)
+
         # ---- 設定セクション ----
         settings_group = QGroupBox("最適化設定")
         settings_layout = QVBoxLayout(settings_group)
@@ -245,6 +299,11 @@ class OptimizerDialog(QDialog):
 
         layout.addWidget(settings_group)
 
+        # ---- UX改善（新②）: 推定試行数・時間インジケーター ----
+        self._est_run_label = QLabel("")
+        self._est_run_label.setStyleSheet("font-size: 11px; color: #1565c0; padding: 2px 4px;")
+        layout.addWidget(self._est_run_label)
+
         # ---- 実行ボタン + 進捗 ----
         run_row = QHBoxLayout()
         self._run_btn = QPushButton("最適化を開始")
@@ -266,6 +325,59 @@ class OptimizerDialog(QDialog):
         run_row.addWidget(self._progress_label)
 
         layout.addLayout(run_row)
+
+        # ---- UX改善（第9回④）: ベストソリューションサマリーカード ----
+        # 最適化完了後に _update_best_summary_card() で内容を設定して表示します。
+        self._best_summary_card = QFrame()
+        self._best_summary_card.setFrameShape(QFrame.StyledPanel)
+        self._best_summary_card.setStyleSheet(
+            "QFrame {"
+            "  background-color: #e8f5e9;"
+            "  border: 1px solid #66bb6a;"
+            "  border-left: 5px solid #2e7d32;"
+            "  border-radius: 4px;"
+            "}"
+        )
+        _best_card_layout = QHBoxLayout(self._best_summary_card)
+        _best_card_layout.setContentsMargins(12, 8, 12, 8)
+        _best_card_layout.setSpacing(16)
+
+        _bc_icon = QLabel("🏆")
+        _bc_icon.setStyleSheet("font-size: 20px; background: transparent; border: none;")
+        _bc_icon.setFixedWidth(28)
+        _best_card_layout.addWidget(_bc_icon)
+
+        _bc_text_col = QVBoxLayout()
+        _bc_text_col.setSpacing(2)
+        _bc_text_col.setContentsMargins(0, 0, 0, 0)
+
+        self._bc_title_lbl = QLabel("<b>最良解が見つかりました</b>")
+        self._bc_title_lbl.setStyleSheet(
+            "color: #1b5e20; font-size: 12px; background: transparent; border: none;"
+        )
+        self._bc_title_lbl.setTextFormat(Qt.RichText)
+        _bc_text_col.addWidget(self._bc_title_lbl)
+
+        self._bc_params_lbl = QLabel("")
+        self._bc_params_lbl.setStyleSheet(
+            "color: #2e7d32; font-size: 10px; background: transparent; border: none;"
+        )
+        self._bc_params_lbl.setWordWrap(True)
+        _bc_text_col.addWidget(self._bc_params_lbl)
+
+        _best_card_layout.addLayout(_bc_text_col, stretch=1)
+
+        self._bc_obj_lbl = QLabel("")
+        self._bc_obj_lbl.setStyleSheet(
+            "color: #1b5e20; font-size: 16px; font-weight: bold;"
+            "  background: transparent; border: none;"
+        )
+        self._bc_obj_lbl.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        self._bc_obj_lbl.setMinimumWidth(100)
+        _best_card_layout.addWidget(self._bc_obj_lbl)
+
+        self._best_summary_card.hide()  # 最適化完了まで非表示
+        layout.addWidget(self._best_summary_card)
 
         # ---- 結果セクション ----
         result_splitter = QSplitter(Qt.Horizontal)
@@ -325,6 +437,89 @@ class OptimizerDialog(QDialog):
         self._optimizer.progress.connect(self._on_progress)
         self._optimizer.candidate_found.connect(self._on_candidate)
         self._optimizer.optimization_finished.connect(self._on_finished)
+        # UX改善（新②）: パラメータ/手法変更時に推定試行数を更新
+        self._method_combo.currentIndexChanged.connect(self._update_est_run_label)
+        self._iter_spin.valueChanged.connect(self._update_est_run_label)
+        self._damper_combo.currentTextChanged.connect(self._update_est_run_label)
+
+    # ------------------------------------------------------------------
+    # UX改善（新②）: ガイドパネル + 推定試行数
+    # ------------------------------------------------------------------
+
+    def _toggle_guide_panel(self) -> None:
+        """「最適化とは？」ガイドパネルの表示/非表示を切り替えます。"""
+        visible = not self._guide_panel.isVisible()
+        self._guide_panel.setVisible(visible)
+        self._guide_toggle_btn.setText(
+            "▼ 最適化とは？（初めての方へ）" if visible
+            else "▶ 最適化とは？（初めての方へ）"
+        )
+
+    def _estimate_grid_runs(self) -> int:
+        """グリッドサーチ時の推定試行数を計算します。"""
+        total = 1
+        for w in self._param_widgets:
+            mn = w.get("min")
+            mx = w.get("max")
+            st = w.get("step")
+            if mn is None or mx is None or st is None:
+                continue
+            try:
+                min_v = mn.value()
+                max_v = mx.value()
+                step_v = st.value()
+                if step_v > 0 and max_v > min_v:
+                    import math
+                    n = math.floor((max_v - min_v) / step_v) + 1
+                    total *= max(1, n)
+            except Exception:
+                pass
+        return total
+
+    def _update_est_run_label(self) -> None:
+        """推定試行数・所要時間ラベルを更新します。"""
+        if not hasattr(self, "_est_run_label"):
+            return
+        method = self._method_combo.currentData() if hasattr(self, "_method_combo") else "grid"
+
+        if method == "grid":
+            n_runs = self._estimate_grid_runs()
+            method_label = "グリッドサーチ"
+        else:
+            n_runs = self._iter_spin.value() if hasattr(self, "_iter_spin") else 200
+            method_label = "ランダム/ベイズ"
+
+        # 1回あたり30秒と仮定
+        est_sec = n_runs * 30
+        if est_sec < 60:
+            time_str = f"約 {est_sec}秒"
+        elif est_sec < 3600:
+            time_str = f"約 {est_sec // 60}分"
+        else:
+            time_str = f"約 {est_sec // 3600}時間"
+
+        if n_runs <= 20:
+            color = "#2e7d32"
+            icon = "✅"
+        elif n_runs <= 50:
+            color = "#1565c0"
+            icon = "ℹ️"
+        elif n_runs <= 200:
+            color = "#e65100"
+            icon = "⚠"
+        else:
+            color = "#b71c1c"
+            icon = "🔴"
+
+        self._est_run_label.setText(
+            f"{icon} 推定 <b>{n_runs}</b> 回の解析を実行します（{method_label} | 所要時間目安: {time_str}）"
+        )
+        self._est_run_label.setStyleSheet(
+            f"font-size: 11px; color: {color}; padding: 2px 4px;"
+        )
+        self._est_run_label.setTextFormat(
+            __import__("PySide6.QtCore", fromlist=["Qt"]).Qt.RichText
+        )
 
     # ------------------------------------------------------------------
     # Parameter range widgets
@@ -401,6 +596,13 @@ class OptimizerDialog(QDialog):
             row.addStretch()
             self._param_layout.addLayout(row)
             self._param_widgets.append(widgets)
+            # UX改善（新②）: スピン変更時に推定試行数を更新
+            min_spin.valueChanged.connect(self._update_est_run_label)
+            max_spin.valueChanged.connect(self._update_est_run_label)
+            step_spin.valueChanged.connect(self._update_est_run_label)
+
+        # 初回ラベル更新
+        self._update_est_run_label()
 
     def _on_method_changed(self, index: int) -> None:
         method = self._method_combo.currentData()
@@ -523,6 +725,9 @@ class OptimizerDialog(QDialog):
         # 収束グラフを更新
         self._draw_convergence(result)
 
+        # UX改善（第9回④）: ベストソリューションサマリーカードを更新
+        self._update_best_summary_card(result)
+
         # サマリー
         if result.best:
             obj_label = result.config.objective_label if result.config else "目的関数"
@@ -536,6 +741,89 @@ class OptimizerDialog(QDialog):
                 "制約を満たす解が見つかりませんでした。"
                 "パラメータ範囲や制約条件を見直してください。"
             )
+
+    def _update_best_summary_card(self, result: "OptimizationResult") -> None:
+        """
+        UX改善（第9回④）: ベストソリューションサマリーカードを最適化結果で更新します。
+
+        最適化完了後、結果テーブルの上部カードに最良パラメータ・目的関数値・
+        制約満足状況を表示します。制約を満たす解があれば緑、なければ黄色で表示します。
+
+        Parameters
+        ----------
+        result : OptimizationResult
+            最適化結果オブジェクト。
+        """
+        if not hasattr(self, "_best_summary_card"):
+            return
+
+        if not result.best:
+            # 解が見つからなかった場合: 黄色カードで警告表示
+            self._best_summary_card.setStyleSheet(
+                "QFrame {"
+                "  background-color: #fff8e1;"
+                "  border: 1px solid #ffca28;"
+                "  border-left: 5px solid #f57f17;"
+                "  border-radius: 4px;"
+                "}"
+            )
+            self._bc_title_lbl.setText("<b>⚠ 制約を満たす解が見つかりませんでした</b>")
+            self._bc_title_lbl.setStyleSheet(
+                "color: #e65100; font-size: 12px; background: transparent; border: none;"
+            )
+            self._bc_params_lbl.setText(
+                "パラメータ範囲を広げるか、制約条件を緩和して再度お試しください。"
+            )
+            self._bc_params_lbl.setStyleSheet(
+                "color: #bf360c; font-size: 10px; background: transparent; border: none;"
+            )
+            self._bc_obj_lbl.setText(
+                f"{len(result.all_candidates)}点\n評価済み"
+            )
+            self._bc_obj_lbl.setStyleSheet(
+                "color: #e65100; font-size: 13px; font-weight: bold;"
+                "  background: transparent; border: none; text-align: right;"
+            )
+            self._best_summary_card.show()
+            return
+
+        # 最良解あり: 緑カードで表示
+        obj_label = result.config.objective_label if result.config else "目的関数"
+        feasible_count = len(result.feasible_candidates)
+        total_count = len(result.all_candidates)
+
+        # パラメータ文字列を構築
+        param_strs = [f"{k} = {v:.4g}" for k, v in result.best.params.items()]
+        params_text = "  /  ".join(param_strs)
+        feasibility_text = f"制約満足: {feasible_count}/{total_count}点"
+
+        self._best_summary_card.setStyleSheet(
+            "QFrame {"
+            "  background-color: #e8f5e9;"
+            "  border: 1px solid #66bb6a;"
+            "  border-left: 5px solid #2e7d32;"
+            "  border-radius: 4px;"
+            "}"
+        )
+        self._bc_title_lbl.setText(
+            f"<b>🏆 最良解が見つかりました</b>  "
+            f"<span style='font-size:10px; color:#388e3c;'>（{feasibility_text}）</span>"
+        )
+        self._bc_title_lbl.setStyleSheet(
+            "color: #1b5e20; font-size: 12px; background: transparent; border: none;"
+        )
+        self._bc_params_lbl.setText(params_text)
+        self._bc_params_lbl.setStyleSheet(
+            "color: #2e7d32; font-size: 10px; background: transparent; border: none;"
+        )
+        self._bc_obj_lbl.setText(
+            f"{obj_label}\n{result.best.objective_value:.5g}"
+        )
+        self._bc_obj_lbl.setStyleSheet(
+            "color: #1b5e20; font-size: 14px; font-weight: bold;"
+            "  background: transparent; border: none;"
+        )
+        self._best_summary_card.show()
 
     def _populate_result_table(self, result: OptimizationResult) -> None:
         """結果テーブルを上位20候補で更新します。"""

@@ -70,6 +70,11 @@ class DamperDefinition:
         type_labels = {
             "DVOD": "粘性/オイルダンパー",
             "DSD": "鋼材ダンパー",
+            "DIS": "免震支承材",
+            "DISD": "免震用履歴型ダンパー",
+            "DVD": "粘性ダンパー（減衰こま）",
+            "DVED": "粘弾性ダンパー",
+            "DOD": "オイルダンパー",
             "DVHY": "履歴型ダンパー",
             "DVBI": "バイリニア型",
             "DVSL": "すべり型",
@@ -255,11 +260,36 @@ class S8iModel:
         """変更を反映した .s8i ファイルを書き出します。"""
         lines = list(self._lines)  # コピー
 
-        # ダンパー定義の変更を反映
+        # ダンパー定義の変更を反映（既存行の更新）
         for ddef in self.damper_defs:
             if ddef.line_no > 0 and ddef.line_no <= len(lines):
                 new_line = f"{ddef.keyword} / {','.join(ddef.values)}"
                 lines[ddef.line_no - 1] = new_line
+
+        # 新規追加ダンパー定義（line_no=0）を既存定義の直後に挿入
+        new_defs = [d for d in self.damper_defs if d.line_no == 0]
+        if new_defs:
+            # 最後の既存ダンパー定義行の位置を探す
+            last_def_line = 0
+            for ddef in self.damper_defs:
+                if ddef.line_no > last_def_line:
+                    last_def_line = ddef.line_no
+            # SR 行の位置も確認（ダンパー定義は SR の前に挿入）
+            for brace in self.damper_braces:
+                if brace.line_no > 0 and (last_def_line == 0 or brace.line_no < last_def_line):
+                    if last_def_line == 0:
+                        last_def_line = brace.line_no - 1
+            # RD 行の位置も確認
+            for elem in self.damper_elements:
+                if elem.line_no > 0 and (last_def_line == 0 or elem.line_no < last_def_line):
+                    if last_def_line == 0:
+                        last_def_line = elem.line_no - 1
+
+            insert_pos = last_def_line  # 0-indexed で直後に挿入
+            for new_def in new_defs:
+                new_line = f"{new_def.keyword} / {','.join(new_def.values)}"
+                lines.insert(insert_pos, new_line)
+                insert_pos += 1
 
         # 制振ブレースの変更を反映
         for brace in self.damper_braces:
@@ -287,6 +317,120 @@ class S8iModel:
                 ddef.values = new_values
                 return True
         return False
+
+    def add_damper_def_copy(
+        self,
+        base_name: str,
+        new_name: str,
+        overrides: Optional[dict] = None,
+    ) -> Optional["DamperDefinition"]:
+        """既存のダンパー定義をコピーして新規定義を追加します。
+
+        Parameters
+        ----------
+        base_name : str
+            コピー元の定義名。
+        new_name : str
+            新しい定義名（重複不可）。
+        overrides : dict, optional
+            上書きするフィールド。キーは 1-indexed 文字列、値は文字列。
+            例: {"8": "800000", "9": "200"}
+
+        Returns
+        -------
+        DamperDefinition or None
+            追加した定義。base_name が見つからない場合は None。
+        """
+        # 同名が既にある場合は上書き更新
+        for existing in self.damper_defs:
+            if existing.name == new_name:
+                if overrides:
+                    for idx_str, val in overrides.items():
+                        idx = int(idx_str) - 1
+                        while len(existing.values) <= idx:
+                            existing.values.append("")
+                        existing.values[idx] = str(val)
+                return existing
+
+        base = self.get_damper_def(base_name)
+        if base is None:
+            return None
+
+        new_values = list(base.values)
+        new_values[0] = new_name  # index 0 は定義名
+
+        if overrides:
+            for idx_str, val in overrides.items():
+                idx = int(idx_str) - 1
+                while len(new_values) <= idx:
+                    new_values.append("")
+                new_values[idx] = str(val)
+
+        new_def = DamperDefinition(
+            keyword=base.keyword,
+            name=new_name,
+            values=new_values,
+            raw="",
+            line_no=0,
+        )
+        self.damper_defs.append(new_def)
+        return new_def
+
+    def add_damper_def_new(
+        self,
+        keyword: str,
+        new_name: str,
+        num_fields: int = 22,
+        overrides: Optional[dict] = None,
+    ) -> "DamperDefinition":
+        """空のダンパー定義を新規作成して追加します。
+
+        Parameters
+        ----------
+        keyword : str
+            SNAP キーワード（"DVOD", "DSD" 等）。
+        new_name : str
+            定義名。
+        num_fields : int
+            フィールド数（名前を除く）。
+        overrides : dict, optional
+            初期値を上書きするフィールド。キーは 1-indexed 文字列。
+            "1" → values[1]（最初のSNAPフィールド）に対応。
+            values[0] は定義名であり上書き対象外。
+
+        Returns
+        -------
+        DamperDefinition
+            追加した定義。
+        """
+        # 同名が既にある場合は上書き更新
+        for existing in self.damper_defs:
+            if existing.name == new_name:
+                if overrides:
+                    for idx_str, val in overrides.items():
+                        idx = int(idx_str)  # "1" → values[1]
+                        while len(existing.values) <= idx:
+                            existing.values.append("")
+                        existing.values[idx] = str(val)
+                return existing
+
+        new_values = [new_name] + ["0"] * num_fields
+        if overrides:
+            for idx_str, val in overrides.items():
+                idx = int(idx_str)  # "1" → values[1]（values[0]=名前は保持）
+                while len(new_values) <= idx:
+                    new_values.append("")
+                new_values[idx] = str(val)
+
+        new_def = DamperDefinition(
+            keyword=keyword,
+            name=new_name,
+            values=new_values,
+            raw="",
+            line_no=0,
+        )
+        self.damper_defs.append(new_def)
+        return new_def
 
     def update_damper_element(
         self,
@@ -366,6 +510,11 @@ _RD_TYPE_IDX: int = 3
 _DAMPER_DEF_KEYWORDS = {
     "DVOD",   # 粘性/オイルダンパー
     "DSD",    # 鋼材ダンパー
+    "DIS",    # 免震支承材
+    "DISD",   # 免震用履歴型ダンパー
+    "DVD",    # 粘性ダンパー（減衰こま）
+    "DVED",   # 粘弾性ダンパー
+    "DOD",    # オイルダンパー
     "DVHY",   # 履歴型ダンパー
     "DVBI",   # バイリニア型
     "DVSL",   # すべり型

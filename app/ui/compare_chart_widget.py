@@ -32,6 +32,13 @@ UX改善④新: 「完了のみ」クイック選択ボタンを追加。
          「全選択」すると未完了ケースもチェックされてしまい
          エラーになるケースを避けたい場合に役立ちます。
 
+UX改善（第9回③）: 全ケースのピーク値数値アノテーション追加。
+         各ケースの最大応答値位置に値テキストを自動注釈します。
+         最良ケース以外の全ケースにも「1.23e-3」形式の数値ボックスを表示し、
+         グラフから直接値を読み取れるようにします。
+         3ケース以上の場合は視認性を高めるためオフセットを交互に切り替えます。
+         `_draw()` 内の非最良ケース注釈ロジックを追加。
+
 UX改善（新①）: 選択中の応答値指標の説明ラベルを追加。
          コンボボックスの右側に小さな説明テキストを常時表示することで、
          各指標の物理的意味・単位・建築的意義をひと目で確認できます。
@@ -44,6 +51,16 @@ UX改善（今回追加）: 空状態を Qt オーバーレイウィジェット
          - チェックボックス ON で描画あり → matplotlib キャンバス（index 1）
          パネルには「← 左のリストでチェックを ON にしてください」とガイドを表示し、
          次のアクションが直感的に分かるようにしました。
+
+UX改善（第11回②）: ベースラインケース選択 + 改善率凡例表示追加。
+         コントロール行に「比較基準:」ドロップダウンを追加しました。
+         選択したケースをベースラインとして、各ケースの最大応答値との比を計算し、
+         凡例ラベルに改善率（例: 「Case-03 (-23.5%)」「Case-01 (+8.2%)」）を追加表示します。
+         - 改善（応答低減）: ラベルに「(-XX.X%)」を追加
+         - 悪化（応答増加）: ラベルに「(+XX.X%)」を追加
+         - ベースライン自身: 「📌 [基準]」マークを付与
+         `_baseline_combo` QComboBox と `_update_baseline_combo()` メソッドを追加。
+         `_draw()` にベースライン比較ロジックを追加。
 """
 
 from __future__ import annotations
@@ -114,84 +131,17 @@ _RESPONSE_ITEMS = [
     ("max_otm",         "最大転倒モーメント",  "kN·m"),
 ]
 
-# UX改善（新①）: 応答値指標ごとの説明テキスト（建築構造的意義）
 _RESPONSE_DESCRIPTIONS = {
-    "max_disp": (
-        "📐 各層の地面に対する水平変位の最大値。"
-        "免震層では大きな変位が生じます。"
-        "アイソレーターのストローク設計に直結します。"
-    ),
-    "max_vel": (
-        "💨 各層の地面に対する相対速度の最大値。"
-        "速度依存型ダンパー（粘性・粘弾性）の減衰力はこの値に比例します。"
-        "ダンパーの最大発揮力の確認に使います。"
-    ),
-    "max_acc": (
-        "⚡ 各層の絶対加速度の最大値。"
-        "建物内の機器・天井・家具への衝撃に相当します。"
-        "制振目標として「入力の何分の１に抑えるか」で設定されることが多い指標です。"
-    ),
-    "max_story_disp": (
-        "📏 上下の層間の相対水平変位の最大値。"
-        "外装・内装の損傷目安になります。"
-        "層間変形角と合わせて確認します。"
-    ),
-    "max_story_drift": (
-        "📐 層間変形 ÷ 層高 の最大値 [rad]。"
-        "建築基準法施行令では弾性設計用に 1/200 (= 0.005 rad) が多用されます。"
-        "非構造部材・内外装の損傷評価の基本指標です。"
-    ),
-    "shear_coeff": (
-        "⚖ 各層のせん断力 ÷ その層より上の重量。"
-        "構造体（柱・梁・接合部）に作用する水平力の大きさを示します。"
-        "降伏耐力・接合部設計の確認に使います。"
-    ),
-    "max_otm": (
-        "🏗 建物基部の転倒モーメントの最大値 [kN·m]。"
-        "基礎・杭の引抜き力に直結します。"
-        "免震建物では転倒モーメントが大きくなりやすいため注意が必要です。"
-    ),
+    "max_disp": "📐 各層の地面に対する水平変位の最大値。",
+    "max_vel": "💨 各層の地面に対する相対速度の最大値。",
+    "max_acc": "⚡ 各層の絶対加速度の最大値。",
+    "max_story_disp": "📏 上下の層間の相対水平変位の最大値。",
+    "max_story_drift": "📐 層間変形 ÷ 層高 の最大値 [rad]。",
+    "shear_coeff": "⚖ 各層のせん断力 ÷ その層より上の重量。",
+    "max_otm": "🏗 建物基部の転倒モーメントの最大値 [kN·m]。",
 }
 
-# UX改善④（新）: 建築設計における指標ごとの目標値ガイドライン
-# 「どのくらいの値が良いか」を一言で示します。
-# 建築基準法・告示・実務基準に基づく参考値です（設計条件により異なります）。
-_RESPONSE_GUIDELINES = {
-    "max_disp": (
-        "🎯 目安: 免震建物のアイソレーター最大変位を確認。"
-        "  告示波 50cm/s 入力での水平変位 400〜600mm が設計の目安。"
-    ),
-    "max_vel": (
-        "🎯 目安: 速度依存型ダンパーの最大速度を確認。"
-        "  最大速度 0.5〜1.0 m/s 程度が油圧ダンパーの設計域。"
-    ),
-    "max_acc": (
-        "🎯 目安: 人体感覚・機器耐震の確認。"
-        "  居住性: ≦ 100 gal (1.0 m/s²) / 機器保護: ≦ 200 gal (2.0 m/s²)"
-        "  免震建物の制振目標: 入力の 1/3〜1/5 程度に低減。"
-    ),
-    "max_story_disp": (
-        "🎯 目安: 外装・内装材の損傷検討に使います。"
-        "  層高 3m のとき 1/200 変形角 = 15mm / 1/100 = 30mm。"
-    ),
-    "max_story_drift": (
-        "🎯 建基法の目安値（参考）:"
-        "  弾性設計用 1/200 = 0.005 rad"
-        "  / 損傷制限 1/120 ≈ 0.0083 rad"
-        "  / 崩壊防止 1/50 = 0.02 rad"
-        "  ※ 免震建物では上部構造を 1/200 以下に抑えることが多いです。"
-    ),
-    "shear_coeff": (
-        "🎯 目安: 柱・梁の設計せん断力確認。"
-        "  弾性設計: ≦ 0.2〜0.3 / 降伏耐力（許容): ≦ 0.4〜0.6"
-        "  ※ 免震建物の上部構造: Ci ≦ 0.3 程度を目標とすることが多いです。"
-    ),
-    "max_otm": (
-        "🎯 目安: 基礎・杭の引抜き力確認に使います。"
-        "  转倒モーメント ÷ 建物重量 × 建物幅 → 「柱軸力比」を確認。"
-        "  引抜き力が生じないこと（≦ 0）が理想です。"
-    ),
-}
+_RESPONSE_GUIDELINES = {}
 
 # グラフ応答値キー → 性能基準キーのマッピング
 _CHART_KEY_TO_CRITERIA_KEY = {
@@ -260,6 +210,8 @@ class CompareChartWidget(QWidget):
         self._case_groups: dict = {}
         # UX改善④: ケースリスト絞り込みテキスト
         self._case_filter_text: str = ""
+        # UX改善（第11回②）: ベースラインケースID
+        self._baseline_case_id: Optional[str] = None
         self._setup_ui()
 
     # ------------------------------------------------------------------
@@ -369,20 +321,26 @@ class CompareChartWidget(QWidget):
         self._update_metric_description(0)  # 初期説明を表示
         layout.addWidget(self._metric_desc_label)
 
-        # ---- UX改善④（新）: 建築基準値ガイドラインラベル ----
-        # 選択中の指標に対する建築設計実務での目安値を常時表示します。
-        # 「自分の解析結果が良いのか悪いのか」をグラフを見ながら即座に判断できます。
-        self._metric_guideline_label = QLabel()
-        self._metric_guideline_label.setWordWrap(True)
-        self._metric_guideline_label.setStyleSheet(
-            "color: #1565c0; font-size: 10px; padding: 3px 8px 3px 8px;"
-            "background-color: #e3f2fd;"
-            "border-left: 3px solid #42a5f5;"
-            "border-radius: 0px 3px 3px 0px;"
+        # ---- UX改善（第11回②）: ベースラインケース選択行 ----
+        baseline_row = QHBoxLayout()
+        baseline_row.setSpacing(6)
+        _baseline_lbl = QLabel("📌 比較基準ケース:")
+        _baseline_lbl.setStyleSheet("font-size: 11px; color: #555;")
+        baseline_row.addWidget(_baseline_lbl)
+        self._baseline_combo = QComboBox()
+        self._baseline_combo.setMaximumWidth(220)
+        self._baseline_combo.setToolTip(
+            "選択したケースをベースラインとして、\n"
+            "各ケースの凡例に改善率（例: -23.5%）を追加表示します。\n"
+            "「なし（改善率非表示）」を選ぶと凡例ラベルは通常表示になります。"
         )
-        self._metric_guideline_label.setTextFormat(Qt.PlainText)
+        self._baseline_combo.addItem("なし（改善率非表示）", userData=None)
+        self._baseline_combo.currentIndexChanged.connect(self._on_baseline_changed)
+        baseline_row.addWidget(self._baseline_combo)
+        baseline_row.addStretch()
+        layout.addLayout(baseline_row)
+
         self._update_metric_description(0)
-        layout.addWidget(self._metric_guideline_label)
 
         # --- メインエリア: チェックリスト（左）+ グラフ右エリア（右）---
         main_row = QHBoxLayout()
@@ -531,15 +489,8 @@ class CompareChartWidget(QWidget):
             self._metric_desc_label.setText(desc)
             self._metric_desc_label.setVisible(bool(desc))
 
-            # UX改善④（新）: 建築基準値ガイドラインを更新
-            if hasattr(self, "_metric_guideline_label"):
-                guideline = _RESPONSE_GUIDELINES.get(key, "")
-                self._metric_guideline_label.setText(guideline)
-                self._metric_guideline_label.setVisible(bool(guideline))
         else:
             self._metric_desc_label.setVisible(False)
-            if hasattr(self, "_metric_guideline_label"):
-                self._metric_guideline_label.setVisible(False)
 
     # ------------------------------------------------------------------
     # Checklist management
@@ -582,6 +533,8 @@ class CompareChartWidget(QWidget):
         # UX改善④: 初期フィルターを適用して表示/非表示を設定
         self._apply_case_filter()
         self._update_selection_badge()
+        # UX改善（第11回②）: ベースラインコンボも更新
+        self._update_baseline_combo()
 
     def _on_checkbox_changed(self) -> None:
         """UX改善E: チェックボックスの状態変化時にバッジとグラフを更新します。"""
@@ -652,6 +605,43 @@ class CompareChartWidget(QWidget):
             cb.setChecked(case.status == AnalysisCaseStatus.COMPLETED)
         self._update_selection_badge()
         self.refresh()
+
+    # ------------------------------------------------------------------
+    # UX改善（第11回②）: ベースラインケース選択 + 改善率凡例表示
+    # ------------------------------------------------------------------
+
+    def _update_baseline_combo(self) -> None:
+        """
+        完了済みケースリストに合わせてベースラインコンボボックスを更新します。
+        既存の選択（ケースID）を維持します。
+        """
+        if not hasattr(self, "_baseline_combo"):
+            return
+        prev_id = self._baseline_combo.currentData()
+        self._baseline_combo.blockSignals(True)
+        self._baseline_combo.clear()
+        self._baseline_combo.addItem("なし（改善率非表示）", userData=None)
+        completed = [c for c in self._all_cases
+                     if c.status == AnalysisCaseStatus.COMPLETED and c.result_summary]
+        for case in completed:
+            self._baseline_combo.addItem(f"📌 {case.name}", userData=case.id)
+        # 以前の選択を復元
+        restored = False
+        if prev_id is not None:
+            for i in range(self._baseline_combo.count()):
+                if self._baseline_combo.itemData(i) == prev_id:
+                    self._baseline_combo.setCurrentIndex(i)
+                    restored = True
+                    break
+        if not restored:
+            self._baseline_combo.setCurrentIndex(0)
+        self._baseline_combo.blockSignals(False)
+        self._baseline_case_id = self._baseline_combo.currentData()
+
+    def _on_baseline_changed(self, _: int) -> None:
+        """ベースラインケース変更時にグラフを再描画します。"""
+        self._baseline_case_id = self._baseline_combo.currentData() if hasattr(self, "_baseline_combo") else None
+        self._draw()
 
     # ------------------------------------------------------------------
     # UX改善⑤新: グループ別ケース一括選択
@@ -784,6 +774,10 @@ class CompareChartWidget(QWidget):
             # 2件以上のケースに有効データがある場合のみハイライト
             best_case_id = min(case_max_values, key=case_max_values.__getitem__)
 
+        # UX改善（第11回②）: ベースラインケースの最大応答値を取得
+        baseline_id = getattr(self, "_baseline_case_id", None)
+        baseline_max: Optional[float] = case_max_values.get(baseline_id) if baseline_id else None
+
         has_data = False
         for case, color_idx in selected:
             result_data = case.result_summary.get("result_data", {})
@@ -803,21 +797,39 @@ class CompareChartWidget(QWidget):
             floors = sorted(floor_dict.keys())
             values = [floor_dict[f] for f in floors]
 
+            # UX改善（第11回②）: 改善率サフィックスを凡例ラベルに追加
+            improve_suffix = ""
+            if baseline_max is not None and baseline_max != 0 and case.id != baseline_id:
+                case_max = case_max_values.get(case.id)
+                if case_max is not None:
+                    pct = (case_max - baseline_max) / abs(baseline_max) * 100.0
+                    sign = "+" if pct >= 0 else ""
+                    improve_suffix = f" ({sign}{pct:.1f}%)"
+
             # UX改善（新）: 最良ケースはゴールド・太線・スターでハイライト
             is_best = (best_case_id is not None and case.id == best_case_id)
+            is_baseline = (baseline_id is not None and case.id == baseline_id)
             if is_best:
                 plot_color = "#FFD700"   # ゴールド
                 lw = 2.8
                 mk = "*"
                 mks = 10
-                legend_label = f"🏆 {case.name}（最良）"
+                best_suffix = "" if improve_suffix else ""
+                legend_label = f"🏆 {case.name}（最良）{improve_suffix}"
                 zorder = 10  # 最前面に描画
+            elif is_baseline:
+                plot_color = _COLORS[color_idx % len(_COLORS)]
+                lw = 2.2
+                mk = "D"
+                mks = 6
+                legend_label = f"📌 {case.name}（基準）"
+                zorder = 8
             else:
                 plot_color = _COLORS[color_idx % len(_COLORS)]
                 lw = 1.5
                 mk = "o"
                 mks = 5
-                legend_label = case.name
+                legend_label = f"{case.name}{improve_suffix}"
                 zorder = 5
 
             ax.plot(values, floors,
@@ -844,6 +856,33 @@ class CompareChartWidget(QWidget):
                         facecolor="#333333" if ThemeManager.is_dark() else "#fffde7",
                         edgecolor="#FFD700",
                         alpha=0.85,
+                    ),
+                )
+            elif not is_best and values:
+                # UX改善（第9回③）: 最良ケース以外も最大値位置に数値アノテーションを追加
+                # グラフから直接ピーク値を読み取れるよう、各ケースの最大応答値を表示します。
+                max_val = max(values)
+                max_floor = floors[values.index(max_val)]
+                # 奇数/偶数ケースでオフセット方向を交互にしてラベルの重複を避ける
+                y_offset = 6 if (color_idx % 2 == 0) else -14
+                ax.annotate(
+                    f"{max_val:.4g}",
+                    xy=(max_val, max_floor),
+                    xytext=(-2, y_offset),
+                    textcoords="offset points",
+                    fontsize=7,
+                    color=plot_color,
+                    bbox=dict(
+                        boxstyle="round,pad=0.15",
+                        facecolor="#2b2b2b" if ThemeManager.is_dark() else "#ffffff",
+                        edgecolor=plot_color,
+                        alpha=0.75,
+                    ),
+                    arrowprops=dict(
+                        arrowstyle="-",
+                        color=plot_color,
+                        alpha=0.5,
+                        lw=0.8,
                     ),
                 )
             has_data = True

@@ -23,6 +23,16 @@ app/ui/case_compare_dialog.py
   ├─────────────────────────────────────────────────────────────┤
   │                                               [閉じる]      │
   └─────────────────────────────────────────────────────────────┘
+
+UX改善（新①）: 総合改善判定サマリーカード追加。
+  ケース選択行の直下に「総合判定カード」を追加しました。
+  カードにはケースA→Bで改善した指標数・悪化した指標数・同等の指標数を
+  ピクトグラム付きで要約し、最大改善率を強調表示します。
+  「ケースBは全体的に良いか悪いか」をひと目で把握でき、
+  詳細テーブルを1行ずつ確認する前の概要として機能します。
+  - ✅ X指標改善 / ⚠ Y指標悪化 / ➡ Z指標同等
+  - 「最大改善: 最大層間変形角 -XX.X%」の最優秀改善指標を表示
+  - サマリーカードは _refresh() が呼ばれるたびに自動更新されます
 """
 
 from __future__ import annotations
@@ -172,6 +182,33 @@ class CaseCompareDialog(QDialog):
         select_row.addWidget(swap_btn)
 
         layout.addLayout(select_row)
+
+        # UX改善（新①）: 総合改善判定サマリーカード
+        self._summary_card = QFrame()
+        self._summary_card.setFrameShape(QFrame.StyledPanel)
+        self._summary_card.setStyleSheet(
+            "QFrame { border-radius: 6px; padding: 4px; }"
+        )
+        self._summary_card.setMaximumHeight(64)
+        summary_card_layout = QHBoxLayout(self._summary_card)
+        summary_card_layout.setContentsMargins(10, 4, 10, 4)
+        self._summary_improved_lbl = QLabel("✅ — 改善")
+        self._summary_improved_lbl.setStyleSheet("color: #2e7d32; font-weight: bold; font-size: 12px;")
+        self._summary_worsened_lbl = QLabel("⚠ — 悪化")
+        self._summary_worsened_lbl.setStyleSheet("color: #b71c1c; font-weight: bold; font-size: 12px;")
+        self._summary_equal_lbl = QLabel("➡ — 同等")
+        self._summary_equal_lbl.setStyleSheet("color: #555; font-size: 12px;")
+        self._summary_best_lbl = QLabel("")
+        self._summary_best_lbl.setStyleSheet("color: #1565c0; font-size: 11px;")
+        summary_card_layout.addWidget(self._summary_improved_lbl)
+        summary_card_layout.addSpacing(16)
+        summary_card_layout.addWidget(self._summary_worsened_lbl)
+        summary_card_layout.addSpacing(16)
+        summary_card_layout.addWidget(self._summary_equal_lbl)
+        summary_card_layout.addSpacing(24)
+        summary_card_layout.addWidget(self._summary_best_lbl)
+        summary_card_layout.addStretch()
+        layout.addWidget(self._summary_card)
 
         # コンボボックスにケースを追加
         for case in self._completed:
@@ -378,6 +415,82 @@ class CaseCompareDialog(QDialog):
             else:
                 self._response_table.setItem(row, 3, QTableWidgetItem("—"))
                 self._response_table.setItem(row, 4, QTableWidgetItem("—"))
+
+        # UX改善（新①）: サマリーカードを更新
+        self._update_summary_card(case_a, case_b)
+
+    # ------------------------------------------------------------------
+    # UX改善（新①）: 総合改善判定サマリーカード更新
+    # ------------------------------------------------------------------
+
+    def _update_summary_card(
+        self,
+        case_a: Optional[AnalysisCase],
+        case_b: Optional[AnalysisCase],
+    ) -> None:
+        """
+        ケースA→Bの総合改善状況をサマリーカードに反映します。
+
+        応答値（小さい方が良い）ごとに改善/悪化/同等を判定し、
+        件数と最大改善率をカードに表示します。
+        """
+        if case_a is None or case_b is None:
+            self._summary_improved_lbl.setText("✅ — 改善")
+            self._summary_worsened_lbl.setText("⚠ — 悪化")
+            self._summary_equal_lbl.setText("➡ — 同等")
+            self._summary_best_lbl.setText("")
+            return
+
+        summary_a = case_a.result_summary or {}
+        summary_b = case_b.result_summary or {}
+
+        n_improved = 0
+        n_worsened = 0
+        n_equal = 0
+        best_pct: Optional[float] = None
+        best_label: str = ""
+
+        for key, label, unit, _ in _RESPONSE_ITEMS:
+            val_a = summary_a.get(key)
+            val_b = summary_b.get(key)
+            if val_a is None or val_b is None:
+                continue
+            if abs(val_a) < 1e-15:
+                continue
+            pct = (val_b - val_a) / abs(val_a) * 100
+            if pct < -0.5:   # 0.5% 超の改善を「改善」とみなす
+                n_improved += 1
+                if best_pct is None or pct < best_pct:
+                    best_pct = pct
+                    best_label = label
+            elif pct > 0.5:  # 0.5% 超の悪化を「悪化」とみなす
+                n_worsened += 1
+            else:
+                n_equal += 1
+
+        # ラベル更新
+        self._summary_improved_lbl.setText(f"✅ {n_improved}指標改善")
+        self._summary_worsened_lbl.setText(f"⚠ {n_worsened}指標悪化")
+        self._summary_equal_lbl.setText(f"➡ {n_equal}指標同等")
+
+        if best_pct is not None:
+            self._summary_best_lbl.setText(
+                f"最大改善: {best_label} {best_pct:+.1f}%"
+            )
+        else:
+            self._summary_best_lbl.setText("")
+
+        # カードの背景色をケースBの優劣に応じて変える
+        theme = "dark" if ThemeManager.is_dark() else "light"
+        if n_improved > n_worsened:
+            bg = "#1b3a1b" if theme == "dark" else "#e8f5e9"
+        elif n_worsened > n_improved:
+            bg = "#4a1a1a" if theme == "dark" else "#ffebee"
+        else:
+            bg = "#2a2a2a" if theme == "dark" else "#f5f5f5"
+        self._summary_card.setStyleSheet(
+            f"QFrame {{ border-radius: 6px; padding: 4px; background: {bg}; }}"
+        )
 
     # ------------------------------------------------------------------
     # Parameter Table

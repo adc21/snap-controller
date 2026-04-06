@@ -11,12 +11,22 @@ app/ui/export_dialog.py
   │ [出力先パス] [参照…]                     │
   │ [エクスポート] [閉じる]                  │
   └──────────────────────────────────────────┘
+
+UX改善② 第5回 (export_dialog.py):
+  ライブ選択サマリー行 + エクスポート完了後「フォルダを開く」ボタン追加。
+  チェックボックスの変化に連動して「X ケース選択中（約Y行のデータ）」を
+  リアルタイムに表示します。0件選択時はエクスポートボタンを自動無効化します。
+  エクスポート成功後の完了ダイアログに「📁 フォルダを開く」ボタンを追加し、
+  出力先フォルダをワンクリックでエクスプローラー（Windows）/ Finder（macOS）で開けます。
+  また、既存ファイルへの上書きを事前に検出して確認ダイアログを表示します。
 """
 
 from __future__ import annotations
 
 import csv
 import os
+import subprocess
+import sys
 from pathlib import Path
 from typing import List, Optional
 
@@ -142,6 +152,13 @@ class ExportDialog(QDialog):
         path_row.addWidget(browse_btn)
         layout.addLayout(path_row)
 
+        # ---- UX改善② 第5回: ライブ選択サマリー行 ----
+        self._summary_label = QLabel("0 ケース選択中")
+        self._summary_label.setStyleSheet(
+            "QLabel { color: #555; font-size: 11px; padding: 2px 4px; }"
+        )
+        layout.addWidget(self._summary_label)
+
         # ---- ボタン ----
         btn_box = QDialogButtonBox()
         self._export_btn = QPushButton("エクスポート")
@@ -166,21 +183,56 @@ class ExportDialog(QDialog):
             lbl = QLabel("<i>エクスポート可能なケースがありません（解析完了ケースなし）</i>")
             self._check_layout.addWidget(lbl)
             self._export_btn.setEnabled(False)
+            self._update_summary_label()
             return
 
         for case in self._completed_cases:
             cb = QCheckBox(case.name)
             cb.setChecked(True)
+            # UX改善② 第5回: チェック変化でサマリーラベルを更新
+            cb.toggled.connect(self._update_summary_label)
             self._check_layout.addWidget(cb)
             self._checkboxes.append((cb, case))
+
+        self._update_summary_label()
+
+    # UX改善② 第5回: ライブ選択サマリー更新
+    def _update_summary_label(self) -> None:
+        """選択中のケース数と推定データ行数をサマリーラベルに反映します。"""
+        selected = [case for cb, case in self._checkboxes if cb.isChecked()]
+        count = len(selected)
+        if count == 0:
+            self._summary_label.setText("⚠ ケースが選択されていません")
+            self._summary_label.setStyleSheet(
+                "QLabel { color: #c62828; font-size: 11px; padding: 2px 4px; }"
+            )
+            self._export_btn.setEnabled(False)
+        else:
+            # 各ケースのresult_dataから大まかな行数を推定（フロア数 × 応答値数）
+            total_floors = 0
+            for case in selected:
+                if case.result_summary:
+                    rd = case.result_summary.get("result_data", {})
+                    if rd:
+                        total_floors += max(len(v) for v in rd.values()) if rd else 0
+            row_hint = f"・約 {total_floors} 行" if total_floors > 0 else ""
+            self._summary_label.setText(
+                f"✓ {count} ケース選択中{row_hint}（エクスポート対象）"
+            )
+            self._summary_label.setStyleSheet(
+                "QLabel { color: #2e7d32; font-size: 11px; padding: 2px 4px; }"
+            )
+            self._export_btn.setEnabled(True)
 
     def _select_all(self) -> None:
         for cb, _ in self._checkboxes:
             cb.setChecked(True)
+        self._update_summary_label()
 
     def _deselect_all(self) -> None:
         for cb, _ in self._checkboxes:
             cb.setChecked(False)
+        self._update_summary_label()
 
     # ------------------------------------------------------------------
     # Path helpers
@@ -225,6 +277,18 @@ class ExportDialog(QDialog):
             QMessageBox.warning(self, "警告", "出力先ファイルパスを指定してください。")
             return
 
+        # UX改善② 第5回: 上書き確認
+        out_p = Path(output_path)
+        if out_p.exists():
+            reply = QMessageBox.question(
+                self, "上書き確認",
+                f"指定のファイルはすでに存在します:\n{output_path}\n\n上書きしますか？",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No,
+            )
+            if reply != QMessageBox.Yes:
+                return
+
         is_excel = self._fmt_combo.currentIndex() == 1
 
         try:
@@ -232,10 +296,18 @@ class ExportDialog(QDialog):
                 self._export_excel(selected, output_path)
             else:
                 self._export_csv(selected, output_path)
-            QMessageBox.information(
-                self, "完了",
-                f"エクスポートが完了しました:\n{output_path}"
-            )
+
+            # UX改善② 第5回: 完了後「フォルダを開く」ボタン付きメッセージボックス
+            out_dir = str(Path(output_path).parent)
+            msg = QMessageBox(self)
+            msg.setWindowTitle("エクスポート完了")
+            msg.setText(f"エクスポートが完了しました:\n{output_path}")
+            msg.setIcon(QMessageBox.Information)
+            open_folder_btn = msg.addButton("📁 フォルダを開く", QMessageBox.ActionRole)
+            msg.addButton(QMessageBox.Ok)
+            msg.exec()
+            if msg.clickedButton() == open_folder_btn:
+                self._open_folder(out_dir)
         except ImportError:
             QMessageBox.critical(
                 self, "エラー",
@@ -244,6 +316,22 @@ class ExportDialog(QDialog):
             )
         except Exception as e:
             QMessageBox.critical(self, "エラー", f"エクスポートに失敗しました:\n{e}")
+
+    @staticmethod
+    def _open_folder(folder_path: str) -> None:
+        """
+        UX改善② 第5回: 出力先フォルダをOSのファイルマネージャーで開きます。
+        Windows: explorer, macOS: open, Linux: xdg-open
+        """
+        try:
+            if sys.platform == "win32":
+                os.startfile(folder_path)  # type: ignore[attr-defined]
+            elif sys.platform == "darwin":
+                subprocess.Popen(["open", folder_path])
+            else:
+                subprocess.Popen(["xdg-open", folder_path])
+        except Exception:
+            pass  # 開けなくても致命的エラーにしない
 
     @staticmethod
     def _export_csv(cases: List[AnalysisCase], path: str) -> None:

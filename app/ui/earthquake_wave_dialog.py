@@ -20,6 +20,15 @@ app/ui/earthquake_wave_dialog.py
   ├─────────────────────────────────────────────────────────┤
   │ [方向: X ▼] [倍率: 1.0] [カスタム追加] [適用] [閉じる]│
   └─────────────────────────────────────────────────────────┘
+
+UX改善（第4回）②: 設計レベル自動スケール計算 + カテゴリ説明カード追加。
+  詳細パネル下部に「設計レベル」コンボボックスを追加し、選択すると
+  目標加速度(L1:80cm/s², L2:300-500cm/s²)に合わせた推奨スケール係数を自動計算します。
+  「推奨スケールを適用」ボタンを押すと倍率フィールドに自動入力され、
+  手動計算が不要になります。
+  さらに地震波のカテゴリ（観測波/告示波/模擬地震波等）についての説明バナーを
+  詳細パネル上部に表示し、選択した波形の特性を専門知識なしで理解できます。
+  `_update_category_banner()`, `_apply_recommended_scale()` を追加。
 """
 
 from __future__ import annotations
@@ -162,6 +171,21 @@ class EarthquakeWaveDialog(QDialog):
         detail_group = QGroupBox("地震波情報")
         detail_layout = QVBoxLayout(detail_group)
 
+        # UX改善（第4回）②: カテゴリ説明バナー（地震波選択時に更新）
+        self._category_banner = QFrame()
+        self._category_banner.setFrameShape(QFrame.StyledPanel)
+        self._category_banner.setMaximumHeight(60)
+        cat_banner_layout = QVBoxLayout(self._category_banner)
+        cat_banner_layout.setContentsMargins(8, 4, 8, 4)
+        self._category_banner_lbl = QLabel("地震波を選択するとカテゴリの説明が表示されます")
+        self._category_banner_lbl.setWordWrap(True)
+        self._category_banner_lbl.setStyleSheet("font-size: 10px; color: #555;")
+        cat_banner_layout.addWidget(self._category_banner_lbl)
+        self._category_banner.setStyleSheet(
+            "QFrame { background-color: #f5f5f5; border: 1px solid #ccc; border-radius: 4px; }"
+        )
+        detail_layout.addWidget(self._category_banner)
+
         self._detail_name = QLabel("<b>地震波を選択してください</b>")
         self._detail_name.setWordWrap(True)
         detail_layout.addWidget(self._detail_name)
@@ -185,9 +209,53 @@ class EarthquakeWaveDialog(QDialog):
         detail_layout.addWidget(QLabel("説明:"))
         self._detail_desc = QTextEdit()
         self._detail_desc.setReadOnly(True)
-        self._detail_desc.setMaximumHeight(120)
+        self._detail_desc.setMaximumHeight(80)
         detail_layout.addWidget(self._detail_desc)
 
+        # UX改善（第4回）②: 設計レベル自動スケール計算パネル
+        scale_frame = QFrame()
+        scale_frame.setFrameShape(QFrame.StyledPanel)
+        scale_frame.setStyleSheet(
+            "QFrame { background-color: #e3f2fd; border: 1px solid #1976d2; border-radius: 4px; }"
+        )
+        scale_layout = QVBoxLayout(scale_frame)
+        scale_layout.setContentsMargins(8, 6, 8, 6)
+        scale_layout.setSpacing(4)
+
+        scale_title = QLabel("<b>🎯 設計レベル別推奨スケール自動計算</b>")
+        scale_title.setStyleSheet("color: #1565c0; font-size: 10px;")
+        scale_layout.addWidget(scale_title)
+
+        scale_row = QHBoxLayout()
+        scale_row.addWidget(QLabel("設計レベル:"))
+        self._design_level_combo = QComboBox()
+        self._design_level_combo.addItem("L1 (小〜中地震: 目標 80 cm/s²)", 80.0)
+        self._design_level_combo.addItem("L2 (極稀地震:    目標 300 cm/s²)", 300.0)
+        self._design_level_combo.addItem("L2+ (最大考慮:   目標 500 cm/s²)", 500.0)
+        self._design_level_combo.setToolTip(
+            "建築基準法に基づく設計レベルを選択します。\n"
+            "L1: 供用期間中に遭遇する可能性のある地震（再現期間50年程度）\n"
+            "L2: 極めてまれに発生する地震（再現期間500年程度）\n"
+            "L2+: 最大考慮地震（免振設計などで用いる上位設計レベル）"
+        )
+        scale_row.addWidget(self._design_level_combo)
+        scale_layout.addLayout(scale_row)
+
+        self._recommended_scale_lbl = QLabel("← 地震波を選択してください")
+        self._recommended_scale_lbl.setStyleSheet("color: #555; font-size: 10px;")
+        scale_layout.addWidget(self._recommended_scale_lbl)
+
+        self._apply_scale_btn = QPushButton("推奨スケールを倍率に適用")
+        self._apply_scale_btn.setEnabled(False)
+        self._apply_scale_btn.setToolTip(
+            "計算された推奨スケール係数を下部の「倍率」フィールドに自動入力します。"
+        )
+        self._apply_scale_btn.clicked.connect(self._apply_recommended_scale)
+        scale_layout.addWidget(self._apply_scale_btn)
+
+        self._design_level_combo.currentIndexChanged.connect(self._recalculate_recommended_scale)
+
+        detail_layout.addWidget(scale_frame)
         detail_layout.addStretch()
         splitter.addWidget(detail_group)
         splitter.setStretchFactor(0, 1)
@@ -300,6 +368,110 @@ class EarthquakeWaveDialog(QDialog):
         self._detail_dt.setText(f"{wave.dt:.4f} sec" if wave.dt > 0 else "—")
         self._detail_source.setText(wave.source or "—")
         self._detail_desc.setPlainText(wave.description)
+
+        # UX改善（第4回）②: カテゴリ説明バナーと推奨スケール計算を更新
+        self._update_category_banner(wave)
+        self._recalculate_recommended_scale()
+
+    # ------------------------------------------------------------------
+    # UX改善（第4回）②: カテゴリ説明バナー & 推奨スケール計算
+    # ------------------------------------------------------------------
+
+    # カテゴリ別の説明テキスト
+    _CATEGORY_DESCRIPTIONS = {
+        "observed": (
+            "#e8f5e9", "#2e7d32",
+            "📡 <b>観測波</b>: 実際の地震で観測された地震波です。"
+            "El Centro (1940)、Taft (1952)、神戸 (1995) などが代表的です。"
+            "実地震の特性を持ち、時刻歴解析の基本的な入力として広く使われます。"
+        ),
+        "notification": (
+            "#e3f2fd", "#1565c0",
+            "📐 <b>告示波</b>: 建築基準法告示に基づいて規定された模擬地震波です。"
+            "極稀（レベル2相当）の設計用入力として使用されます。"
+            "許容応力度等計算や時刻歴応答解析で法的に認められた入力波です。"
+        ),
+        "synthetic": (
+            "#f3e5f5", "#7b1fa2",
+            "🔬 <b>模擬地震波</b>: 目標スペクトルに適合するよう人工的に作成された地震波です。"
+            "設計用応答スペクトルとの整合性が高く、性能設計に適しています。"
+        ),
+        "site_specific": (
+            "#fff3e0", "#e65100",
+            "🏗 <b>サイト波</b>: 建設地点の地盤条件や震源特性を考慮して作成した"
+            "サイト固有の地震波です。免振建物や重要建築物の設計に用いられます。"
+        ),
+        "custom": (
+            "#fafafa", "#555",
+            "📂 <b>カスタム地震波</b>: ユーザーが追加した地震波データです。"
+            "CSV/テキスト形式の時刻歴加速度データを読み込めます。"
+        ),
+    }
+
+    def _update_category_banner(self, wave: "EarthquakeWave") -> None:
+        """
+        選択された地震波のカテゴリに応じた説明バナーを更新します。
+
+        建築構造の専門知識がなくても、選択した地震波がどのような性格のものかを
+        分かりやすく説明します。
+        """
+        info = self._CATEGORY_DESCRIPTIONS.get(wave.category)
+        if info:
+            bg, border, text = info
+            self._category_banner.setStyleSheet(
+                f"QFrame {{ background-color: {bg}; border: 1px solid {border}; border-radius: 4px; }}"
+            )
+            self._category_banner_lbl.setText(text)
+            self._category_banner_lbl.setStyleSheet(f"font-size: 10px; color: {border};")
+        else:
+            self._category_banner.setStyleSheet(
+                "QFrame { background-color: #f5f5f5; border: 1px solid #ccc; border-radius: 4px; }"
+            )
+            self._category_banner_lbl.setText("地震波を選択するとカテゴリの説明が表示されます")
+            self._category_banner_lbl.setStyleSheet("font-size: 10px; color: #555;")
+
+    def _recalculate_recommended_scale(self) -> None:
+        """
+        選択中の地震波と設計レベルから推奨スケール係数を計算します。
+
+        推奨スケール = 目標最大加速度 [cm/s²] / 地震波の最大加速度 [cm/s²]
+
+        地震波の最大加速度が0または未設定の場合は計算できない旨を表示します。
+        """
+        if self._selected_wave is None:
+            self._recommended_scale_lbl.setText("← 地震波を選択してください")
+            self._apply_scale_btn.setEnabled(False)
+            return
+
+        target_acc: float = self._design_level_combo.currentData()  # cm/s²
+        wave_acc = self._selected_wave.max_acc
+
+        if wave_acc <= 0:
+            self._recommended_scale_lbl.setText(
+                "最大加速度が不明のため計算できません"
+            )
+            self._apply_scale_btn.setEnabled(False)
+            return
+
+        recommended = target_acc / wave_acc
+        self._recommended_scale_lbl.setText(
+            f"推奨スケール: <b>{recommended:.3f}</b>"
+            f"　（{wave_acc:.0f} cm/s² × {recommended:.3f} = {target_acc:.0f} cm/s²）"
+        )
+        self._recommended_scale_lbl.setStyleSheet("font-size: 10px; color: #1565c0;")
+        self._apply_scale_btn.setEnabled(True)
+        self._apply_scale_btn.setProperty("_recommended", recommended)
+
+    def _apply_recommended_scale(self) -> None:
+        """
+        計算された推奨スケール係数を倍率スピンボックスに適用します。
+        """
+        recommended = self._apply_scale_btn.property("_recommended")
+        if recommended is None:
+            return
+        # クランプ（スピンボックスの範囲内に収める）
+        clamped = max(0.001, min(100.0, float(recommended)))
+        self._scale_spin.setValue(clamped)
 
     # ------------------------------------------------------------------
     # Custom wave

@@ -2,6 +2,15 @@
 app/ui/multi_wave_dialog.py
 複数地震波一括解析ダイアログ。
 
+UX改善⑤ 第5回 (multi_wave_dialog.py):
+  生成ケース数リアルタイムプレビューバナー + カテゴリ別選択件数内訳追加。
+  従来の1行テキストを廃止し、スタイル付きフレームバナーに置き換えます。
+    1〜5件: 緑バナー「✅ X ケースが生成されます（推定 Y 分）」
+    6〜15件: 青バナー「ℹ X ケースが生成されます（推定 Y 分）」
+    16件以上: 橙バナー「⚠ X ケースは多めです。分割実行を検討してください」
+  また、「カテゴリ別内訳」として観測波 N / 告示波 N / 模擬波 N の件数も表示します。
+  これにより「どんな波を何件選んでいるか」がケース生成前に即座に把握できます。
+
 同一のダンパー構成（ベースケース）に対して複数の地震波を一括適用し、
 ケースを自動生成・実行する機能を提供します。
 
@@ -41,6 +50,7 @@ from PySide6.QtWidgets import (
     QDialogButtonBox,
     QDoubleSpinBox,
     QFormLayout,
+    QFrame,
     QGroupBox,
     QHBoxLayout,
     QLabel,
@@ -225,10 +235,30 @@ class MultiWaveDialog(QDialog):
 
         layout.addWidget(opt_group)
 
-        # ---- 情報ラベル ----
-        self._info_label = QLabel()
-        self._info_label.setStyleSheet("color: gray;")
-        layout.addWidget(self._info_label)
+        # ---- UX改善⑤ 第5回: 生成ケース数リアルタイムプレビューバナー ----
+        self._preview_banner = QFrame()
+        self._preview_banner.setFrameShape(QFrame.StyledPanel)
+        self._preview_banner.setStyleSheet(
+            "QFrame { background: #f5f5f5; border: 1px solid #bdbdbd;"
+            "  border-left: 4px solid #9e9e9e; border-radius: 4px; }"
+        )
+        _pb_layout = QVBoxLayout(self._preview_banner)
+        _pb_layout.setContentsMargins(10, 6, 10, 6)
+        _pb_layout.setSpacing(2)
+
+        self._preview_main_lbl = QLabel("地震波を選択するとプレビューが表示されます")
+        self._preview_main_lbl.setTextFormat(Qt.RichText)
+        self._preview_main_lbl.setStyleSheet("font-size: 12px; background: transparent; border: none;")
+        _pb_layout.addWidget(self._preview_main_lbl)
+
+        self._preview_detail_lbl = QLabel("")
+        self._preview_detail_lbl.setTextFormat(Qt.RichText)
+        self._preview_detail_lbl.setStyleSheet(
+            "font-size: 10px; color: #555; background: transparent; border: none;"
+        )
+        _pb_layout.addWidget(self._preview_detail_lbl)
+
+        layout.addWidget(self._preview_banner)
         self._update_info_label()
 
         # ---- ボタン ----
@@ -308,11 +338,94 @@ class MultiWaveDialog(QDialog):
         return [wave for cb, wave in self._wave_checkboxes if cb.isChecked()]
 
     def _update_info_label(self) -> None:
-        """選択状況の情報ラベルを更新します。"""
+        """
+        UX改善⑤ 第5回: 選択状況の情報をリッチなプレビューバナーに反映します。
+
+        選択件数に応じてバナーの色とメッセージを変化させ、
+        カテゴリ別内訳と推定解析時間を表示します。
+        1件あたり約60秒として推定時間を計算します。
+        """
         selected = self._get_selected_waves()
-        self._info_label.setText(
-            f"選択中: {len(selected)} 波  →  {len(selected)} ケースが生成されます"
-        )
+        count = len(selected)
+
+        # バナーがまだ構築されていない場合はスキップ（_populate_waves から呼ばれるケース）
+        if not hasattr(self, "_preview_banner"):
+            return
+
+        # 秒/件数（SNAP解析時間の目安）
+        _SEC_PER_CASE = 60
+        est_sec = count * _SEC_PER_CASE
+        if est_sec < 60:
+            time_str = f"約{est_sec}秒"
+        else:
+            est_min = est_sec // 60
+            time_str = f"約{est_min}分"
+
+        if count == 0:
+            # 未選択
+            self._preview_banner.setStyleSheet(
+                "QFrame { background: #f5f5f5; border: 1px solid #bdbdbd;"
+                "  border-left: 4px solid #9e9e9e; border-radius: 4px; }"
+            )
+            self._preview_main_lbl.setStyleSheet(
+                "font-size: 12px; color: #757575; background: transparent; border: none;"
+            )
+            self._preview_main_lbl.setText("地震波を選択するとプレビューが表示されます")
+            self._preview_detail_lbl.setText("")
+        elif count <= 5:
+            # 少数: 緑
+            self._preview_banner.setStyleSheet(
+                "QFrame { background: #e8f5e9; border: 1px solid #a5d6a7;"
+                "  border-left: 4px solid #2e7d32; border-radius: 4px; }"
+            )
+            self._preview_main_lbl.setStyleSheet(
+                "font-size: 12px; font-weight: bold; color: #1b5e20;"
+                " background: transparent; border: none;"
+            )
+            self._preview_main_lbl.setText(
+                f"✅  {count} ケースが生成されます（推定 {time_str}）"
+            )
+        elif count <= 15:
+            # 中程度: 青
+            self._preview_banner.setStyleSheet(
+                "QFrame { background: #e3f2fd; border: 1px solid #90caf9;"
+                "  border-left: 4px solid #1565c0; border-radius: 4px; }"
+            )
+            self._preview_main_lbl.setStyleSheet(
+                "font-size: 12px; font-weight: bold; color: #0d47a1;"
+                " background: transparent; border: none;"
+            )
+            self._preview_main_lbl.setText(
+                f"ℹ  {count} ケースが生成されます（推定 {time_str}）"
+            )
+        else:
+            # 多数: 橙（警告）
+            self._preview_banner.setStyleSheet(
+                "QFrame { background: #fff8e1; border: 1px solid #ffcc80;"
+                "  border-left: 4px solid #e65100; border-radius: 4px; }"
+            )
+            self._preview_main_lbl.setStyleSheet(
+                "font-size: 12px; font-weight: bold; color: #bf360c;"
+                " background: transparent; border: none;"
+            )
+            self._preview_main_lbl.setText(
+                f"⚠  {count} ケースは多めです（推定 {time_str}）"
+                "  — 分割実行を検討してください"
+            )
+
+        # カテゴリ別内訳
+        if count > 0:
+            cat_counts: dict = {}
+            for wave in selected:
+                cat_info = WAVE_CATEGORIES.get(wave.category, {})
+                cat_label = cat_info.get("label", wave.category)
+                cat_icon = cat_info.get("icon", "📁")
+                key = f"{cat_icon} {cat_label}"
+                cat_counts[key] = cat_counts.get(key, 0) + 1
+            parts = [f"{k}: {v}波" for k, v in cat_counts.items()]
+            self._preview_detail_lbl.setText("内訳: " + "　/　".join(parts))
+        else:
+            self._preview_detail_lbl.setText("")
 
     # ------------------------------------------------------------------
     # Generation

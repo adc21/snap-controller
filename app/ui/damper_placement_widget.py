@@ -19,6 +19,14 @@ app/ui/damper_placement_widget.py
   │ │...│    │   │   │  │   ├─── ...  ─────┤     │
   │ └───┴────┴────┴───┘  │   └──────────────┘     │
   └──────────────────────┴────────────────────────┘
+
+UX改善（新）: 配置バランスサマリー + 偏りアラート。
+  テーブルとビジュアルの下部に「配置サマリーバー」を追加します。
+  - 「合計 X 本 / Y層に配置 / 1層あたり平均 Z 本」のサマリーラベル
+  - 最大層本数が平均の2倍以上の場合に「⚠ 配置が偏っています」警告を表示
+  - テーブルやスピンボックスを更新するたびにリアルタイムで再計算
+  配置が均等かどうかを直感的に確認でき、耐震上バランスのとれた
+  制振計画を立てるヒントを提供します。
 """
 
 from __future__ import annotations
@@ -31,6 +39,7 @@ from PySide6.QtGui import QBrush, QColor, QPainter, QPen, QFont
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QComboBox,
+    QFrame,
     QGroupBox,
     QHBoxLayout,
     QHeaderView,
@@ -363,6 +372,43 @@ class DamperPlacementWidget(QWidget):
 
         layout.addLayout(main_row, stretch=1)
 
+        # ---- UX改善（新）: 配置バランスサマリーバー ----
+        summary_frame = QFrame()
+        summary_frame.setFrameShape(QFrame.StyledPanel)
+        summary_frame.setStyleSheet(
+            "QFrame { background-color: palette(alternate-base); "
+            "border: 1px solid palette(mid); border-radius: 4px; }"
+        )
+        summary_frame.setMaximumHeight(60)
+        _sf_layout = QVBoxLayout(summary_frame)
+        _sf_layout.setContentsMargins(8, 4, 8, 4)
+        _sf_layout.setSpacing(2)
+
+        _summary_row = QHBoxLayout()
+        self._placement_summary_label = QLabel("配置なし")
+        self._placement_summary_label.setStyleSheet("font-size: 11px;")
+        _summary_row.addWidget(self._placement_summary_label)
+        _summary_row.addStretch()
+        _sf_layout.addLayout(_summary_row)
+
+        # 偏り警告行
+        self._balance_warning = QFrame()
+        self._balance_warning.setStyleSheet(
+            "QFrame { background-color: #fff3e0; border: 1px solid #fb8c00; border-radius: 3px; }"
+        )
+        self._balance_warning.setMaximumHeight(22)
+        _warn_row = QHBoxLayout(self._balance_warning)
+        _warn_row.setContentsMargins(6, 1, 6, 1)
+        self._balance_warning_label = QLabel("")
+        self._balance_warning_label.setStyleSheet(
+            "color: #e65100; font-size: 10px; font-weight: bold; background: transparent;"
+        )
+        _warn_row.addWidget(self._balance_warning_label)
+        self._balance_warning.setVisible(False)
+        _sf_layout.addWidget(self._balance_warning)
+
+        layout.addWidget(summary_frame)
+
         # 初期表示
         self._apply_floor_count()
 
@@ -474,6 +520,55 @@ class DamperPlacementWidget(QWidget):
     def _update_visual(self) -> None:
         """ビジュアル表示を更新します。"""
         self._visual.set_configs(self._configs)
+        # UX改善（新）: 配置バランスサマリーを更新
+        if hasattr(self, "_placement_summary_label"):
+            self._update_placement_summary()
+
+    def _update_placement_summary(self) -> None:
+        """
+        UX改善（新）: 配置バランスサマリーバーを更新します。
+
+        合計本数・配置層数・平均を計算し、偏りがある場合は警告を表示します。
+        偏りの判定は「最大層本数 > 平均本数 × 2.0」とします。
+        """
+        placed = [(c.floor, c.count) for c in self._configs if c.count > 0 and c.damper_type != "なし"]
+        total = sum(cnt for _, cnt in placed)
+        n_floors = len(self._configs)
+        n_placed = len(placed)
+
+        if total == 0:
+            self._placement_summary_label.setText(
+                "配置なし　（テーブルでダンパーの種類・本数を設定してください）"
+            )
+            self._placement_summary_label.setStyleSheet("font-size: 11px; color: gray;")
+            self._balance_warning.setVisible(False)
+            return
+
+        avg = total / n_placed if n_placed > 0 else 0
+        max_count = max(cnt for _, cnt in placed) if placed else 0
+
+        # サマリーテキスト
+        summary = (
+            f"合計 <b>{total}</b> 本　／　"
+            f"{n_placed} 層に配置（全 {n_floors} 層）　／　"
+            f"1層あたり平均 <b>{avg:.1f}</b> 本"
+        )
+        self._placement_summary_label.setText(summary)
+        self._placement_summary_label.setTextFormat(Qt.RichText)
+        self._placement_summary_label.setStyleSheet("font-size: 11px;")
+
+        # 偏り検出: 最大本数が平均の2倍超
+        if n_placed >= 2 and avg > 0 and max_count > avg * 2.0:
+            offending_floors = [f for f, cnt in placed if cnt == max_count]
+            floor_str = ", ".join(f"{f}F" for f in offending_floors)
+            ratio = max_count / avg
+            self._balance_warning_label.setText(
+                f"⚠ 配置が偏っています（{floor_str}: {max_count}本 ≈ 平均の{ratio:.1f}倍）"
+                "　均等な配置を検討してください。"
+            )
+            self._balance_warning.setVisible(True)
+        else:
+            self._balance_warning.setVisible(False)
 
     # ------------------------------------------------------------------
     # Preset / Clear

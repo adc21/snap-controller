@@ -2,6 +2,14 @@
 app/ui/error_guide_widget.py
 解析エラー時の「よくある原因と解決策」ガイダンスパネル。
 
+UX改善（第7回③）: 「エラーをコピー」ボタンと「再試行」シグナル追加。
+  タイトル行に2つのボタンを追加します:
+  1. 「📋 エラーをコピー」: ケース名・エラーログをクリップボードにコピーします。
+     サポートや同僚への共有・問い合わせ時に役立ちます。
+  2. 「🔄 再試行」: retryRequested(case_id) シグナルを発火し、同じケースを
+     すぐに再解析できます。パラメータ修正後に再試行する際に、いちいちSTEP3
+     タブのリストに戻らなくてもエラーパネルから直接再実行できます。
+
 UX改善③（段階的開示）: 解析がエラー終了したとき、ログエリアの上部に
 構造化されたガイダンスパネルを自動表示します。
 
@@ -143,10 +151,14 @@ class ErrorGuideWidget(QFrame):
 
     openSettingsRequested = Signal()
     editCaseRequested = Signal(str)
+    # UX改善（第7回③）: 再試行シグナル（case_id を引数に持つ）
+    retryRequested = Signal(str)
 
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
         self._current_case_id: str = ""
+        self._current_case_name: str = ""
+        self._current_log_text: str = ""
         self._setup_ui()
         self.hide()
 
@@ -197,6 +209,47 @@ class ErrorGuideWidget(QFrame):
         title_lbl.setTextFormat(Qt.RichText)
         title_row.addWidget(title_lbl, stretch=1)
 
+        # UX改善（第7回③）: 「エラーをコピー」ボタン
+        _copy_btn = QPushButton("📋 コピー")
+        _copy_btn.setFixedHeight(22)
+        _copy_btn.setMinimumWidth(70)
+        _copy_btn.setToolTip(
+            "エラー情報（ケース名・ログ）をクリップボードにコピーします。\n"
+            "サポートや同僚への問い合わせ時に貼り付けてください。"
+        )
+        _copy_btn.setStyleSheet(
+            f"QPushButton {{"
+            f"  font-size: 10px; padding: 2px 8px;"
+            f"  border: 1px solid {title_color}; border-radius: 3px;"
+            f"  background: transparent; color: {title_color};"
+            f"}}"
+            f"QPushButton:hover {{ background: {title_color}; color: white; }}"
+        )
+        _copy_btn.clicked.connect(self._on_copy_error)
+        title_row.addWidget(_copy_btn)
+        self._copy_btn = _copy_btn
+
+        # UX改善（第7回③）: 「再試行」ボタン
+        _retry_btn = QPushButton("🔄 再試行")
+        _retry_btn.setFixedHeight(22)
+        _retry_btn.setMinimumWidth(70)
+        _retry_btn.setToolTip(
+            "このケースを再度解析します。\n"
+            "パラメータを修正した後、すぐにここから再実行できます。\n\n"
+            "※ STEP3 タブへ戻らずに再試行できます。"
+        )
+        _retry_btn.setStyleSheet(
+            f"QPushButton {{"
+            f"  font-size: 10px; padding: 2px 8px;"
+            f"  border: 1px solid {title_color}; border-radius: 3px;"
+            f"  background: transparent; color: {title_color};"
+            f"}}"
+            f"QPushButton:hover {{ background: {title_color}; color: white; }}"
+        )
+        _retry_btn.clicked.connect(self._on_retry)
+        title_row.addWidget(_retry_btn)
+        self._retry_btn = _retry_btn
+
         close_btn = QPushButton("✕")
         close_btn.setFixedSize(20, 20)
         close_btn.setStyleSheet(
@@ -242,6 +295,9 @@ class ErrorGuideWidget(QFrame):
             ログテキスト（エラー種別推定に使用）。省略可能。
         """
         self._current_case_id = case_id
+        # UX改善（第7回③）: コピー・再試行のためにケース名とログを保持
+        self._current_case_name = case_name
+        self._current_log_text = log_text
 
         # 原因を推定
         causes = _detect_causes(log_text)
@@ -315,3 +371,48 @@ class ErrorGuideWidget(QFrame):
 
         self._causes_layout.addStretch()
         self.show()
+
+    # ------------------------------------------------------------------
+    # UX改善（第7回③）: エラーコピー / 再試行
+    # ------------------------------------------------------------------
+
+    def _on_copy_error(self) -> None:
+        """
+        UX改善（第7回③）: エラー情報をクリップボードにコピーします。
+
+        コピー内容: ケース名・エラーログ（最大200行）。
+        コピー後、ボタンラベルを一時的に「✓ コピーしました」に変更してフィードバック。
+        """
+        from PySide6.QtWidgets import QApplication
+        from PySide6.QtCore import QTimer as _QTimer
+
+        lines = [
+            f"【SNAP Controller エラーレポート】",
+            f"ケース: {self._current_case_name}",
+            f"ケースID: {self._current_case_id}",
+            "--- ログ ---",
+        ]
+        if self._current_log_text:
+            log_lines = self._current_log_text.splitlines()
+            lines.extend(log_lines[:200])
+            if len(log_lines) > 200:
+                lines.append(f"（以降 {len(log_lines) - 200} 行省略）")
+        else:
+            lines.append("（ログなし）")
+
+        QApplication.clipboard().setText("\n".join(lines))
+
+        # ボタンラベルを一時的に変更してコピー完了をフィードバック
+        if hasattr(self, "_copy_btn"):
+            self._copy_btn.setText("✓ コピーしました")
+            _QTimer.singleShot(2000, lambda: self._copy_btn.setText("📋 コピー"))
+
+    def _on_retry(self) -> None:
+        """
+        UX改善（第7回③）: 現在のエラーケースの再試行を要求します。
+
+        retryRequested(case_id) シグナルを発火します。
+        AnalysisService がこのシグナルを受信してケースを再解析します。
+        """
+        if self._current_case_id:
+            self.retryRequested.emit(self._current_case_id)

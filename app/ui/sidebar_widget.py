@@ -2,6 +2,13 @@
 app/ui/sidebar_widget.py
 ワークフロー主導のステップバイステップ用サイドバー。
 
+UX改善（第7回②）: ステップ完了時の一時フラッシュバナー追加。
+  `set_step_state(index, "done")` が呼ばれると、サイドバー上部に
+  「✓ STEP N 完了！次は STEP N+1 へ」という緑色のバナーを一時表示します。
+  QTimer で 3 秒後に自動的に非表示になります。
+  既に done 状態のステップには表示しません（重複防止）。
+  `show_completion_flash(step_index)` を外部から直接呼び出すことも可能です。
+
 UX改善1: 各ステップボタンにプロジェクト状態バッジを表示。
   - STEP1: モデルロード状態（✓ またはファイル名）
   - STEP2: ケース件数バッジ（例: 3件）
@@ -37,7 +44,7 @@ UX改善（今回追加）: プロジェクト状態サマリーラベル。
 
 from typing import Optional
 
-from PySide6.QtCore import Qt, Signal, QSize
+from PySide6.QtCore import Qt, Signal, QSize, QTimer
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QToolButton, QButtonGroup,
     QSizePolicy, QLabel, QFrame
@@ -116,6 +123,42 @@ class SidebarWidget(QWidget):
         title_label.setAlignment(Qt.AlignCenter)
         title_label.setStyleSheet("font-size: 16px; font-weight: 900; margin-bottom: 16px;")
         layout.addWidget(title_label)
+
+        # UX改善（第7回②）: ステップ完了フラッシュバナー
+        # set_step_state("done") 時に3秒間表示して自動非表示になるバナー。
+        self._flash_banner = QFrame()
+        self._flash_banner.setStyleSheet(
+            "QFrame {"
+            "  background-color: #e8f5e9;"
+            "  border-left: 4px solid #4caf50;"
+            "  border-radius: 0px;"
+            "}"
+        )
+        self._flash_banner.setMaximumHeight(40)
+        self._flash_banner.setVisible(False)
+        _flash_layout = QHBoxLayout(self._flash_banner)
+        _flash_layout.setContentsMargins(8, 4, 8, 4)
+        _flash_layout.setSpacing(4)
+        self._flash_icon_lbl = QLabel("✓")
+        self._flash_icon_lbl.setStyleSheet(
+            "color: #2e7d32; font-size: 14px; font-weight: bold; background: transparent;"
+        )
+        _flash_layout.addWidget(self._flash_icon_lbl)
+        self._flash_text_lbl = QLabel("")
+        self._flash_text_lbl.setStyleSheet(
+            "color: #1b5e20; font-size: 10px; font-weight: bold; background: transparent;"
+        )
+        self._flash_text_lbl.setWordWrap(True)
+        _flash_layout.addWidget(self._flash_text_lbl, stretch=1)
+        layout.addWidget(self._flash_banner)
+
+        # フラッシュ自動非表示タイマー
+        self._flash_timer = QTimer(self)
+        self._flash_timer.setSingleShot(True)
+        self._flash_timer.timeout.connect(lambda: self._flash_banner.setVisible(False))
+
+        # ステップの既存 done 状態を追跡（重複フラッシュを防ぐ）
+        self._step_done_states: list[bool] = [False, False, False, False]
 
         self._btn_group = QButtonGroup(self)
         self._btn_group.setExclusive(True)
@@ -362,6 +405,9 @@ class SidebarWidget(QWidget):
         各ステップボタンの右端にある小さな記号で「完了 / 作業中 / 未着手」を
         カラーコードで表示し、ユーザーがワークフローの進行状況を一目で把握できます。
 
+        UX改善（第7回②）: state が "done" に変化した場合（かつ前回 done でない場合）、
+        3秒間のフラッシュバナーを表示して次ステップへの誘導を行います。
+
         Parameters
         ----------
         step_index : int
@@ -380,3 +426,51 @@ class SidebarWidget(QWidget):
             f"color: {s['color']}; font-size: 11px; font-weight: bold;"
         )
         lbl.setToolTip(s["tooltip"])
+
+        # UX改善（第7回②）: done への遷移時のみフラッシュバナーを表示
+        if (
+            state == STEP_STATE_DONE
+            and hasattr(self, "_step_done_states")
+            and not self._step_done_states[step_index]
+        ):
+            self.show_completion_flash(step_index)
+        if hasattr(self, "_step_done_states") and 0 <= step_index < len(self._step_done_states):
+            self._step_done_states[step_index] = (state == STEP_STATE_DONE)
+
+    def show_completion_flash(self, step_index: int) -> None:
+        """
+        UX改善（第7回②）: ステップ完了フラッシュバナーを3秒間表示します。
+
+        完了したステップ番号に応じて「次のステップへ」の誘導メッセージを表示し、
+        QTimer により3秒後に自動的に非表示になります。
+
+        Parameters
+        ----------
+        step_index : int
+            完了したステップのインデックス（0〜3）。
+        """
+        if not hasattr(self, "_flash_banner"):
+            return
+
+        step_num = step_index + 1
+        next_step_num = step_num + 1
+
+        _next_actions = [
+            "STEP2 でケースを設計しましょう",
+            "STEP3 で解析を実行しましょう",
+            "STEP4 で結果を確認しましょう",
+            "お疲れ様です！結果を比較・戦略を練りましょう",
+        ]
+        next_msg = _next_actions[step_index] if step_index < len(_next_actions) else ""
+
+        if step_index < 3:
+            text = f"STEP{step_num} 完了！  →  {next_msg}"
+        else:
+            text = f"STEP{step_num} 完了！  {next_msg}"
+
+        self._flash_text_lbl.setText(text)
+        self._flash_banner.setVisible(True)
+
+        # 3秒後に自動非表示
+        self._flash_timer.stop()
+        self._flash_timer.start(3000)

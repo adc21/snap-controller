@@ -13,6 +13,24 @@ ETA推定、優先度変更、一時停止・再開・キャンセルのUIを提
   - 優先度の上げ下げ（コンテキストメニュー）
   - 一時停止 / 再開 / キャンセルボタン
   - 実行完了サマリー
+
+UX改善（第4回）①: バッチ完了後「次のアクション」誘導バナー追加。
+  `on_batch_finished()` 完了時に成功/エラー件数に応じた色付きバナーを表示し、
+  ユーザーが次に何をすべきかを具体的に案内します。
+  - 全成功時: 緑バナー「✅ X件完了！→ 結果比較で各ケースを比較しましょう」
+  - エラーあり: 赤セクション「❌ Y件エラー → ログタブでエラー内容を確認してください」
+  - 混合時: 両方のメッセージを縦に並べて表示
+  `_update_next_action_banner()` メソッドと `_next_action_banner` QFrame を追加。
+
+UX改善（新）: 実行中ケースの速度インジケーター追加。
+  実行中ケースの経過時間に応じてセル背景色と警告アイコンを変化させます。
+  - 正常 (<{_SLOW_WARNING_SEC}秒): 通常の黄色背景
+  - 遅い (≥{_SLOW_WARNING_SEC}秒): オレンジ背景 + 「⏳ 遅い」テキスト接頭辞
+  - 要注意 (≥{_VERY_SLOW_SEC}秒): 赤背景 + 「🐢 要確認」接頭辞
+  さらに、非常に遅いケースがある場合はヘッダーの ETA ラベル隣に
+  「⚠ 解析が長時間かかっています」警告テキストを追加表示します。
+  `_SLOW_WARNING_SEC`, `_VERY_SLOW_SEC` 定数と `_slow_warning_lbl` QLabel を追加。
+  `_refresh_table()` および `_update_eta()` を拡張。
 """
 
 from __future__ import annotations
@@ -35,6 +53,10 @@ from app.models.analysis_case import AnalysisCase, AnalysisCaseStatus
 # ---------------------------------------------------------------------------
 # 定数
 # ---------------------------------------------------------------------------
+
+# UX改善（新）: 実行中ケースの速度しきい値 [秒]
+_SLOW_WARNING_SEC = 30   # これ以上かかるとオレンジ警告
+_VERY_SLOW_SEC    = 90   # これ以上かかると赤・要確認
 
 _STATUS_ICONS = {
     AnalysisCaseStatus.PENDING: "⏳",
@@ -109,6 +131,14 @@ class BatchQueueWidget(QWidget):
         self._lbl_eta.setStyleSheet("color: #666; font-size: 12px;")
         header_layout.addWidget(self._lbl_eta)
 
+        # UX改善（新）: 速度警告ラベル（遅い実行中ケースがある場合に表示）
+        self._slow_warning_lbl = QLabel("")
+        self._slow_warning_lbl.setStyleSheet(
+            "color: #e65100; font-size: 11px; font-weight: bold;"
+        )
+        self._slow_warning_lbl.hide()
+        header_layout.addWidget(self._slow_warning_lbl)
+
         layout.addWidget(header)
 
         # ---- 進捗バー ----
@@ -173,6 +203,15 @@ class BatchQueueWidget(QWidget):
 
         layout.addLayout(btn_layout)
 
+        # UX改善（第4回）①: 次のアクション誘導バナー
+        self._next_action_banner = QFrame()
+        self._next_action_banner.setFrameShape(QFrame.StyledPanel)
+        self._next_action_banner_layout = QVBoxLayout(self._next_action_banner)
+        self._next_action_banner_layout.setContentsMargins(10, 6, 10, 6)
+        self._next_action_banner_layout.setSpacing(4)
+        self._next_action_banner.hide()
+        layout.addWidget(self._next_action_banner)
+
     def _setup_timer(self) -> None:
         """1秒ごとにETA・経過時間を更新。"""
         self._timer = QTimer(self)
@@ -236,6 +275,8 @@ class BatchQueueWidget(QWidget):
             f"平均: {self._format_time(elapsed_total / total if total else 0)}/ケース"
         )
         self._refresh_table()
+        # UX改善（第4回）①: 次のアクション誘導バナーを表示
+        self._update_next_action_banner(completed, errors, total)
 
     def on_paused(self) -> None:
         """一時停止状態になったときに呼びます。"""
@@ -268,10 +309,89 @@ class BatchQueueWidget(QWidget):
         self._lbl_eta.setText("")
         self._lbl_summary.setText("")
         self._update_buttons()
+        # 次のアクションバナーを非表示
+        self._next_action_banner.hide()
 
     def get_queue_order(self) -> List[str]:
         """現在のキュー順序（case_id リスト）を返します。"""
         return [c.id for c in self._cases if c.status == AnalysisCaseStatus.PENDING]
+
+    # ------------------------------------------------------------------
+    # UX改善（第4回）①: 次のアクション誘導バナー
+    # ------------------------------------------------------------------
+
+    def _update_next_action_banner(self, completed: int, errors: int, total: int) -> None:
+        """
+        バッチ完了後にユーザーへ次のアクションを案内するバナーを表示します。
+
+        成功ケースと失敗ケースの数に応じてメッセージと配色を変え、
+        ユーザーが「解析後に何をすれば良いか」迷わないよう誘導します。
+
+        Parameters
+        ----------
+        completed : int  成功したケース数
+        errors    : int  エラーになったケース数
+        total     : int  バッチ全体のケース数
+        """
+        # 既存の子ウィジェットをクリア
+        while self._next_action_banner_layout.count():
+            item = self._next_action_banner_layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+
+        # バナー全体の背景色
+        if errors == 0:
+            bg_color = "#e8f5e9"   # 全成功: 緑系
+            border_color = "#43a047"
+        elif completed == 0:
+            bg_color = "#ffebee"   # 全エラー: 赤系
+            border_color = "#e53935"
+        else:
+            bg_color = "#fff8e1"   # 混合: 黄系
+            border_color = "#fb8c00"
+
+        self._next_action_banner.setStyleSheet(
+            f"QFrame {{ background-color: {bg_color}; "
+            f"border: 1px solid {border_color}; border-radius: 6px; }}"
+        )
+
+        # タイトル行
+        title_lbl = QLabel("<b>🎯 次のアクション</b>")
+        title_lbl.setStyleSheet(f"color: {border_color}; font-size: 12px;")
+        self._next_action_banner_layout.addWidget(title_lbl)
+
+        # 成功メッセージ
+        if completed > 0:
+            ok_lbl = QLabel(
+                f"✅ <b>{completed}件</b>の解析が完了しました。"
+                "　→ <b>「結果比較」タブ</b>でグラフと数値を比較してみましょう。"
+            )
+            ok_lbl.setStyleSheet("color: #2e7d32; font-size: 11px;")
+            ok_lbl.setWordWrap(True)
+            self._next_action_banner_layout.addWidget(ok_lbl)
+
+        # エラーメッセージ
+        if errors > 0:
+            err_lbl = QLabel(
+                f"❌ <b>{errors}件</b>のエラーが発生しました。"
+                "　→ <b>「ログ」タブ</b>でエラー詳細を確認し、"
+                "ケース設定を見直してください。"
+            )
+            err_lbl.setStyleSheet("color: #c62828; font-size: 11px;")
+            err_lbl.setWordWrap(True)
+            self._next_action_banner_layout.addWidget(err_lbl)
+
+        # 追加ヒント（完了ケースが2件以上の場合）
+        if completed >= 2:
+            hint_lbl = QLabel(
+                "💡 複数ケースの解析が完了しています。"
+                "「ダッシュボード」でヒートマップやランキングも確認できます。"
+            )
+            hint_lbl.setStyleSheet("color: #555; font-size: 10px;")
+            hint_lbl.setWordWrap(True)
+            self._next_action_banner_layout.addWidget(hint_lbl)
+
+        self._next_action_banner.show()
 
     # ------------------------------------------------------------------
     # テーブル更新
@@ -302,18 +422,37 @@ class BatchQueueWidget(QWidget):
             priority_item.setFlags(priority_item.flags() & ~Qt.ItemIsEditable)
             self._table.setItem(row, 2, priority_item)
 
-            # 実行時間
+            # 実行時間 + UX改善（新）: 速度インジケーター（実行中のみ）
             elapsed = self._elapsed_times.get(case.id)
             if elapsed is not None:
+                # 完了済み: 通常表示
                 time_str = self._format_time(elapsed)
+                time_bg = None
             elif case.id in self._start_times:
                 running_time = time.time() - self._start_times[case.id]
-                time_str = f"{self._format_time(running_time)}…"
+                # UX改善（新）: 速度に応じて警告アイコン・色を変化させる
+                if running_time >= _VERY_SLOW_SEC:
+                    time_str = f"🐢 {self._format_time(running_time)}"
+                    time_bg = QColor("#ffcdd2")  # 赤系
+                elif running_time >= _SLOW_WARNING_SEC:
+                    time_str = f"⏳ {self._format_time(running_time)}"
+                    time_bg = QColor("#ffe0b2")  # オレンジ系
+                else:
+                    time_str = f"{self._format_time(running_time)}…"
+                    time_bg = None
             else:
                 time_str = "—"
+                time_bg = None
             time_item = QTableWidgetItem(time_str)
             time_item.setTextAlignment(Qt.AlignCenter)
             time_item.setFlags(time_item.flags() & ~Qt.ItemIsEditable)
+            if time_bg:
+                time_item.setBackground(time_bg)
+                time_item.setToolTip(
+                    "この解析ケースは予想より長くかかっています。\n"
+                    "SNAP の設定やモデル規模を確認してください。\n"
+                    f"{'🐢 90秒超: 解析が止まっている可能性があります。' if time_bg == QColor('#ffcdd2') else '⏳ 30秒超: 少し時間がかかっています。'}"
+                )
             self._table.setItem(row, 3, time_item)
 
             # 結果概要
@@ -366,6 +505,26 @@ class BatchQueueWidget(QWidget):
             f"残り推定: {self._format_time(eta_sec)} "
             f"(平均 {self._format_time(avg_time)}/ケース)"
         )
+
+        # UX改善（新）: 実行中ケースが非常に遅い場合は速度警告ラベルを表示
+        max_running_sec = 0.0
+        for c in self._cases:
+            if c.status == AnalysisCaseStatus.RUNNING and c.id in self._start_times:
+                max_running_sec = max(max_running_sec, time.time() - self._start_times[c.id])
+        if max_running_sec >= _VERY_SLOW_SEC:
+            self._slow_warning_lbl.setText(
+                f"🐢 {self._format_time(max_running_sec)} — 解析が長時間かかっています"
+            )
+            self._slow_warning_lbl.setStyleSheet("color: #c62828; font-size: 11px; font-weight: bold;")
+            self._slow_warning_lbl.show()
+        elif max_running_sec >= _SLOW_WARNING_SEC:
+            self._slow_warning_lbl.setText(
+                f"⏳ {self._format_time(max_running_sec)} — 解析に時間がかかっています"
+            )
+            self._slow_warning_lbl.setStyleSheet("color: #e65100; font-size: 11px;")
+            self._slow_warning_lbl.show()
+        else:
+            self._slow_warning_lbl.hide()
 
     # ------------------------------------------------------------------
     # コンテキストメニュー

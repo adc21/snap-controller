@@ -4,6 +4,15 @@ app/ui/log_widget.py
 
 解析実行中の標準出力・エラーをリアルタイムで表示します。
 
+UX改善（第7回④）: 「📥 ログを保存」ボタン追加。
+  ヘッダーの「クリア」「コピー」ボタン横に「📥 保存」ボタンを追加します。
+  クリックすると QFileDialog が開き、タイムスタンプ付きのテキストファイル
+  （例: snap_log_20260403_153012.txt）として保存できます。
+  - フィルタリング前の全ログを保存します（現在の絞り込み状態に関わらず）
+  - 「[コピー]」と同様に全エントリを「[HH:MM:SS] テキスト」形式で出力
+  - 保存完了後にステータスバー代わりのボタンラベルを2秒間「✓ 保存しました」に変更
+
+
 改善⑦: エラー/警告フィルターボタンを追加。
         「全て / エラーのみ / 警告以上」でログを絞り込めます。
         件数バッジでエラー・警告の発生数を常時確認できます。
@@ -251,6 +260,19 @@ class LogWidget(QWidget):
         btn_copy.clicked.connect(self._copy_all)
         header.addWidget(btn_copy)
 
+        # UX改善（第7回④）: 「📥 ログを保存」ボタン
+        self._btn_save = QPushButton("📥 保存")
+        self._btn_save.setFixedHeight(22)
+        self._btn_save.setToolTip(
+            "ログをテキストファイルとして保存します。\n\n"
+            "・保存形式: [HH:MM:SS] ログ行 のプレーンテキスト\n"
+            "・ファイル名は現在日時から自動生成されます\n"
+            "・フィルタリング前の全ログが保存されます"
+        )
+        self._btn_save.setStyleSheet("QPushButton { font-size: 11px; padding: 1px 6px; }")
+        self._btn_save.clicked.connect(self._save_log)
+        header.addWidget(self._btn_save)
+
         layout.addLayout(header)
 
         # UX改善（新）: 折りたたみ対象コンテンツウィジェット
@@ -455,6 +477,46 @@ class LogWidget(QWidget):
         # 改善⑦: 全ライン（フィルター前）をコピー
         lines = [f"[{e['ts']}] {e['text']}" for e in self._all_lines]
         QApplication.clipboard().setText("\n".join(lines))
+
+    def _save_log(self) -> None:
+        """
+        UX改善（第7回④）: ログをテキストファイルとして保存します。
+
+        QFileDialog を開き、ユーザーが指定した場所にタイムスタンプ付きで保存します。
+        保存完了後はボタンラベルを2秒間「✓ 保存しました」に変更してフィードバックします。
+        """
+        from datetime import datetime as _dt
+        from PySide6.QtWidgets import QFileDialog
+        from PySide6.QtCore import QTimer as _QTimer
+        import os
+
+        if not self._all_lines:
+            return  # 空ログは保存しない
+
+        # デフォルトファイル名: snap_log_YYYYMMDD_HHMMSS.txt
+        default_name = _dt.now().strftime("snap_log_%Y%m%d_%H%M%S.txt")
+
+        path, _ = QFileDialog.getSaveFileName(
+            self,
+            "ログを保存",
+            default_name,
+            "テキストファイル (*.txt);;全てのファイル (*)",
+        )
+        if not path:
+            return  # キャンセル
+
+        try:
+            lines = [f"[{e['ts']}] {e['text']}" for e in self._all_lines]
+            content = "\n".join(lines)
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(content)
+            # 保存成功フィードバック
+            if hasattr(self, "_btn_save"):
+                self._btn_save.setText("✓ 保存しました")
+                _QTimer.singleShot(2000, lambda: self._btn_save.setText("📥 保存"))
+        except OSError as exc:
+            from PySide6.QtWidgets import QMessageBox
+            QMessageBox.warning(self, "保存エラー", f"ログの保存に失敗しました:\n{exc}")
 
     # ------------------------------------------------------------------
     # UX改善③: テキスト検索

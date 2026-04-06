@@ -20,6 +20,19 @@ app/ui/sensitivity_widget.py
   │ 感度統計テーブル                                   │
   │ パラメータ | 相関係数 | 影響度 | p値              │
   └───────────────────────────────────────────────────┘
+
+UX改善（新）: 感度分析ガイドバナー + 最重要パラメータ自動ハイライト。
+  ① 折りたたみ式「感度分析とは？」ガイドバナーをウィジェット上部に追加。
+    「▶ 感度分析とは？」ボタンで展開し、相関係数の読み方・活用方法を説明します。
+    初めてこのタブを開いたユーザーが操作に迷わないようにします。
+
+  ② トルネード図の最重要パラメータ（|r|最大）をゴールド色でハイライト。
+    最も応答値への影響が大きいパラメータのバーをゴールド（#FFD700）で強調し、
+    バー右端に「⭐ 最重要」テキスト注釈を追加します。
+    「どのパラメータを優先的に最適化すべきか」を一目で判断できます。
+
+  ③ 感度統計テーブルの最重要行に「⭐ 最重要」マークを付与し、背景を金色に変更。
+    数値だけでなく視覚的なマークで最重要パラメータを強調します。
 """
 
 from __future__ import annotations
@@ -29,12 +42,15 @@ from typing import Dict, List, Optional, Tuple
 import numpy as np
 
 from PySide6.QtCore import Qt
+from PySide6.QtGui import QColor as _QColorSens
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QComboBox,
+    QFrame,
     QHBoxLayout,
     QHeaderView,
     QLabel,
+    QPushButton,
     QSizePolicy,
     QSplitter,
     QTableWidget,
@@ -164,6 +180,49 @@ class SensitivityWidget(QWidget):
         layout.setContentsMargins(4, 4, 4, 4)
         layout.setSpacing(4)
 
+        # ---- UX改善（新）①: 折りたたみ式ガイドバナー ----
+        self._guide_panel_visible = False
+        guide_header = QFrame()
+        guide_header.setStyleSheet(
+            "QFrame { background-color: #e3f2fd; border: 1px solid #90caf9; border-radius: 4px; }"
+        )
+        _guide_header_row = QHBoxLayout(guide_header)
+        _guide_header_row.setContentsMargins(8, 4, 8, 4)
+        self._guide_toggle_btn = QPushButton("▶  感度分析とは？")
+        self._guide_toggle_btn.setFlat(True)
+        self._guide_toggle_btn.setStyleSheet(
+            "QPushButton { color: #1565c0; font-size: 11px; font-weight: bold; "
+            "text-align: left; background: transparent; border: none; }"
+            "QPushButton:hover { color: #0d47a1; }"
+        )
+        self._guide_toggle_btn.clicked.connect(self._toggle_guide_panel)
+        _guide_header_row.addWidget(self._guide_toggle_btn)
+        _guide_header_row.addStretch()
+        layout.addWidget(guide_header)
+
+        self._guide_content = QFrame()
+        self._guide_content.setStyleSheet(
+            "QFrame { background-color: #e8f5e9; border: 1px solid #a5d6a7; "
+            "border-top: none; border-radius: 0 0 4px 4px; }"
+        )
+        _guide_content_layout = QVBoxLayout(self._guide_content)
+        _guide_content_layout.setContentsMargins(12, 6, 12, 8)
+        _guide_content_layout.setSpacing(4)
+        _guide_lines = [
+            "<b>感度分析</b>は「どのパラメータが応答値に最も影響するか」を定量的に評価します。",
+            "　<b>相関係数 r</b>（-1〜+1）: 絶対値が大きいほど影響が強い。正は「増やすと応答が増加」、負は「増やすと応答が減少」。",
+            "　<b>トルネード図</b>: バーが長いパラメータほど重要。右（赤）= 正の相関、左（青）= 負の相関。",
+            "　<b>活用方法</b>: |r| > 0.7 なら強い相関。最重要パラメータ（⭐）を優先的に最適化することで効率的に性能改善できます。",
+        ]
+        for line in _guide_lines:
+            lbl = QLabel(line)
+            lbl.setTextFormat(Qt.RichText)
+            lbl.setWordWrap(True)
+            lbl.setStyleSheet("font-size: 10px; color: #1b5e20; background: transparent;")
+            _guide_content_layout.addWidget(lbl)
+        self._guide_content.setVisible(False)
+        layout.addWidget(self._guide_content)
+
         # コントロール行
         ctrl_row = QHBoxLayout()
         ctrl_row.addWidget(QLabel("<b>パラメータ感度分析</b>"))
@@ -224,6 +283,230 @@ class SensitivityWidget(QWidget):
         self._stat_table.verticalHeader().setVisible(False)
         self._stat_table.setMaximumHeight(180)
         layout.addWidget(self._stat_table, stretch=0)
+
+        # ── UX改善（第12回⑤）: 次ラウンド推奨パラメータ自動提案パネル ──────────────
+        # 感度統計テーブルの直下に「📋 改善提案を生成」ボタンを配置します。
+        # クリックすると最重要パラメータ・推奨変更方向・推定改善量を自動計算してパネルに表示します。
+        suggest_header_row = QHBoxLayout()
+        _suggest_hdr_lbl = QLabel("<b>📋 次ラウンド推奨パラメータ</b>")
+        _suggest_hdr_lbl.setTextFormat(Qt.RichText)
+        suggest_header_row.addWidget(_suggest_hdr_lbl)
+        suggest_header_row.addStretch()
+
+        self._suggest_btn = QPushButton("✨ 改善提案を生成")
+        self._suggest_btn.setToolTip(
+            "感度解析の結果から、次ラウンドで変更すべきパラメータと推奨変更量を自動計算します。\n"
+            "最重要パラメータ（|r| 最大）の相関方向を参照して「増やす/減らす」の方向を提案します。"
+        )
+        self._suggest_btn.setStyleSheet(
+            "QPushButton {"
+            "  font-size: 10px; padding: 3px 10px;"
+            "  border: 1px solid #90caf9; border-radius: 3px;"
+            "  background: #e3f2fd; color: #1565c0;"
+            "}"
+            "QPushButton:hover { background: #bbdefb; }"
+            "QPushButton:pressed { background: #90caf9; }"
+        )
+        self._suggest_btn.clicked.connect(self._generate_suggestions)
+        suggest_header_row.addWidget(self._suggest_btn)
+
+        layout.addLayout(suggest_header_row)
+
+        self._suggest_panel = QFrame()
+        self._suggest_panel.setFrameShape(QFrame.StyledPanel)
+        self._suggest_panel.setStyleSheet(
+            "QFrame {"
+            "  background-color: #f3e5f5;"
+            "  border: 1px solid #ce93d8;"
+            "  border-radius: 4px;"
+            "}"
+        )
+        _sp_layout = QVBoxLayout(self._suggest_panel)
+        _sp_layout.setContentsMargins(10, 6, 10, 8)
+        _sp_layout.setSpacing(4)
+
+        _sp_title_row = QHBoxLayout()
+        _sp_icon = QLabel("🔮")
+        _sp_icon.setStyleSheet("font-size: 14px; background: transparent; border: none;")
+        _sp_title_row.addWidget(_sp_icon)
+        _sp_title = QLabel("<b>次ラウンドで試すべきパラメータ変更の提案</b>")
+        _sp_title.setTextFormat(Qt.RichText)
+        _sp_title.setStyleSheet("color: #4a148c; background: transparent; border: none;")
+        _sp_title_row.addWidget(_sp_title)
+        _sp_title_row.addStretch()
+        _sp_layout.addLayout(_sp_title_row)
+
+        self._suggest_content_lbl = QLabel(
+            "「✨ 改善提案を生成」ボタンを押すと、感度解析結果に基づいた\n"
+            "パラメータ変更の推奨が表示されます。"
+        )
+        self._suggest_content_lbl.setWordWrap(True)
+        self._suggest_content_lbl.setStyleSheet(
+            "color: #6a1b9a; font-size: 10px; background: transparent; border: none;"
+        )
+        self._suggest_content_lbl.setTextFormat(Qt.RichText)
+        _sp_layout.addWidget(self._suggest_content_lbl)
+
+        _sp_note = QLabel(
+            "<i>※ 提案はあくまで参考値です。実際の設計判断はエンジニアが行ってください。</i>"
+        )
+        _sp_note.setTextFormat(Qt.RichText)
+        _sp_note.setStyleSheet(
+            "color: #9c27b0; font-size: 9px; background: transparent; border: none;"
+        )
+        _sp_layout.addWidget(_sp_note)
+
+        self._suggest_panel.hide()  # 初期非表示
+        layout.addWidget(self._suggest_panel)
+
+    def _toggle_guide_panel(self) -> None:
+        """UX改善（新）①: ガイドパネルの表示/非表示を切り替えます。"""
+        self._guide_panel_visible = not self._guide_panel_visible
+        self._guide_content.setVisible(self._guide_panel_visible)
+        arrow = "▼" if self._guide_panel_visible else "▶"
+        self._guide_toggle_btn.setText(f"{arrow}  感度分析とは？")
+
+    def _generate_suggestions(self) -> None:
+        """
+        UX改善（第12回⑤）: 感度解析結果から次ラウンド推奨パラメータ変更を自動生成します。
+
+        アルゴリズム:
+        1. 現在選択中の応答指標について感度統計を取得する
+        2. |r| が最大のパラメータを「最重要」と判定する
+        3. 相関係数の符号から「増やすべきか / 減らすべきか」を判断する
+           - r < 0 かつ応答値を減らしたい（制振効果向上）→ 増やす方向
+           - r > 0 かつ応答値を減らしたい → 減らす方向
+        4. 現在の平均値 ± 20% を推奨変更量として表示する
+        5. |r| が低い（0.3 未満）パラメータは「影響小」と明示する
+
+        データ不足（ケース2件未満）の場合は案内メッセージを表示します。
+        """
+        if not hasattr(self, "_suggest_panel"):
+            return
+
+        # 感度データを再取得
+        param_data, response_data, response_key = self._extract_param_response_data()
+
+        if not param_data or not response_data or len(response_data) < 2:
+            self._suggest_content_lbl.setText(
+                "⚠ 感度分析に必要なデータが不足しています。<br>"
+                "完了済みケースが <b>2件以上</b> 必要です。<br>"
+                "STEP3 で追加のケースを解析してからもう一度お試しください。"
+            )
+            self._suggest_content_lbl.setTextFormat(Qt.RichText)
+            self._suggest_panel.show()
+            return
+
+        # 各パラメータの相関係数を計算
+        correlations: List[Tuple[str, float, float, int]] = []
+        y = np.array(response_data)
+        for param_key, values in param_data.items():
+            if len(values) < 2:
+                continue
+            x = np.array(values)
+            r, p = _compute_correlation(x, y)
+            correlations.append((param_key, r, p, len(values)))
+
+        if not correlations:
+            self._suggest_content_lbl.setText(
+                "⚠ 有効な相関データがありません。<br>"
+                "ダンパーパラメータを変えた複数のケースを解析してください。"
+            )
+            self._suggest_content_lbl.setTextFormat(Qt.RichText)
+            self._suggest_panel.show()
+            return
+
+        # |r| で降順ソート
+        correlations.sort(key=lambda t: abs(t[1]), reverse=True)
+
+        # 応答指標ラベル取得
+        idx = self._response_combo.currentIndex()
+        resp_label = _RESPONSE_ITEMS[idx][1] if idx < len(_RESPONSE_ITEMS) else response_key
+        resp_unit = _RESPONSE_ITEMS[idx][2] if idx < len(_RESPONSE_ITEMS) else ""
+
+        # 提案テキスト構築
+        lines: List[str] = []
+        lines.append(
+            f"<b>対象指標:</b> {resp_label} [{resp_unit}]　"
+            f"（完了ケース {len(response_data)}件の解析）"
+        )
+        lines.append("")
+
+        shown = 0
+        for param_key, r, p, n_pts in correlations[:5]:
+            abs_r = abs(r)
+            # 影響度評価
+            if abs_r >= 0.7:
+                strength = "強い影響"
+                strength_color = "#b71c1c"
+            elif abs_r >= 0.4:
+                strength = "中程度の影響"
+                strength_color = "#e65100"
+            else:
+                strength = "影響小（参考）"
+                strength_color = "#888"
+
+            # 変更方向の判定
+            # 応答値を小さくしたい（制振目的）ので:
+            #   r < 0 → 増やすと応答が下がる → 「増やす」方向が有効
+            #   r > 0 → 増やすと応答が上がる → 「減らす」方向が有効
+            if r < -0.1:
+                direction = "⬆ 増やす"
+                dir_color = "#1565c0"
+            elif r > 0.1:
+                direction = "⬇ 減らす"
+                dir_color = "#c62828"
+            else:
+                direction = "↔ 効果は小さい"
+                dir_color = "#888"
+
+            # 現在の平均値と推奨変更量を計算
+            values = param_data.get(param_key, [])
+            if values:
+                current_avg = np.mean(values)
+                change_20 = current_avg * 0.20
+                if r < 0:
+                    recommended = current_avg + change_20
+                    change_str = f"+20% → {recommended:.3g}"
+                else:
+                    recommended = max(0, current_avg - change_20)
+                    change_str = f"-20% → {recommended:.3g}"
+            else:
+                change_str = "（現在値不明）"
+
+            # パラメータ名を短縮表示
+            param_display = param_key
+            if "." in param_key:
+                parts_split = param_key.split(".", 1)
+                param_display = f"{parts_split[0]}<br>　└ F{parts_split[1]}"
+
+            line = (
+                f"<b style='color:{strength_color};'>⭐ {param_display}</b>　"
+                f"|r| = {abs_r:.2f}（{strength}）<br>"
+                f"　推奨: <b style='color:{dir_color};'>{direction}</b>　"
+                f"現在平均 {np.mean(values) if values else '?':.3g} → {change_str}"
+            )
+            lines.append(line)
+            shown += 1
+            if shown >= 3:
+                break
+
+        if len(correlations) > 3:
+            lines.append(
+                f"<span style='color:#888;'>（他 {len(correlations)-3} パラメータは影響が小さいか、"
+                f"データ点数不足のため省略）</span>"
+            )
+
+        lines.append("")
+        lines.append(
+            "<span style='color:#9c27b0; font-size:9px;'>"
+            "※ 提案は相関係数に基づく統計的推定です。感度解析ケース数が少ない場合は精度が低くなります。"
+            "最終的な設計判断はエンジニアが行ってください。</span>"
+        )
+
+        self._suggest_content_lbl.setText("<br>".join(lines))
+        self._suggest_content_lbl.setTextFormat(Qt.RichText)
+        self._suggest_panel.show()
 
     # ------------------------------------------------------------------
     # Analysis
@@ -381,10 +664,26 @@ class SensitivityWidget(QWidget):
         labels = [t[0] for t in top]
         r_values = [t[1] for t in top]
 
-        y_pos = range(len(labels))
-        colors = [_COLOR_POSITIVE if r > 0 else _COLOR_NEGATIVE for r in r_values]
+        # ---- UX改善（新）②: 最重要パラメータ（|r|最大）のインデックス特定 ----
+        # top は reversed (下から上) なので、最後の要素が最大|r|
+        # top_n 番目のバー（最上位）が最重要 — インデックスは len(top)-1
+        most_important_idx = len(top) - 1  # 最上位（トルネード図の一番上のバー）
 
-        bars = ax.barh(y_pos, r_values, color=colors, edgecolor="none", height=0.6)
+        y_pos = range(len(labels))
+        colors = []
+        for i, r in enumerate(r_values):
+            if i == most_important_idx:
+                colors.append("#FFD700")  # ゴールド: 最重要
+            else:
+                colors.append(_COLOR_POSITIVE if r > 0 else _COLOR_NEGATIVE)
+
+        bar_lws = [2.0 if i == most_important_idx else 0.0 for i in range(len(r_values))]
+        bars = ax.barh(
+            y_pos, r_values, color=colors,
+            edgecolor=["#b8860b" if i == most_important_idx else "none" for i in range(len(r_values))],
+            linewidth=bar_lws,
+            height=0.6,
+        )
 
         ax.set_yticks(y_pos)
         ax.set_yticklabels(labels, fontsize=8)
@@ -404,8 +703,8 @@ class SensitivityWidget(QWidget):
         ax.grid(axis="x", linestyle="--", alpha=0.3)
         ax.tick_params(labelsize=8)
 
-        # バーにr値を表示
-        for bar, r in zip(bars, r_values):
+        # バーにr値を表示 + 最重要には「⭐ 最重要」注釈を追加
+        for i, (bar, r) in enumerate(zip(bars, r_values)):
             x_pos = bar.get_width()
             ha = "left" if r >= 0 else "right"
             offset = 0.02 if r >= 0 else -0.02
@@ -413,6 +712,15 @@ class SensitivityWidget(QWidget):
                 x_pos + offset, bar.get_y() + bar.get_height() / 2,
                 f"{r:.3f}", va="center", ha=ha, fontsize=7,
             )
+            # UX改善（新）②: 最重要パラメータに「⭐ 最重要」を注釈
+            if i == most_important_idx:
+                ax.text(
+                    0, bar.get_y() + bar.get_height() / 2,
+                    "⭐ 最重要",
+                    va="center", ha="center",
+                    fontsize=7, color="#7f5000", fontweight="bold",
+                    zorder=10,
+                )
 
         # 凡例
         from matplotlib.patches import Patch
@@ -493,21 +801,45 @@ class SensitivityWidget(QWidget):
     ) -> None:
         self._stat_table.setRowCount(0)
 
-        for pk, r, p, n in correlations:
+        # UX改善（新）③: 最重要パラメータは correlations[0]（|r|でソート済み）
+        best_abs_r = abs(correlations[0][1]) if correlations else None
+
+        for row_idx, (pk, r, p, n) in enumerate(correlations):
             row = self._stat_table.rowCount()
             self._stat_table.insertRow(row)
 
-            # パラメータ名
-            self._stat_table.setItem(row, 0, QTableWidgetItem(pk))
+            is_most_important = (
+                best_abs_r is not None
+                and row_idx == 0
+                and abs(r) >= 0.01  # ほぼゼロは最重要扱いしない
+            )
+            bg_color = _QColorSens("#fff9c4") if is_most_important else None  # 薄い黄色
+
+            # パラメータ名（最重要には⭐マーク追加）
+            pk_display = f"⭐ {pk}  [最重要]" if is_most_important else pk
+            pk_item = QTableWidgetItem(pk_display)
+            if is_most_important:
+                from PySide6.QtGui import QFont as _QFontS
+                f = _QFontS()
+                f.setBold(True)
+                pk_item.setFont(f)
+                pk_item.setForeground(_QColorSens("#7f5000"))
+            if bg_color:
+                pk_item.setBackground(bg_color)
+            self._stat_table.setItem(row, 0, pk_item)
 
             # 相関係数
             r_item = QTableWidgetItem(f"{r:.4f}")
             r_item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+            if bg_color:
+                r_item.setBackground(bg_color)
             self._stat_table.setItem(row, 1, r_item)
 
             # 影響度
             abs_item = QTableWidgetItem(f"{abs(r):.4f}")
             abs_item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+            if bg_color:
+                abs_item.setBackground(bg_color)
             self._stat_table.setItem(row, 2, abs_item)
 
             # 方向
@@ -519,9 +851,13 @@ class SensitivityWidget(QWidget):
                 direction = "負（減少）"
             dir_item = QTableWidgetItem(direction)
             dir_item.setTextAlignment(Qt.AlignCenter)
+            if bg_color:
+                dir_item.setBackground(bg_color)
             self._stat_table.setItem(row, 3, dir_item)
 
             # データ点数
             n_item = QTableWidgetItem(str(n))
             n_item.setTextAlignment(Qt.AlignCenter)
+            if bg_color:
+                n_item.setBackground(bg_color)
             self._stat_table.setItem(row, 4, n_item)

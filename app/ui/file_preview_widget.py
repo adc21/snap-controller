@@ -5,6 +5,13 @@ app/ui/file_preview_widget.py
 SNAP入力ファイル (.s8i) の内容をプレビュー表示します。
 ファイル構造の確認、キーワード検索、パラメータ値の確認が可能です。
 
+UX改善（第6回③）: ファイル構造クイックジャンプバー追加。
+  ファイル読込後、主要なSNAPキーワードセクション（ELEMENT/NODE/DAMPING等）
+  へのクイックジャンプボタンを自動生成します。
+  - 存在するセクションのみボタンが表示され、クリックで先頭出現箇所に即ジャンプ
+  - ボタンには「(N行)」の出現件数バッジを表示し、モデルの規模感を把握しやすくします
+  - ファイル未読み込み時はバーを非表示にし、画面をすっきり保ちます
+
 レイアウト:
   ┌──────────────────────────────────────────┐
   │ ファイルパス: [path]  [開く] [再読込]      │
@@ -33,11 +40,13 @@ from PySide6.QtGui import (
     QTextDocument,
 )
 from PySide6.QtWidgets import (
+    QFrame,
     QHBoxLayout,
     QLabel,
     QLineEdit,
     QPlainTextEdit,
     QPushButton,
+    QScrollArea,
     QVBoxLayout,
     QWidget,
 )
@@ -136,12 +145,26 @@ class FilePreviewWidget(QWidget):
 
     fileLoaded = Signal(str)
 
+    # UX改善（第6回③）: クイックジャンプ対象セクション（アイコン, キーワード, ツールチップ）
+    _JUMP_SECTIONS = [
+        ("🏗", "ELEMENT",    "要素定義セクション（梁・柱・ブレース等）"),
+        ("📍", "NODE",       "節点定義セクション（X/Y/Z座標）"),
+        ("〰", "DAMPING",    "減衰定義セクション"),
+        ("🌊", "EARTHQUAKE", "地震波読込セクション"),
+        ("⚖", "MASS",       "質量定義セクション"),
+        ("📏", "SECTION",    "断面定義セクション"),
+        ("🔩", "MATERIAL",   "材料定義セクション"),
+        ("📤", "OUTPUT",     "出力設定セクション"),
+    ]
+
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
         self._current_path: Optional[str] = None
         self._highlighter: Optional[_S8iHighlighter] = None
         self._search_positions: list = []
         self._search_index: int = -1
+        # UX改善（第6回③）: キーワード→行番号（0ベース）のマッピング
+        self._section_line_map: dict = {}
         self._setup_ui()
 
     # ------------------------------------------------------------------
@@ -188,6 +211,9 @@ class FilePreviewWidget(QWidget):
             f"サイズ: {p.stat().st_size:,} bytes"
         )
 
+        # UX改善（第6回③）: クイックジャンプバーを更新
+        self._build_jump_bar(content)
+
         self.fileLoaded.emit(path)
         return True
 
@@ -201,6 +227,10 @@ class FilePreviewWidget(QWidget):
         self._search_edit.clear()
         self._search_positions.clear()
         self._search_index = -1
+        # UX改善（第6回③）: ジャンプバーを隠す
+        if hasattr(self, "_jump_bar_widget"):
+            self._jump_bar_widget.hide()
+        self._section_line_map.clear()
 
     def get_current_path(self) -> Optional[str]:
         return self._current_path
@@ -228,6 +258,37 @@ class FilePreviewWidget(QWidget):
         file_row.addWidget(self._path_label, stretch=1)
 
         layout.addLayout(file_row)
+
+        # --- UX改善（第6回③）: クイックジャンプバー ---
+        # ファイル読込後に存在するセクションボタンを動的に生成するコンテナ
+        self._jump_bar_widget = QWidget()
+        jump_bar_inner = QHBoxLayout(self._jump_bar_widget)
+        jump_bar_inner.setContentsMargins(0, 2, 0, 2)
+        jump_bar_inner.setSpacing(4)
+
+        jump_label = QLabel("ジャンプ:")
+        jump_label.setStyleSheet("color: gray; font-size: 11px;")
+        jump_bar_inner.addWidget(jump_label)
+
+        # ボタンを格納するスクロールエリア（ボタンが多い場合に横スクロール）
+        self._jump_scroll = QScrollArea()
+        self._jump_scroll.setWidgetResizable(True)
+        self._jump_scroll.setFixedHeight(34)
+        self._jump_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self._jump_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self._jump_scroll.setFrameShape(QFrame.NoFrame)
+
+        self._jump_btn_container = QWidget()
+        self._jump_btn_layout = QHBoxLayout(self._jump_btn_container)
+        self._jump_btn_layout.setContentsMargins(0, 0, 0, 0)
+        self._jump_btn_layout.setSpacing(4)
+        self._jump_btn_layout.addStretch()
+
+        self._jump_scroll.setWidget(self._jump_btn_container)
+        jump_bar_inner.addWidget(self._jump_scroll, stretch=1)
+
+        self._jump_bar_widget.hide()  # 初期は非表示
+        layout.addWidget(self._jump_bar_widget)
 
         # --- 検索行 ---
         search_row = QHBoxLayout()
@@ -266,6 +327,88 @@ class FilePreviewWidget(QWidget):
         self._status_label = QLabel("")
         self._status_label.setStyleSheet("color: gray; font-size: 11px;")
         layout.addWidget(self._status_label)
+
+    # ------------------------------------------------------------------
+    # UX改善（第6回③）: クイックジャンプバー
+    # ------------------------------------------------------------------
+
+    def _build_jump_bar(self, content: str) -> None:
+        """
+        UX改善（第6回③）: ファイル内容を解析してクイックジャンプボタンを構築します。
+
+        存在するセクションのみボタンを表示し、クリックすると先頭出現箇所に
+        エディタをスクロールします。ボタンには出現件数バッジも表示します。
+
+        Parameters
+        ----------
+        content : str
+            読み込んだファイル全文。
+        """
+        # 既存のボタンをクリア（stretchは残す）
+        while self._jump_btn_layout.count() > 1:
+            item = self._jump_btn_layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+
+        self._section_line_map.clear()
+        lines = content.splitlines()
+
+        # 各セクションの行番号と出現回数を収集
+        section_data: dict = {}  # keyword -> {"first_line": int, "count": int}
+        for line_no, line in enumerate(lines):
+            stripped = line.strip().upper()
+            for _icon, kw, _tip in self._JUMP_SECTIONS:
+                if stripped.startswith(kw):
+                    if kw not in section_data:
+                        section_data[kw] = {"first_line": line_no, "count": 0}
+                    section_data[kw]["count"] += 1
+
+        if not section_data:
+            self._jump_bar_widget.hide()
+            return
+
+        # 存在するセクションのみボタン生成
+        for icon, kw, tooltip in self._JUMP_SECTIONS:
+            if kw not in section_data:
+                continue
+            data = section_data[kw]
+            count = data["count"]
+            first_line = data["first_line"]
+            self._section_line_map[kw] = first_line
+
+            btn = QPushButton(f"{icon} {kw} ({count})")
+            btn.setFixedHeight(24)
+            btn.setStyleSheet(
+                "QPushButton { font-size: 10px; padding: 1px 7px; border-radius: 3px;"
+                "  border: 1px solid #90caf9; background: #e3f2fd; color: #0d47a1; }"
+                "QPushButton:hover { background: #bbdefb; }"
+            )
+            btn.setToolTip(f"{tooltip}\n行 {first_line + 1} へジャンプ（全 {count} 件）")
+            # closure で first_line をキャプチャ
+            btn.clicked.connect(
+                lambda checked=False, fl=first_line: self._jump_to_line(fl)
+            )
+            self._jump_btn_layout.insertWidget(
+                self._jump_btn_layout.count() - 1, btn
+            )
+
+        self._jump_bar_widget.show()
+
+    def _jump_to_line(self, line_no: int) -> None:
+        """
+        UX改善（第6回③）: 指定行にエディタをスクロールします。
+
+        Parameters
+        ----------
+        line_no : int
+            0ベースの行番号。
+        """
+        block = self._editor.document().findBlockByLineNumber(line_no)
+        if block.isValid():
+            cursor = self._editor.textCursor()
+            cursor.setPosition(block.position())
+            self._editor.setTextCursor(cursor)
+            self._editor.centerCursor()
 
     # ------------------------------------------------------------------
     # Search

@@ -6,6 +6,14 @@ app/ui/setup_guide_widget.py
 「何をすべきか」を一目で理解できるよう、以下4ステップを
 メインウィンドウ上部に常時表示します:
 
+UX改善（第6回④）: 推定所要時間バッジ + 依存関係の視覚化。
+  各ステップに「約X分」の推定所要時間を薄く表示し、
+  全体の所要時間感をユーザーが把握できます。
+  前提ステップが未完了の場合は「先にSTEP Xを完了してください」
+  を詳細ツールチップに加えることで、操作順序に迷わないよう誘導します。
+  また、完了ステップを超えたステップ（pending）のクリックを
+  依然として可能にしつつ、ツールチップで「推奨順序」を示します。
+
   STEP 1: SNAPパス設定
   STEP 2: モデルファイル読込
   STEP 3: ケース追加
@@ -51,13 +59,19 @@ class _StepButton(QWidget):
         label: str,
         description: str,
         parent: Optional[QWidget] = None,
+        est_time: str = "",
+        hint: str = "",
     ) -> None:
         super().__init__(parent)
         self._number = number
         self._label = label
         self._description = description
+        # UX改善（第6回④）: 推定時間・ヒントを保持
+        self._est_time = est_time
+        self._hint = hint
         self._done = False
         self._active = False
+        self._prerequisite_step: int = 0  # 未完了の前提ステップ番号（0=なし）
         self._setup_ui()
         self._update_style()
 
@@ -88,7 +102,11 @@ class _StepButton(QWidget):
         self._main_label.setFont(main_font)
         text_layout.addWidget(self._main_label)
 
-        self._desc_label = QLabel(self._description)
+        # UX改善（第6回④）: 説明と推定時間を1行で表示
+        desc_text = self._description
+        if self._est_time:
+            desc_text += f"  ⏱ {self._est_time}"
+        self._desc_label = QLabel(desc_text)
         desc_font = QFont()
         desc_font.setPointSize(7)
         self._desc_label.setFont(desc_font)
@@ -98,14 +116,30 @@ class _StepButton(QWidget):
 
         # クリック可能にする
         self.setCursor(Qt.PointingHandCursor)
-        self.setToolTip(f"STEP {self._number}: {self._label} — クリックして実行")
+        self._update_tooltip()
         self.setMinimumWidth(140)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
 
-    def set_state(self, done: bool, active: bool) -> None:
+    def set_state(
+        self, done: bool, active: bool, prerequisite_step: int = 0
+    ) -> None:
+        """
+        ステップの状態を更新します。
+
+        Parameters
+        ----------
+        done : bool
+            このステップが完了しているか。
+        active : bool
+            現在のアクティブステップか。
+        prerequisite_step : int
+            未完了の前提ステップ番号（1〜4）。0は前提なし/前提クリア済み。
+        """
         self._done = done
         self._active = active
+        self._prerequisite_step = prerequisite_step
         self._update_style()
+        self._update_tooltip()
 
     def _update_style(self) -> None:
         if self._done:
@@ -139,6 +173,35 @@ class _StepButton(QWidget):
         self._desc_label.setStyleSheet(f"color: {desc_fg};")
         self._icon_label.setStyleSheet(f"color: {fg};")
 
+    def _update_tooltip(self) -> None:
+        """
+        UX改善（第6回④）: 状態に応じたツールチップを設定します。
+
+        - 完了ステップ: 「完了済み」を明示
+        - アクティブステップ: ヒント + 推定時間を詳細表示
+        - 未着手で前提あり: 「先に STEP X を完了してください」を案内
+        - 未着手で前提なし: 通常のヒントを表示
+        """
+        parts = [f"STEP {self._number}: {self._label}"]
+        if self._done:
+            parts.append("✅ 完了済み")
+        elif self._active:
+            parts.append("▶ 今すぐ実行: クリックしてください")
+            if self._hint:
+                parts.append(f"💡 {self._hint}")
+            if self._est_time:
+                parts.append(f"⏱ 推定所要時間: {self._est_time}")
+        else:
+            if self._prerequisite_step > 0:
+                parts.append(
+                    f"⚠ 先に STEP {self._prerequisite_step} を完了してから進んでください"
+                )
+            if self._hint:
+                parts.append(f"💡 {self._hint}")
+            if self._est_time:
+                parts.append(f"⏱ 推定所要時間: {self._est_time}")
+        self.setToolTip("\n".join(parts))
+
     def mousePressEvent(self, event) -> None:
         if event.button() == Qt.LeftButton and not self._done:
             self.clicked.emit()
@@ -163,6 +226,14 @@ class SetupGuideWidget(QFrame):
         (2, "モデル読込",     ".s8i ファイルを選択"),
         (3, "ケース追加",     "ダンパー条件を定義"),
         (4, "解析実行",       "SNAP を起動して計算"),
+    ]
+
+    # UX改善（第6回④）: 各ステップの推定所要時間とヒント
+    _STEP_META = [
+        {"time": "約1分",  "hint": "SNAP.exe が入ったフォルダを選ぶだけで完了します"},
+        {"time": "約1分",  "hint": ".s8i ファイルをドラッグ&ドロップするか、ファイル選択ダイアログで指定します"},
+        {"time": "約5分",  "hint": "ダンパー種別・パラメータ・基数を設定した解析ケースを1件以上追加します"},
+        {"time": "約2〜10分", "hint": "ケースを選んで実行ボタンを押すと SNAP が自動起動します（解析時間はモデル規模による）"},
     ]
 
     def __init__(self, parent: Optional[QWidget] = None) -> None:
@@ -190,7 +261,13 @@ class SetupGuideWidget(QFrame):
         row.setSpacing(4)
 
         for i, (num, label, desc) in enumerate(self._STEPS):
-            btn = _StepButton(num, label, desc)
+            # UX改善（第6回④）: 推定時間・ヒントをコンストラクタに渡す
+            meta = self._STEP_META[i] if i < len(self._STEP_META) else {}
+            btn = _StepButton(
+                num, label, desc,
+                est_time=meta.get("time", ""),
+                hint=meta.get("hint", ""),
+            )
             step_num = num  # capture for lambda
             btn.clicked.connect(lambda n=step_num: self.stepClicked.emit(n))
             self._step_widgets.append(btn)
@@ -261,7 +338,18 @@ class SetupGuideWidget(QFrame):
         for i, btn in enumerate(self._step_widgets):
             done = self._completed[i]
             active = (i == first_incomplete)
-            btn.set_state(done=done, active=active)
+
+            # UX改善（第6回④）: 前提ステップが未完了か判定
+            # 自分より前のステップで最後の未完了ステップ番号を前提として渡す
+            prerequisite_step = 0
+            if not done and not active:
+                # 自分より前に未完了ステップがある場合、その番号（1ベース）を設定
+                for j in range(i):
+                    if not self._completed[j]:
+                        prerequisite_step = j + 1  # 1ベース
+                        break
+
+            btn.set_state(done=done, active=active, prerequisite_step=prerequisite_step)
 
     def _on_dismiss(self) -> None:
         """ガイドを一時的に非表示にします（このセッション限り）。"""

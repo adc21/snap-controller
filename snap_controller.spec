@@ -136,6 +136,9 @@ a = Analysis(
             'app.ui.snap_params',
             'app.ui.step_nav_footer',
             'app.ui.theme',
+            # k-DB 連携（新規追加）
+            'app.models.kdb_reader',
+            'app.ui.kdb_browser_dialog',
         ]
     ),
     hookspath=[],
@@ -185,5 +188,5 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    # icon='assets/icon.ico',  # アイコンファイルがある場合
+    icon='assets/icon.ico',
 )

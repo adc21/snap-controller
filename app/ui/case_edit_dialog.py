@@ -42,6 +42,27 @@ app/ui/case_edit_dialog.py
   - ダンパー定義タブで行を選択すると、そのパラメータの工学的説明・典型値・
     設計上の注意点を下部のヒントパネルに表示します。
   - 「Ce」「α」などSNAP特有の記号の意味が即座に確認でき、入力ミスを防ぎます。
+
+  [UX改善（第9回⑤）: 配置計画タブのフロア別配置ビジュアルバー追加]
+  - 配置計画タブのテーブル上部にフロア別ダンパー配置数をバー形式で可視化するパネルを追加。
+  - 各フロアの合計基数を横棒グラフ（QProgressBar風）で表示し、「F1: ██ 2本」と一覧表示。
+  - SpinBoxの値が変わるたびにリアルタイム更新し、配置が偏っているフロアを即座に把握できます。
+  - `_placement_visual_frame` QFrame と `_rebuild_placement_visual()` メソッドを追加。
+
+  [UX改善（新③）: スマートケース名自動生成ボタン追加]
+  - ケース名フィールドの右に「🔖 名前を自動生成」ボタンを追加します。
+  - 設定されているダンパーパラメータの変更内容から、意味のある説明的な名前を自動生成します。
+  - 例: 「OIL_Ce500_α0.40」「STEEL_Fy3000_K50000」「RD配置×2本」など
+  - これにより「Case-01」のような無意味な名前ではなく、後から内容がわかる名前が付けられます。
+
+  [UX改善（第11回①）: 「📋 変更差分サマリー」タブ追加]
+  - ダイアログに第5のタブ「📋 変更差分」を追加します。
+  - 保存ボタンを押す前に「どのパラメータを何から何に変えたか」を一覧できます。
+  - 変更カテゴリ（基本設定/ダンパー定義/配置計画）、フィールド名、変更前値→変更後値、
+    変化率（%）をテーブル形式で表示します。
+  - 変更がない場合は「まだ変更がありません」のプレースホルダーを表示します。
+  - タブに切り替えると自動で最新状態に更新されるため、常に正確な差分を確認できます。
+  - `_make_diff_tab()` と `_update_diff_tab()` メソッドを追加。
 """
 
 from __future__ import annotations
@@ -62,6 +83,7 @@ from PySide6.QtWidgets import (
     QHeaderView,
     QLabel,
     QLineEdit,
+    QMessageBox,
     QPushButton,
     QScrollArea,
     QSizePolicy,
@@ -163,6 +185,10 @@ class CaseEditDialog(QDialog):
         self._rd_qty_spins: List[QSpinBox] = []
         self._rd_def_combos: List[QComboBox] = []
 
+        # 追加ダンパー定義（コピーによる新規作成）
+        self._extra_def_tables: Dict[str, QTableWidget] = {}   # (後方互換用、空)
+        self._extra_defs_meta: List[Dict] = []                  # (後方互換用、空)
+
         self.setWindowTitle(f"ケース設定 — {case.name}")
         self.setMinimumWidth(820)
         self.setMinimumHeight(620)
@@ -260,6 +286,10 @@ class CaseEditDialog(QDialog):
         self._tabs.addTab(self._make_def_tab(),         "🔧 ダンパー定義")
         self._tabs.addTab(self._make_placement_tab(),  "📐 配置計画")
         self._tabs.addTab(self._make_memo_tab(),        "📝 メモ")
+        self._tabs.addTab(self._make_diff_tab(),        "📋 変更差分")
+
+        # タブを切り替えたときに変更差分タブを自動更新
+        self._tabs.currentChanged.connect(self._on_tab_changed)
 
         # ---- ボタン ----
         buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
@@ -297,7 +327,32 @@ class CaseEditDialog(QDialog):
         self._name_edit.textChanged.connect(self._on_name_edit_changed)
         # UX改善（新）: ケース名変更時にタブバッジも更新
         self._name_edit.textChanged.connect(lambda _: self._update_banner())
-        form.addRow("ケース名:", self._name_edit)
+
+        # UX改善（新③）: 「🔖 名前を自動生成」ボタンをケース名フィールドの右に配置
+        _name_row_widget = QWidget()
+        _name_row_layout = QHBoxLayout(_name_row_widget)
+        _name_row_layout.setContentsMargins(0, 0, 0, 0)
+        _name_row_layout.setSpacing(4)
+        _name_row_layout.addWidget(self._name_edit)
+        self._btn_gen_name = QPushButton("🔖 名前を自動生成")
+        self._btn_gen_name.setFixedWidth(140)
+        self._btn_gen_name.setToolTip(
+            "設定したダンパーパラメータの内容から、後から見てわかりやすいケース名を自動生成します。\n"
+            "例: 「OIL_Ce500_α0.40」「STEEL_Fy3000」「RD基数×2」など\n"
+            "（現在のテキストボックスの内容は上書きされます）"
+        )
+        self._btn_gen_name.setStyleSheet(
+            "QPushButton {"
+            "  font-size: 10px; padding: 3px 8px;"
+            "  border: 1px solid #90caf9; border-radius: 3px;"
+            "  background-color: #e3f2fd; color: #1565c0;"
+            "}"
+            "QPushButton:hover { background-color: #bbdefb; }"
+            "QPushButton:pressed { background-color: #90caf9; }"
+        )
+        self._btn_gen_name.clicked.connect(self._on_generate_smart_name)
+        _name_row_layout.addWidget(self._btn_gen_name)
+        form.addRow("ケース名:", _name_row_widget)
 
         out_row = QHBoxLayout()
         self._out_edit = QLineEdit()
@@ -365,6 +420,20 @@ class CaseEditDialog(QDialog):
             grp.setTitle(f"  {_type_badge(ddef.keyword)}  {ddef.display_label}")
             grp_layout = QVBoxLayout(grp)
 
+            # ボタンバー（k-DB 選択）
+            btn_bar = QHBoxLayout()
+            kdb_btn = QPushButton("🗄 k-DB から選択")
+            kdb_btn.setToolTip("k-DB（構造部材データベース）からダンパーを選択してパラメータを自動入力します")
+            kdb_btn.setStyleSheet(
+                "QPushButton { background: #E3F2FD; color: #1565C0; border: 1px solid #90CAF9;"
+                " padding: 3px 10px; border-radius: 3px; font-size: 12px; }"
+                "QPushButton:hover { background: #BBDEFB; }"
+            )
+            kdb_btn.clicked.connect(lambda checked=False, d=ddef: self._open_kdb_browser(d))
+            btn_bar.addWidget(kdb_btn)
+            btn_bar.addStretch()
+            grp_layout.addLayout(btn_bar)
+
             tbl = self._make_damper_def_table(ddef)
             self._damper_def_tables[ddef.name] = tbl
             grp_layout.addWidget(tbl)
@@ -373,6 +442,56 @@ class CaseEditDialog(QDialog):
         content_layout.addStretch()
         scroll.setWidget(content)
         outer_layout.addWidget(scroll)
+
+        # ── UX改善（第12回①）: ダンパーパラメータ妥当性チェックバー ──────────────────
+        # テーブルの値が変わるたびに「✅ すべて正常」「⚠ 要確認」「❌ 不正値あり」を
+        # リアルタイム表示し、保存前にミスを発見できるようにします。
+        self._param_validity_bar = QFrame()
+        self._param_validity_bar.setFrameShape(QFrame.NoFrame)
+        self._param_validity_bar.setStyleSheet(
+            "QFrame {"
+            "  background-color: #e8f5e9;"
+            "  border: 1px solid #a5d6a7;"
+            "  border-radius: 4px;"
+            "  margin: 2px 0px;"
+            "}"
+        )
+        _validity_row = QHBoxLayout(self._param_validity_bar)
+        _validity_row.setContentsMargins(10, 4, 10, 4)
+        _validity_row.setSpacing(6)
+
+        self._validity_icon_lbl = QLabel("✅")
+        self._validity_icon_lbl.setStyleSheet(
+            "font-size: 14px; background: transparent; border: none;"
+        )
+        self._validity_icon_lbl.setFixedWidth(20)
+        _validity_row.addWidget(self._validity_icon_lbl)
+
+        self._validity_text_lbl = QLabel("すべてのパラメータが正常です（変更なし）")
+        self._validity_text_lbl.setStyleSheet(
+            "color: #1b5e20; font-size: 10px; background: transparent; border: none;"
+        )
+        self._validity_text_lbl.setWordWrap(False)
+        _validity_row.addWidget(self._validity_text_lbl, stretch=1)
+
+        # 「問題のある行にジャンプ」ボタン（問題あり時のみ表示）
+        self._validity_jump_btn = QPushButton("⬆ 問題の行を確認")
+        self._validity_jump_btn.setFixedHeight(20)
+        self._validity_jump_btn.setStyleSheet(
+            "QPushButton {"
+            "  font-size: 10px; padding: 1px 8px;"
+            "  border: 1px solid #ef9a9a; border-radius: 3px;"
+            "  background: #ffebee; color: #c62828;"
+            "}"
+            "QPushButton:hover { background: #ffcdd2; }"
+        )
+        self._validity_jump_btn.hide()
+        self._validity_jump_btn.clicked.connect(self._jump_to_invalid_param)
+        _validity_row.addWidget(self._validity_jump_btn)
+
+        # 初期状態では非表示（変更が入るまで出さない）
+        self._param_validity_bar.hide()
+        outer_layout.addWidget(self._param_validity_bar)
 
         # UX改善（新②）: パラメータ説明ヒントパネル（行選択時に更新）
         self._def_hint_panel = QFrame()
@@ -469,6 +588,105 @@ class CaseEditDialog(QDialog):
             )
             self._def_hint_label.setTextFormat(Qt.RichText)
 
+    def _open_kdb_browser(self, ddef) -> None:
+        """k-DB ブラウザを開き、選択したパラメータをダンパー定義テーブルに反映します。"""
+        from app.ui.kdb_browser_dialog import KdbBrowserDialog
+
+        # k-DB パスの決定（設定ファイル → デフォルト）
+        kdb_dir = r"C:\Program Files (x86)\k-DB"
+        try:
+            from app.models.s8i_parser import get_kdb_dir_from_settings
+            if get_kdb_dir_from_settings:
+                kdb_dir = get_kdb_dir_from_settings() or kdb_dir
+        except (ImportError, Exception):
+            pass
+
+        dlg = KdbBrowserDialog(
+            self,
+            kdb_dir=kdb_dir,
+            filter_keyword=ddef.keyword,
+        )
+
+        # exec() でモーダル表示し、Accepted なら結果を取得して反映
+        result = dlg.exec()
+        if result != QDialog.Accepted:
+            return
+
+        snap_kw = dlg.applied_snap_keyword()
+        snap_fields = dlg.applied_snap_fields()
+        if not snap_kw or not snap_fields:
+            return
+
+        self._apply_kdb_params(ddef, snap_kw, snap_fields)
+
+    def _apply_kdb_params(self, ddef, snap_kw: str, snap_fields: dict) -> None:
+        """k-DB から選択したパラメータをダンパー定義テーブルに書き込みます。"""
+        # 元定義テーブルと追加定義テーブルの両方を検索
+        tbl = self._damper_def_tables.get(ddef.name)
+        if tbl is None:
+            tbl = self._extra_def_tables.get(ddef.name)
+        if tbl is None:
+            QMessageBox.warning(
+                self, "適用エラー",
+                f"ダンパー定義 '{ddef.name}' のテーブルが見つかりません。"
+            )
+            return
+
+        field_labels = _get_damper_field_labels(snap_kw)
+        field_units  = _get_damper_field_units(snap_kw)
+
+        applied_count = 0
+
+        # snap_fields の各フィールドを書き込む（field_idx は 1-indexed）
+        for field_idx, val in snap_fields.items():
+            row_idx = field_idx - 1  # 0-indexed 行番号
+
+            # 必要なら行を追加（フィールドが .s8i 定義より多い場合）
+            while tbl.rowCount() <= row_idx:
+                new_row = tbl.rowCount()
+                new_fidx = new_row + 1  # 1-indexed
+                tbl.insertRow(new_row)
+
+                no_item = QTableWidgetItem(str(new_fidx))
+                no_item.setFlags(no_item.flags() & ~Qt.ItemIsEditable)
+                no_item.setTextAlignment(Qt.AlignCenter)
+                tbl.setItem(new_row, _DEF_COL_IDX, no_item)
+
+                lbl_item = QTableWidgetItem(field_labels.get(new_fidx, ""))
+                lbl_item.setFlags(lbl_item.flags() & ~Qt.ItemIsEditable)
+                tbl.setItem(new_row, _DEF_COL_LABEL, lbl_item)
+
+                orig_item = QTableWidgetItem("")
+                orig_item.setFlags(orig_item.flags() & ~Qt.ItemIsEditable)
+                orig_item.setForeground(QColor("#888888"))
+                tbl.setItem(new_row, _DEF_COL_ORIG, orig_item)
+
+                empty_val = QTableWidgetItem("")
+                tbl.setItem(new_row, _DEF_COL_VALUE, empty_val)
+
+                unit_item = QTableWidgetItem(field_units.get(new_fidx, ""))
+                unit_item.setFlags(unit_item.flags() & ~Qt.ItemIsEditable)
+                tbl.setItem(new_row, _DEF_COL_UNIT, unit_item)
+
+            # 値を書き込む
+            val_item = tbl.item(row_idx, _DEF_COL_VALUE)
+            if val_item is None:
+                val_item = QTableWidgetItem()
+                tbl.setItem(row_idx, _DEF_COL_VALUE, val_item)
+            if isinstance(val, str):
+                val_item.setText(val)
+            elif isinstance(val, float):
+                val_item.setText(f"{val:.6g}")
+            else:
+                val_item.setText(str(val))
+            applied_count += 1
+
+        # 行が増えた場合は表示高さも更新
+        tbl.setMaximumHeight(min(34 * tbl.rowCount() + 30, 500))
+
+        # 変更バナー更新
+        self._update_banner()
+
     def _make_damper_def_table(self, ddef: DamperDefinition) -> QTableWidget:
         """ダンパー定義の値を編集するテーブルを作成します。"""
         field_labels = _get_damper_field_labels(ddef.keyword)
@@ -538,6 +756,184 @@ class CaseEditDialog(QDialog):
                 if ci:
                     ci.setBackground(bg)
         self._update_banner()
+        # UX改善（第12回①）: パラメータ妥当性をリアルタイムチェック
+        self._check_param_validity()
+
+    def _check_param_validity(self) -> None:
+        """
+        UX改善（第12回①）: ダンパー定義テーブル内の全「現在の値」セルを検証し、
+        妥当性チェックバーを更新します。
+
+        検証内容:
+        - 空文字列 → ❌ 不正値
+        - 数値に変換できない値（文字列など）→ ❌ 不正値
+        - 数値だが 0 以下（減衰係数・降伏荷重等は通常正値）→ ⚠ 要確認
+        - 全て正常 → ✅ 表示
+
+        問題がなく変更もない場合はバーを非表示にします。
+        """
+        if not hasattr(self, "_param_validity_bar"):
+            return
+
+        # 全テーブルを検査
+        all_tables: list = []
+        for tbl in self._damper_def_tables.values():
+            all_tables.append(tbl)
+        for tbl in self._extra_def_tables.values():
+            all_tables.append(tbl)
+
+        # 変更があるか確認
+        any_changed = False
+        errors: list = []    # ❌ 不正値
+        warnings: list = []  # ⚠ 要確認（0以下）
+
+        for tbl in all_tables:
+            for r in range(tbl.rowCount()):
+                val_item = tbl.item(r, _DEF_COL_VALUE)
+                orig_item = tbl.item(r, _DEF_COL_ORIG)
+                if val_item is None:
+                    continue
+                raw = val_item.text().strip()
+                orig_raw = orig_item.text().strip() if orig_item else raw
+
+                # 変更があるか
+                if raw != orig_raw:
+                    any_changed = True
+
+                # 空文字チェック（元値も空の場合はスキップ＝元から空欄のフィールド）
+                if raw == "":
+                    if orig_raw == "":
+                        continue  # 元から空欄のフィールドはエラー対象外
+                    label_item = tbl.item(r, _DEF_COL_LABEL)
+                    label = label_item.text() if label_item else f"行{r+1}"
+                    errors.append(f"{label}: 空欄")
+                    continue
+
+                # 数値変換チェック（型番・名称など文字列フィールドはスキップ）
+                try:
+                    num = float(raw)
+                except ValueError:
+                    # 元の値も数値でなければ文字列フィールドとみなしスキップ
+                    is_orig_str = True
+                    if orig_raw:
+                        try:
+                            float(orig_raw)
+                            is_orig_str = False
+                        except ValueError:
+                            is_orig_str = True
+                    if is_orig_str:
+                        continue  # 文字列フィールド → 数値チェック対象外
+                    label_item = tbl.item(r, _DEF_COL_LABEL)
+                    label = label_item.text() if label_item else f"行{r+1}"
+                    errors.append(f"{label}: 「{raw[:8]}」は数値ではありません")
+                    continue
+
+                # 0以下チェック（0以下になると解析が発散しやすい）
+                # ただし変更がない行は警告対象外
+                if num <= 0 and raw != orig_raw:
+                    label_item = tbl.item(r, _DEF_COL_LABEL)
+                    label = label_item.text() if label_item else f"行{r+1}"
+                    warnings.append(f"{label} = {raw}")
+
+        # 変更がなければバーを非表示
+        if not any_changed:
+            self._param_validity_bar.hide()
+            return
+
+        # バーを表示してメッセージ更新
+        self._param_validity_bar.show()
+        if errors:
+            # ❌ 不正値あり
+            msg = "不正値あり: " + "、".join(errors[:2])
+            if len(errors) > 2:
+                msg += f" 他{len(errors)-2}件"
+            self._validity_icon_lbl.setText("❌")
+            self._validity_text_lbl.setText(msg)
+            self._param_validity_bar.setStyleSheet(
+                "QFrame {"
+                "  background-color: #ffebee;"
+                "  border: 1px solid #ef9a9a;"
+                "  border-radius: 4px; margin: 2px 0px;"
+                "}"
+            )
+            self._validity_text_lbl.setStyleSheet(
+                "color: #b71c1c; font-size: 10px; background: transparent; border: none;"
+            )
+            self._validity_jump_btn.show()
+        elif warnings:
+            # ⚠ 0以下の値あり
+            msg = "要確認: " + "、".join(warnings[:2])
+            if len(warnings) > 2:
+                msg += f" 他{len(warnings)-2}件（0以下の値は解析が不安定になる可能性があります）"
+            else:
+                msg += "（0以下の値は解析が不安定になる可能性があります）"
+            self._validity_icon_lbl.setText("⚠")
+            self._validity_text_lbl.setText(msg)
+            self._param_validity_bar.setStyleSheet(
+                "QFrame {"
+                "  background-color: #fff8e1;"
+                "  border: 1px solid #ffca28;"
+                "  border-radius: 4px; margin: 2px 0px;"
+                "}"
+            )
+            self._validity_text_lbl.setStyleSheet(
+                "color: #e65100; font-size: 10px; background: transparent; border: none;"
+            )
+            self._validity_jump_btn.hide()
+        else:
+            # ✅ 全て正常
+            n_changed = sum(
+                1 for tbl in all_tables
+                for r in range(tbl.rowCount())
+                if (tbl.item(r, _DEF_COL_VALUE) and tbl.item(r, _DEF_COL_ORIG)
+                    and tbl.item(r, _DEF_COL_VALUE).text().strip()
+                    != tbl.item(r, _DEF_COL_ORIG).text().strip())
+            )
+            self._validity_icon_lbl.setText("✅")
+            self._validity_text_lbl.setText(
+                f"すべてのパラメータが正常です（{n_changed}件変更済み）"
+            )
+            self._param_validity_bar.setStyleSheet(
+                "QFrame {"
+                "  background-color: #e8f5e9;"
+                "  border: 1px solid #a5d6a7;"
+                "  border-radius: 4px; margin: 2px 0px;"
+                "}"
+            )
+            self._validity_text_lbl.setStyleSheet(
+                "color: #1b5e20; font-size: 10px; background: transparent; border: none;"
+            )
+            self._validity_jump_btn.hide()
+
+    def _jump_to_invalid_param(self) -> None:
+        """
+        UX改善（第12回①）: 不正値のある行にスクロール・フォーカスします。
+        問題のある最初のテーブル行を選択状態にします。
+        """
+        if not hasattr(self, "_damper_def_tables"):
+            return
+        all_tables: list = list(self._damper_def_tables.values()) + list(
+            self._extra_def_tables.values()
+        )
+        for tbl in all_tables:
+            for r in range(tbl.rowCount()):
+                val_item = tbl.item(r, _DEF_COL_VALUE)
+                if val_item is None:
+                    continue
+                raw = val_item.text().strip()
+                if raw == "":
+                    tbl.setCurrentCell(r, _DEF_COL_VALUE)
+                    tbl.scrollToItem(val_item)
+                    # ダンパー定義タブに切り替え
+                    self._tabs.setCurrentIndex(1)
+                    return
+                try:
+                    float(raw)
+                except ValueError:
+                    tbl.setCurrentCell(r, _DEF_COL_VALUE)
+                    tbl.scrollToItem(val_item)
+                    self._tabs.setCurrentIndex(1)
+                    return
 
     # ────── Tab 3: 配置計画 ──────────────────
 
@@ -563,6 +959,34 @@ class CaseEditDialog(QDialog):
         )
         desc.setWordWrap(True)
         layout.addWidget(desc)
+
+        # ---- UX改善（第9回⑤）: フロア別ダンパー配置ビジュアルバーパネル ----
+        # SpinBox の値から各フロア（z_grid）の合計基数を集計してバー形式で表示します。
+        # RD 定義が読み込まれると _rebuild_placement_visual() で内容が構築されます。
+        self._placement_visual_frame = QFrame()
+        self._placement_visual_frame.setFrameShape(QFrame.StyledPanel)
+        self._placement_visual_frame.setStyleSheet(
+            "QFrame {"
+            "  background-color: palette(window);"
+            "  border: 1px solid palette(mid);"
+            "  border-radius: 4px;"
+            "}"
+        )
+        self._placement_visual_frame.setMaximumHeight(72)
+        _pv_outer = QHBoxLayout(self._placement_visual_frame)
+        _pv_outer.setContentsMargins(8, 4, 8, 4)
+        _pv_outer.setSpacing(4)
+
+        _pv_title = QLabel("📊 フロア別配置:")
+        _pv_title.setStyleSheet("font-size: 10px; color: palette(text);")
+        _pv_title.setFixedWidth(90)
+        _pv_outer.addWidget(_pv_title)
+
+        self._placement_visual_content = QHBoxLayout()
+        self._placement_visual_content.setSpacing(12)
+        _pv_outer.addLayout(self._placement_visual_content, stretch=1)
+
+        layout.addWidget(self._placement_visual_frame)
 
         # スプリッター（上: テーブル / 下: ディテールパネル）
         splitter = QSplitter(Qt.Vertical)
@@ -638,8 +1062,11 @@ class CaseEditDialog(QDialog):
             self._rd_table.setItem(0, _RD_COL_NAME, item)
             return
 
-        # 利用可能なダンパー定義名リスト（ComboBox 用）
-        def_names = [d.name for d in self._s8i.damper_defs] if self._s8i else []
+        # 利用可能なダンパー定義名リスト（元の定義 ＋ 追加定義）
+        def_names = (
+            [d.name for d in self._s8i.damper_defs]
+            + [m["name"] for m in self._extra_defs_meta]
+        ) if self._s8i else []
 
         for row, elem in enumerate(self._s8i.damper_elements):
             self._rd_table.insertRow(row)
@@ -701,6 +1128,8 @@ class CaseEditDialog(QDialog):
             self._rd_table.setItem(row, _RD_COL_MARK, mark_item)
 
         self._rd_table.resizeRowsToContents()
+        # UX改善（第9回⑤）: テーブル初期化後にフロア別配置ビジュアルバーを更新
+        self._rebuild_placement_visual()
 
     # ────── Tab 4: メモ ──────────────────────
 
@@ -724,6 +1153,162 @@ class CaseEditDialog(QDialog):
         )
         layout.addWidget(self._notes_edit)
         return w
+
+    # ────── Tab 5: 変更差分サマリー ──────────
+
+    def _make_diff_tab(self) -> QWidget:
+        """
+        UX改善（第11回①）: 変更差分サマリータブ。
+        保存前に全変更点をテーブル形式で一覧表示します。
+        """
+        w = QWidget()
+        outer = QVBoxLayout(w)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+
+        # ガイドバナー
+        outer.addWidget(self._make_tab_guide_banner(
+            "📋",
+            "変更した全パラメータを一覧で確認できます。"
+            "保存する前に意図した変更になっているか最終チェックしましょう。"
+            "変更がない場合は「まだ変更がありません」と表示されます。",
+            bg="#e0f2f1", border="#26a69a", text_color="#004d40",
+        ))
+
+        # プレースホルダーラベル（変更なし時）
+        self._diff_empty_lbl = QLabel("📋  まだ変更がありません\n（ダンパー定義・配置計画・基本設定を変更すると、ここに差分が表示されます）")
+        self._diff_empty_lbl.setAlignment(Qt.AlignCenter)
+        self._diff_empty_lbl.setStyleSheet("color: #888; font-size: 13px; padding: 24px;")
+        self._diff_empty_lbl.setWordWrap(True)
+
+        # 変更差分テーブル
+        self._diff_table = QTableWidget(0, 5)
+        self._diff_table.setHorizontalHeaderLabels(["カテゴリ", "定義/要素", "フィールド", "変更前", "変更後"])
+        self._diff_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        self._diff_table.verticalHeader().setVisible(False)
+        self._diff_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self._diff_table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self._diff_table.setAlternatingRowColors(True)
+        self._diff_table.setStyleSheet("QTableWidget { font-size: 12px; }")
+
+        # 変更件数ラベル
+        self._diff_count_lbl = QLabel()
+        self._diff_count_lbl.setStyleSheet("color: #555; font-size: 11px; padding: 4px 8px;")
+
+        inner = QWidget()
+        inner_layout = QVBoxLayout(inner)
+        inner_layout.setContentsMargins(8, 4, 8, 8)
+        inner_layout.addWidget(self._diff_count_lbl)
+        inner_layout.addWidget(self._diff_empty_lbl)
+        inner_layout.addWidget(self._diff_table)
+
+        outer.addWidget(inner)
+        return w
+
+    def _update_diff_tab(self) -> None:
+        """
+        UX改善（第11回①）: 変更差分タブの内容を最新状態に更新します。
+        """
+        if not hasattr(self, "_diff_table"):
+            return
+
+        rows: List[tuple] = []  # (category, def_name, field, orig, current, pct)
+
+        # ── 基本設定の変更 ──
+        if hasattr(self, "_name_edit"):
+            new_name = self._name_edit.text().strip()
+            if new_name != self._orig_name:
+                rows.append(("⚙ 基本設定", "—", "ケース名", self._orig_name, new_name, None))
+        if hasattr(self, "_out_edit"):
+            new_out = self._out_edit.text().strip()
+            if new_out != self._orig_output_dir:
+                rows.append(("⚙ 基本設定", "—", "出力ディレクトリ", self._orig_output_dir or "（未設定）", new_out or "（未設定）", None))
+
+        # ── ダンパー定義の変更 ──
+        for ddef in (self._s8i.damper_defs if self._s8i else []):
+            tbl = self._damper_def_tables.get(ddef.name)
+            if not tbl:
+                continue
+            fl = _get_damper_field_labels(ddef.keyword)
+            for r in range(tbl.rowCount()):
+                vi = tbl.item(r, _DEF_COL_VALUE)
+                oi = tbl.item(r, _DEF_COL_ORIG)
+                if vi and oi and vi.text().strip() != oi.text().strip():
+                    field_idx = r + 1
+                    label = fl.get(field_idx, f"F{field_idx}")
+                    orig_v = oi.text().strip()
+                    new_v  = vi.text().strip()
+                    pct: Optional[float] = None
+                    try:
+                        o_f, n_f = float(orig_v), float(new_v)
+                        if o_f != 0:
+                            pct = (n_f - o_f) / abs(o_f) * 100.0
+                    except (ValueError, ZeroDivisionError):
+                        pass
+                    rows.append(("🔧 ダンパー定義", ddef.name, label, orig_v, new_v, pct))
+
+        # ── 配置計画の変更 ──
+        if self._s8i:
+            for i, elem in enumerate(self._s8i.damper_elements):
+                if i < len(self._rd_qty_spins):
+                    new_qty = self._rd_qty_spins[i].value()
+                    if new_qty != elem.quantity:
+                        pct_qty = (new_qty - elem.quantity) / max(elem.quantity, 1) * 100.0
+                        rows.append(("📐 配置計画", elem.name, "基数（倍数）",
+                                     str(elem.quantity), str(new_qty), pct_qty))
+                if i < len(self._rd_def_combos):
+                    new_def = self._rd_def_combos[i].currentText()
+                    if new_def != elem.damper_def_name:
+                        rows.append(("📐 配置計画", elem.name, "装置定義",
+                                     elem.damper_def_name, new_def, None))
+
+        # テーブルを書き換え
+        self._diff_table.setRowCount(len(rows))
+        for r_idx, (cat, def_name, field, orig, new_val, pct) in enumerate(rows):
+            # 変化率テキスト付き「変更後」表示
+            if pct is not None:
+                sign = "+" if pct >= 0 else ""
+                pct_str = f"  ({sign}{pct:.1f}%)"
+                is_improvement = pct < 0  # 応答低減方向
+            else:
+                pct_str = ""
+                is_improvement = None
+
+            def _make_item(text: str, fg: Optional[QColor] = None) -> QTableWidgetItem:
+                item = QTableWidgetItem(text)
+                item.setFlags(Qt.ItemIsSelectable | Qt.ItemIsEnabled)
+                if fg:
+                    item.setForeground(fg)
+                return item
+
+            self._diff_table.setItem(r_idx, 0, _make_item(cat))
+            self._diff_table.setItem(r_idx, 1, _make_item(def_name))
+            self._diff_table.setItem(r_idx, 2, _make_item(field))
+            # 変更前セル（薄い赤）
+            orig_item = _make_item(orig, QColor("#c62828"))
+            orig_item.setBackground(QColor("#fff8f8"))
+            self._diff_table.setItem(r_idx, 3, orig_item)
+            # 変更後セル（変化率付き、薄い緑）
+            new_item = _make_item(f"{new_val}{pct_str}", QColor("#1b5e20"))
+            new_item.setBackground(QColor("#f1f8e9"))
+            self._diff_table.setItem(r_idx, 4, new_item)
+
+        # 件数ラベルと可視性を更新
+        if rows:
+            self._diff_count_lbl.setText(f"変更件数: {len(rows)} 件")
+            self._diff_empty_lbl.hide()
+            self._diff_table.show()
+            self._diff_count_lbl.show()
+        else:
+            self._diff_count_lbl.hide()
+            self._diff_empty_lbl.show()
+            self._diff_table.hide()
+
+    def _on_tab_changed(self, index: int) -> None:
+        """タブ切り替え時に変更差分タブを自動更新します。"""
+        # index 4 = 「📋 変更差分」タブ
+        if index == 4:
+            self._update_diff_tab()
 
     # ──────────────────────────────────────────
     # ロード / 保存
@@ -822,6 +1407,111 @@ class CaseEditDialog(QDialog):
             idx += 1
         return f"{base}-{idx:02d}"
 
+    def _on_generate_smart_name(self) -> None:
+        """
+        UX改善（新③）: 「🔖 名前を自動生成」ボタン押下ハンドラ。
+
+        現在のダンパーパラメータ変更・配置計画変更の内容を読み取り、
+        意味のある説明的なケース名を生成してケース名フィールドに設定します。
+        """
+        name = self._build_smart_case_name()
+        self._name_edit.setText(name)
+
+    def _build_smart_case_name(self) -> str:
+        """
+        UX改善（新③）: ダンパーパラメータから説明的なケース名を生成します。
+
+        変更されているダンパーパラメータ（Ce、Fy、α等）を読み取り、
+        「DVOD_Ce500_α0.40」などの意味のある名前を生成します。
+
+        Returns
+        -------
+        str
+            生成されたケース名（重複しない連番付き）。
+        """
+        # ダンパー定義の変更を読み取る
+        keyword_abbrev = {
+            "DVOD": "OIL", "DSD": "STEEL", "DVHY": "HYST",
+            "DVBI": "BILIN", "DVSL": "SLIDE", "DVFR": "FRIC",
+            "DVTF": "VE", "DVMS": "TMD",
+        }
+        # フィールドごとの短い表示名（DVOD: {1: "Ce", 2: "α"} etc.）
+        field_abbrev = {
+            "DVOD": {1: "Ce", 2: "α", 3: "Fmax"},
+            "DSD":  {1: "Fy", 2: "K", 3: "Kp"},
+            "DVHY": {1: "Fy", 2: "K", 3: "Kp"},
+            "DVBI": {1: "Fy", 2: "K", 3: "dy"},
+            "DVFR": {1: "μ", 2: "N"},
+            "DVTF": {1: "Kv", 2: "cv"},
+            "DVMS": {1: "m", 2: "k"},
+        }
+
+        parts: List[str] = []
+
+        # ── ダンパー定義タブで変更されている値を収集 ──
+        if self._s8i and self._damper_def_tables:
+            for ddef in self._s8i.damper_defs:
+                tbl = self._damper_def_tables.get(ddef.name)
+                if not tbl:
+                    continue
+                kw = ddef.keyword
+                abbrevs = field_abbrev.get(kw, {})
+                type_label = keyword_abbrev.get(kw, kw)
+                changed_fields: List[str] = []
+                for r in range(tbl.rowCount()):
+                    vi = tbl.item(r, _DEF_COL_VALUE)
+                    oi = tbl.item(r, _DEF_COL_ORIG)
+                    if vi and oi and vi.text().strip() != oi.text().strip():
+                        idx = r + 1
+                        field_name = abbrevs.get(idx, f"F{idx}")
+                        try:
+                            fval = float(vi.text().strip())
+                            # 小数がある場合は小数2桁まで、整数なら整数表示
+                            if fval == int(fval):
+                                val_str = str(int(fval))
+                            else:
+                                val_str = f"{fval:.2f}".rstrip("0")
+                        except ValueError:
+                            val_str = vi.text().strip()[:6]
+                        changed_fields.append(f"{field_name}{val_str}")
+                if changed_fields:
+                    parts.append(f"{type_label}_{'_'.join(changed_fields[:2])}")
+
+        # ── 配置計画タブで変更されている値を収集 ──
+        if self._s8i:
+            qty_changes = 0
+            def_changes_rd = 0
+            for i, elem in enumerate(self._s8i.damper_elements):
+                if i < len(self._rd_qty_spins) and self._rd_qty_spins[i].value() != elem.quantity:
+                    qty_changes += 1
+                if i < len(self._rd_def_combos) and self._rd_def_combos[i].currentText() != elem.damper_def_name:
+                    def_changes_rd += 1
+            if qty_changes > 0 or def_changes_rd > 0:
+                rd_part = "RD"
+                if qty_changes > 0:
+                    rd_part += f"基数×{qty_changes}箇所変更"
+                if def_changes_rd > 0:
+                    rd_part += f"定義変更{def_changes_rd}箇所"
+                parts.append(rd_part)
+
+        # ── 変更なしならデフォルト名 ──
+        if not parts:
+            return self._suggest_default_case_name()
+
+        # ── ベース名を構築 ──
+        base_name = "_".join(parts)
+        # 長すぎる場合は切り詰め
+        if len(base_name) > 40:
+            base_name = base_name[:38] + "…"
+
+        # ── 重複しない名前を生成 ──
+        if base_name not in self._existing_names:
+            return base_name
+        idx = 2
+        while f"{base_name}_{idx}" in self._existing_names:
+            idx += 1
+        return f"{base_name}_{idx}"
+
     def _save_to_case(self) -> None:
         """UIの現在値をケースデータモデルに保存します。"""
         c = self._case
@@ -848,6 +1538,9 @@ class CaseEditDialog(QDialog):
                 if overrides:
                     damper_param_overrides[ddef.name] = overrides
         c.damper_params = damper_param_overrides
+
+        # extra_defs は現在未使用（後方互換のため空リストを保持）
+        c.extra_defs = []
 
         # ---- RD 配置・基数・装置定義の変更を保存 ----
         rd_overrides: Dict[str, Dict[str, Any]] = {}
@@ -879,6 +1572,105 @@ class CaseEditDialog(QDialog):
     # シグナルハンドラ
     # ──────────────────────────────────────────
 
+    def _rebuild_placement_visual(self) -> None:
+        """
+        UX改善（第9回⑤）: フロア別ダンパー配置ビジュアルバーをリアルタイム更新します。
+
+        s8i モデルの各 RD 要素の node_j.z_grid（フロア高さグリッド）を用いて
+        各フロアの合計基数（SpinBox の現在値）を集計し、
+        横バー + 数値形式（例: 「F3: ██ 2本」）で一覧表示します。
+        RD 定義が存在しない場合はパネルを非表示にします。
+        """
+        if not hasattr(self, "_placement_visual_content"):
+            return
+
+        # 既存のウィジェットをクリア
+        while self._placement_visual_content.count():
+            item = self._placement_visual_content.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+
+        if not (self._s8i and self._s8i.damper_elements):
+            self._placement_visual_frame.hide()
+            return
+
+        # フロアキー（z_grid）ごとに合計基数を集計
+        floor_qty: dict = {}  # {z_label: total_qty}
+        for row, elem in enumerate(self._s8i.damper_elements):
+            qty = self._rd_qty_spins[row].value() if row < len(self._rd_qty_spins) else elem.quantity
+            # z_grid をフロアキーとして使用（整数グリッド番号）
+            node_j = None
+            if self._s8i.nodes:
+                node_j = self._s8i.nodes.get(elem.node_j)
+            if node_j is not None and hasattr(node_j, "z_grid") and node_j.z_grid is not None:
+                z = node_j.z_grid
+                # z_grid は整数のこともあれば "Z2" のような文字列のこともある
+                try:
+                    key = f"F{int(z)}"
+                except (ValueError, TypeError):
+                    digits = "".join(c for c in str(z) if c.isdigit())
+                    key = f"F{digits}" if digits else f"F{z}"
+            else:
+                key = f"RD{row + 1}"
+            floor_qty[key] = floor_qty.get(key, 0) + qty
+
+        if not floor_qty:
+            self._placement_visual_frame.hide()
+            return
+
+        self._placement_visual_frame.show()
+
+        max_qty = max(floor_qty.values()) if floor_qty else 1
+        if max_qty == 0:
+            max_qty = 1
+
+        # フロアキーを昇順（数字順）でソート
+        def _sort_key(k: str) -> tuple:
+            digits = "".join(c for c in k if c.isdigit())
+            return (int(digits) if digits else 0, k)
+
+        sorted_floors = sorted(floor_qty.keys(), key=_sort_key)
+
+        for floor_key in sorted_floors:
+            qty = floor_qty[floor_key]
+            # フロアラベル
+            floor_lbl = QLabel(f"{floor_key}:")
+            floor_lbl.setStyleSheet("font-size: 9px; color: palette(text); min-width: 28px;")
+            # バー（QProgressBar風）
+            from PySide6.QtWidgets import QProgressBar as _QPBar
+            bar = _QPBar()
+            bar.setRange(0, max_qty)
+            bar.setValue(qty)
+            bar.setMaximumHeight(12)
+            bar.setMinimumWidth(40)
+            bar.setMaximumWidth(80)
+            bar.setTextVisible(False)
+            bar.setStyleSheet(
+                "QProgressBar { border: 1px solid palette(mid); border-radius: 3px;"
+                "  background: palette(base); }"
+                "QProgressBar::chunk { background: #1976d2; border-radius: 2px; }"
+            )
+            # 数値ラベル
+            qty_lbl = QLabel(f"{qty}本")
+            qty_lbl.setStyleSheet("font-size: 9px; color: palette(text); min-width: 24px;")
+
+            # 1フロア分をまとめるレイアウト
+            floor_col = QVBoxLayout()
+            floor_col.setSpacing(0)
+            floor_col.setContentsMargins(0, 0, 0, 0)
+            top_row = QHBoxLayout()
+            top_row.setSpacing(3)
+            top_row.addWidget(floor_lbl)
+            top_row.addWidget(bar)
+            top_row.addWidget(qty_lbl)
+            floor_col.addLayout(top_row)
+
+            container = QWidget()
+            container.setLayout(floor_col)
+            self._placement_visual_content.addWidget(container)
+
+        self._placement_visual_content.addStretch(1)
+
     def _on_qty_spin_changed(self, value: int) -> None:
         """SpinBox 変更時: 変更マークを更新します。"""
         spin = self.sender()
@@ -886,6 +1678,8 @@ class CaseEditDialog(QDialog):
         if row is not None:
             self._update_rd_row_mark(row)
         self._update_banner()
+        # UX改善（第9回⑤）: フロア別配置ビジュアルバーもリアルタイム更新
+        self._rebuild_placement_visual()
 
     def _on_def_combo_changed(self, text: str) -> None:
         """ComboBox 変更時: 変更マークと下部パネルを更新します。"""
@@ -1141,6 +1935,10 @@ class CaseEditDialog(QDialog):
             f"📐 配置計画  ●  ({rd_changes})" if rd_changes > 0 else "📐 配置計画"
         )
 
+        # --- タブ4: 変更差分 — 現在表示中なら自動更新 ---
+        if hasattr(self, "_tabs") and self._tabs.currentIndex() == 4:
+            self._update_diff_tab()
+
     def _on_name_edit_changed(self, text: str) -> None:
         """
         UX改善⑤: ケース名フィールド変更時にタイトルバーを即時更新します。
@@ -1357,6 +2155,11 @@ def _type_badge(keyword: str) -> str:
     badges = {
         "DVOD": "💧",
         "DSD":  "🔩",
+        "DIS":  "🏗️",
+        "DISD": "🔄",
+        "DVD":  "🌀",
+        "DVED": "🟦",
+        "DOD":  "💧",
         "DVHY": "🔄",
         "DVBI": "📐",
         "DVSL": "🔁",
@@ -1475,40 +2278,68 @@ def _get_damper_field_labels(keyword: str) -> Dict[int, str]:
     SNAP テキストデータ仕様に準拠。
     """
     if keyword == "DVOD":
-        # 粘性/オイルダンパー (Device Viscous/Oil Damper)
+        # 粘性/オイルダンパー (Device Viscous/Oil Damper) — SNAP仕様 p.114
         return {
-            1:  "種別 (52:免震用油, 53:免震用粘, 72:制振用油, 73:制振用粘)",
+            1:  "種別 (0:未使用, 52:免震用オイル, 53:免震用粘性, 72:制振用オイル, 73:制振用粘性)",
             2:  "k-DB 会社番号",
             3:  "k-DB 製品番号",
             4:  "k-DB 型番",
-            5:  "減衰モデル (0:ダッシュポット単, 1:Voigt, 2:Maxwell, 3:D+M, 4:M, 5:回転)",
+            5:  "減衰モデル (0:ダッシュポット単, 1:Voigt, 2:Maxwell, 3:D+M, 4:質量単, 5:回転方向)",
             6:  "質量 (t)",
-            7:  "装置特性種別 (0:線形弾性EL1, 1:バイリニアEL2, 2:トリリニアEL3, 3:曲線EF1)",
-            8:  "C0（ゼロ速度時剛性 / 減衰係数）",
+            7:  "装置特性種別 (0:線形EL1, 1:バイリニア逆行EL2, 2:トリリニア逆行EL3, 3:曲線EF1)",
+            8:  "C0（減衰係数）",
             9:  "Fc（リリーフ力）",
-            10: "Fv（最大ダンパー力）",
-            11: "Vs（基準速度）",
+            10: "Fy（最大減衰力）",
+            11: "Ve（基準速度）",
             12: "α（速度指数）",
             13: "β（温度依存指数）",
             14: "剛性",
             15: "取付け剛性",
-            16: "装置長",
-            17: "重量種別 (0:単位長当, 1:重量)",
+            16: "装置高さ",
+            17: "重量種別 (0:単位長さ重量, 1:重量)",
             18: "重量",
             19: "変動係数 下限温度",
-            20: "変動係数 下限ε",
+            20: "変動係数 下限 τ",
             21: "変動係数 上限温度",
-            22: "変動係数 上限ε",
+            22: "変動係数 上限 τ",
         }
-    elif keyword == "DSD":
-        # 鋼材/摩擦ダンパー (Device Steel Damper)
+    elif keyword == "DISD":
+        # 免震用履歴型ダンパー (Device ISolated Damper) — SNAP仕様 p.111
         return {
-            1:  "種別 (0:未使用, 1:ブレース, 2:間柱, 3:摩擦)",
+            1:  "種別 (0:未使用, 51:免震用履歴型ダンパー)",
             2:  "k-DB 会社番号",
             3:  "k-DB 製品番号",
             4:  "k-DB 型番",
-            5:  "降伏変形考慮 (0:なし, 1:あり)",
-            6:  "復元力特性種別 (0:BL2, 1:AL(Y)2, 2:BL(Y)3, 3:RD4, 4:VHD, 5:K2, 6:MCB, 7:TL3, 8:MP3)",
+            5:  "復元力特性種別 (0:BL2, 1:修正RO3, 2:標準TL3)",
+            6:  "K0（初期剛性）",
+            7:  "Qc",
+            8:  "Qy（降伏荷重）",
+            9:  "α（2次剛性比）",
+            10: "β",
+            11: "p1",
+            12: "p2",
+            13: "重量",
+            14: "変動係数 下限温度",
+            15: "変動係数 下限 τK0",
+            16: "変動係数 下限 τQc",
+            17: "変動係数 下限 τQy",
+            18: "変動係数 上限温度",
+            19: "変動係数 上限 τK0",
+            20: "変動係数 上限 τQc",
+            21: "変動係数 上限 τQy",
+            22: "頭部付加曲げ分配率 Qh",
+            23: "初期解析 (0:しない, 1:する)",
+            24: "減衰",
+        }
+    elif keyword == "DSD":
+        # 鋼材/摩擦ダンパー (Device Steel Damper) — SNAP仕様 p.112
+        return {
+            1:  "種別 (0:未使用, 1:ブレース, 2:間柱, 3:摩擦ダンパー)",
+            2:  "k-DB 会社番号",
+            3:  "k-DB 製品番号",
+            4:  "k-DB 型番",
+            5:  "剛域の変形 (0:考慮しない, 1:考慮する)",
+            6:  "種別 (0:BL2, 1:LY2, 2:LY3, 3:RO4, 4:VHD, 5:IK2, 6:MCB, 7:TL3, 8:MP3)",
             7:  "K0（初期剛性）",
             8:  "Fe（弾性限界力）",
             9:  "Fy（降伏荷重）",
@@ -1524,16 +2355,133 @@ def _get_damper_field_labels(keyword: str) -> Dict[int, str]:
             19: "取付け F",
             20: "取付け α",
             21: "取付け d",
-            22: "装置長",
-            23: "重量種別 (0:単位長当, 1:重量)",
+            22: "装置高さ",
+            23: "重量種別 (0:単位長さ重量, 1:重量)",
             24: "重量",
-            25: "初期荷重計算 (0:なし, 1:あり)",
-            26: "疲労閾値",
+            25: "疲労損傷評価 計算 (0:しない, 1:する)",
+            26: "疲労損傷評価 装置長さ",
             27: "疲労曲線 P1",
             28: "疲労曲線 P2",
-            29: "増分幅",
-            30: "初期荷重計算2",
+            29: "頻度解析刻み幅",
+            30: "初期解析 (0:しない, 1:する)",
             31: "減衰",
+        }
+    elif keyword == "DIS":
+        # 免震支承材 (Device ISolator) — SNAP仕様 p.109
+        return {
+            1:  "種別 (101:NRB, 102:HDR, 103:LRB, 104:錫LRB, 105:鉄粉LRB, 121:弾性すべり, 122:剛すべり, 123:曲面すべり, 124:直動転がり)",
+            2:  "k-DB 会社番号",
+            3:  "k-DB 製品番号",
+            4:  "k-DB 型番",
+            5:  "重量",
+            6:  "変動係数 下限温度",
+            7:  "変動係数 下限 τG,τK",
+            8:  "変動係数 下限 τH,τQ",
+            9:  "変動係数 下限 τU",
+            10: "変動係数 上限温度",
+            11: "変動係数 上限 τG,τK",
+            12: "変動係数 上限 τH,τQ",
+            13: "変動係数 上限 τU",
+            14: "頭部付加曲げ Qh",
+            15: "分配率 Pδ",
+            16: "高減衰ゴム系・プラグ挿入型 復元力特性 (0:修正BL2, 1:修正HD2, 2:KA型, 3:修正TL3)",
+            17: "Ke/Keq",
+            18: "Ke",
+            19: "すべり支承 Qd算出方法",
+            20: "静止摩擦 倍率",
+            21: "静止摩擦 回数",
+            22: "圧縮耐力 考慮 (0:しない, 1:する)",
+            23: "Pc",
+            24: "減衰 鉛直",
+            25: "減衰 水平",
+        }
+    elif keyword == "DOD":
+        # オイルダンパー (Device Oil Damper) — SNAP仕様 p.115
+        return {
+            1:  "種別 (0:BDSD型ELS, 1:BDSV型ELB)",
+            2:  "C0（減衰係数）",
+            3:  "Fy（降伏荷重）",
+            4:  "β（速度指数）",
+            5:  "d",
+            6:  "Vy",
+            7:  "P1",
+            8:  "P2",
+            9:  "P3",
+            10: "P4",
+            11: "P5",
+            12: "剛性",
+            13: "取付け剛性",
+            14: "装置高さ",
+            15: "重量種別 (0:単位長さ重量, 1:重量)",
+            16: "重量",
+            17: "変動係数 下限 減衰1",
+            18: "変動係数 下限 減衰2",
+            19: "変動係数 下限 剛性",
+            20: "変動係数 上限 減衰1",
+            21: "変動係数 上限 減衰2",
+            22: "変動係数 上限 剛性",
+        }
+    elif keyword == "DVD":
+        # 粘性ダンパー (Device Viscous Damper) — SNAP仕様 p.116
+        return {
+            1:  "種別 (0:未使用, 54:免震用減衰こま, 74:制振用減衰こま)",
+            2:  "k-DB 会社番号",
+            3:  "k-DB 製品番号",
+            4:  "k-DB 型番",
+            5:  "種別 (0:EFO型, 1:EO2型, 2:EAV型, 3:EAR型, 4:ELM型, 5:EO3型)",
+            6:  "質量",
+            7:  "せん断断面積",
+            8:  "せん断間隔",
+            9:  "振動数",
+            10: "荷重",
+            11: "P1",
+            12: "P2",
+            13: "P3",
+            14: "P4",
+            15: "P5",
+            16: "剛性",
+            17: "取付け剛性",
+            18: "装置高さ",
+            19: "重量種別 (0:単位長さ重量, 1:重量)",
+            20: "重量",
+            21: "温度 標準",
+            22: "温度 下限",
+            23: "温度 上限",
+            24: "変動係数 下限 質量",
+            25: "変動係数 下限 減衰",
+            26: "変動係数 下限 剛性",
+            27: "変動係数 下限 荷重",
+            28: "変動係数 上限 質量",
+            29: "変動係数 上限 減衰",
+            30: "変動係数 上限 剛性",
+            31: "変動係数 上限 荷重",
+        }
+    elif keyword == "DVED":
+        # 粘弾性ダンパー (Device Visco-Elastic Damper) — SNAP仕様 p.118
+        return {
+            1:  "種別 (0:未使用, 75:制振用粘弾性ダンパー)",
+            2:  "k-DB 会社番号",
+            3:  "k-DB 製品番号",
+            4:  "k-DB 型番",
+            5:  "種別 (0:VEY, 1:VET, 2:VS1, 3:VS2, 4:VS3, 5:VS4, 6:VT2, 7:VE1, 8:VEH, 9:VEJ)",
+            6:  "粘弾性体面積",
+            7:  "粘弾性体厚さ",
+            8:  "振動数",
+            9:  "すべり荷重",
+            10: "取付け剛性",
+            11: "最大ひずみ",
+            12: "装置高さ",
+            13: "重量種別 (0:単位長さ重量, 1:重量)",
+            14: "重量",
+            15: "温度 標準",
+            16: "温度 下限",
+            17: "温度 上限",
+            18: "変動係数 下限 減衰",
+            19: "変動係数 下限 剛性",
+            20: "変動係数 下限 荷重",
+            21: "変動係数 上限 減衰",
+            22: "変動係数 上限 剛性",
+            23: "変動係数 上限 荷重",
         }
     elif keyword == "DVHY":
         return {
@@ -1555,22 +2503,68 @@ def _get_damper_field_units(keyword: str) -> Dict[int, str]:
     """各フィールドの単位・補足テキストを返します（1-indexed）。"""
     if keyword == "DVOD":
         return {
-            8:  "kN/m または kN·s/m",
+            6:  "t",
+            8:  "kN·s/mm",
             9:  "kN",
             10: "kN",
-            11: "m/s",
+            11: "mm/s",
             12: "—（0〜1）",
-            14: "kN/m",
-            15: "kN/m",
-            16: "m",
-            18: "kN/m または kN",
+            13: "—",
+            14: "kN/mm",
+            15: "kN/mm",
+            16: "mm",
+            18: "kN/mm または kN",
+        }
+    elif keyword == "DISD":
+        return {
+            6:  "kN/mm",
+            7:  "kN",
+            8:  "kN",
+            9:  "—（0〜1）",
+            13: "kN",
         }
     elif keyword == "DSD":
         return {
-            7:  "kN/m",
+            7:  "kN/mm",
             8:  "kN",
             9:  "kN",
             10: "kN",
             11: "—（0〜1）",
+            18: "kN/mm",
+            22: "mm",
+        }
+    elif keyword == "DIS":
+        return {
+            5:  "kN",
+            6:  "℃",
+            10: "℃",
+            24: "—（0〜1）",
+            25: "—（0〜1）",
+        }
+    elif keyword == "DOD":
+        return {
+            2:  "kN·s/mm",
+            3:  "kN",
+            12: "kN/mm",
+            13: "kN/mm",
+            14: "mm",
+        }
+    elif keyword == "DVD":
+        return {
+            6:  "t",
+            7:  "mm²",
+            8:  "mm",
+            10: "kN",
+            16: "kN/mm",
+            17: "kN/mm",
+            18: "mm",
+        }
+    elif keyword == "DVED":
+        return {
+            6:  "mm²",
+            7:  "mm",
+            9:  "kN",
+            10: "kN/mm",
+            12: "mm",
         }
     return {}

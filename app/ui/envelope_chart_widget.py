@@ -2,6 +2,14 @@
 app/ui/envelope_chart_widget.py
 エンベロープ（包絡）チャートウィジェット。
 
+UX改善（第10回⑤）: 応答指標 ◄/► ナビゲーションボタン + 最大応答ケース強調表示追加。
+  コンボボックスの両隣に ◄ / ► ボタンを追加し、ドロップダウンを開かずに
+  前後の応答指標へ素早く切り替えられるようにします（result_chart_widget と
+  統一したデザイン言語）。
+  また、エンベロープグラフの下部に「最大応答発生ケース」ラベルを追加し、
+  現在の指標で最も高い値を出したケース名・層・値を常時表示します。
+  設計者が「誰が最も危ない結果を出したか」を視覚化から即座に把握できます。
+
 全完了ケースの応答値の最小・最大範囲を塗りつぶし領域で表示し、
 平均値を折れ線で重ねます。応答値のばらつきを一目で把握できます。
 
@@ -14,6 +22,16 @@ app/ui/envelope_chart_widget.py
 UX改善:
   改善A: グラフ画像クリップボードコピーボタン（📋）を追加。
   改善B: Matplotlibナビゲーションツールバーを追加（ズーム・パン・保存）。
+
+UX改善（新④）: 最大応答発生層（危険層）自動ハイライト + アノテーション追加。
+  全ケースの最大応答値が最も大きい層（危険層）を自動的に特定し、
+  グラフ上に水平破線と「🔴 最大応答: X層」のテキスト注釈を表示します。
+  また、グラフ下部のサマリーラベルに危険層と最大エンベロープ値を常時表示します。
+  構造設計者はどの層が最も厳しい条件下に置かれているかを一目で把握でき、
+  ダンパー配置の優先層を素早く判断できます。
+  - 最大応答は「maxs」配列（全ケースの最大値）で判定します
+  - 危険層の水平線は赤色破線（-.）で表示
+  - グラフ下にサマリーラベルを追加（_critical_floor_label）
 """
 
 from __future__ import annotations
@@ -169,11 +187,32 @@ class EnvelopeChartWidget(QWidget):
         ctrl_row = QHBoxLayout()
 
         ctrl_row.addWidget(QLabel("表示項目:"))
+
+        # UX改善（第10回⑤）: ◄ 前の指標ボタン
+        self._btn_prev_metric = QPushButton("◄")
+        self._btn_prev_metric.setFixedSize(28, 24)
+        self._btn_prev_metric.setToolTip(
+            "前の応答指標を表示します（循環）"
+        )
+        self._btn_prev_metric.setStyleSheet("font-size: 11px; padding: 1px 4px;")
+        self._btn_prev_metric.clicked.connect(self._prev_metric)
+        ctrl_row.addWidget(self._btn_prev_metric)
+
         self._combo = QComboBox()
         for _, label, unit in _RESPONSE_ITEMS:
             self._combo.addItem(f"{label}  [{unit}]")
         self._combo.currentIndexChanged.connect(self.refresh)
         ctrl_row.addWidget(self._combo)
+
+        # UX改善（第10回⑤）: ► 次の指標ボタン
+        self._btn_next_metric = QPushButton("►")
+        self._btn_next_metric.setFixedSize(28, 24)
+        self._btn_next_metric.setToolTip(
+            "次の応答指標を表示します（循環）"
+        )
+        self._btn_next_metric.setStyleSheet("font-size: 11px; padding: 1px 4px;")
+        self._btn_next_metric.clicked.connect(self._next_metric)
+        ctrl_row.addWidget(self._btn_next_metric)
 
         ctrl_row.addStretch()
 
@@ -210,6 +249,22 @@ class EnvelopeChartWidget(QWidget):
         layout.addWidget(self._nav_toolbar)
         layout.addWidget(self._canvas, stretch=1)
 
+        # UX改善（新④）: 危険層サマリーラベル
+        self._critical_floor_label = QLabel("")
+        self._critical_floor_label.setStyleSheet(
+            "color: #b71c1c; font-size: 11px; font-weight: bold; padding: 2px 4px;"
+        )
+        layout.addWidget(self._critical_floor_label)
+
+        # UX改善（第10回⑤）: 最大応答発生ケースラベル
+        self._worst_case_lbl = QLabel("")
+        self._worst_case_lbl.setStyleSheet(
+            "color: #e65100; font-size: 10px; padding: 2px 4px;"
+            "background-color: #fff3e0; border-radius: 3px;"
+        )
+        self._worst_case_lbl.setVisible(False)
+        layout.addWidget(self._worst_case_lbl)
+
         # 初期表示
         self._show_empty()
 
@@ -220,6 +275,19 @@ class EnvelopeChartWidget(QWidget):
     def _on_criteria_toggle(self, state: int) -> None:
         self._show_criteria = bool(state)
         self.refresh()
+
+    # UX改善（第10回⑤）: 前後指標ナビゲーション
+    def _prev_metric(self) -> None:
+        """◄ ボタン: 前の応答指標に切り替えます。"""
+        n = self._combo.count()
+        if n > 0:
+            self._combo.setCurrentIndex((self._combo.currentIndex() - 1) % n)
+
+    def _next_metric(self) -> None:
+        """► ボタン: 次の応答指標に切り替えます。"""
+        n = self._combo.count()
+        if n > 0:
+            self._combo.setCurrentIndex((self._combo.currentIndex() + 1) % n)
 
     def _copy_chart_to_clipboard(self) -> None:
         """現在のエンベロープグラフをPNG画像としてクリップボードにコピーします。"""
@@ -377,6 +445,76 @@ class EnvelopeChartWidget(QWidget):
                         )
                         break
 
+        # UX改善（新④）: 最大応答発生層（危険層）ハイライト
+        if len(floors) > 0 and len(maxs) > 0:
+            # 地盤面(0層)を除いた中で最大値の層を探す
+            non_zero_indices = [i for i, f in enumerate(floors) if f != 0]
+            if non_zero_indices:
+                critical_idx = max(non_zero_indices, key=lambda i: maxs[i])
+                critical_floor = floors[critical_idx]
+                critical_val = maxs[critical_idx]
+
+                # 水平破線（危険層）
+                ax.axhline(
+                    y=critical_floor,
+                    color="#d32f2f",
+                    linestyle="-.",
+                    linewidth=1.2,
+                    alpha=0.75,
+                    label=f"最大応答層: {critical_floor}層",
+                    zorder=6,
+                )
+
+                # テキスト注釈（グラフ右端の75%位置に配置）
+                x_range = ax.get_xlim()
+                x_pos = x_range[0] + (x_range[1] - x_range[0]) * 0.72 if x_range[1] != x_range[0] else critical_val
+                ax.annotate(
+                    f"🔴 最大応答: {critical_floor}層\n({critical_val:.4g} {unit})",
+                    xy=(critical_val, critical_floor),
+                    xycoords="data",
+                    xytext=(x_pos, critical_floor),
+                    textcoords="data",
+                    fontsize=7,
+                    color="#b71c1c",
+                    va="center",
+                    ha="center",
+                    bbox=dict(boxstyle="round,pad=0.3", fc="#ffebee", alpha=0.85, ec="#d32f2f", lw=0.8),
+                    arrowprops=dict(arrowstyle="->", color="#d32f2f", lw=0.7),
+                )
+
+                # サマリーラベル更新
+                self._critical_floor_label.setText(
+                    f"🔴 最大応答発生層: {critical_floor}層  "
+                    f"（最大エンベロープ: {critical_val:.4g} {unit}）  "
+                    f"← ダンパー優先配置を検討してください"
+                )
+
+                # UX改善（第10回⑤）: 最大応答を出したケースを特定して表示
+                worst_case_name = ""
+                worst_case_val = -float("inf")
+                for case in completed:
+                    result_data = case.result_summary.get("result_data", {})
+                    fd = result_data.get(key, {})
+                    if not fd:
+                        scalar = case.result_summary.get(key)
+                        if scalar is not None:
+                            fd = {1: scalar}
+                    v = fd.get(critical_floor)
+                    if v is not None and float(v) > worst_case_val:
+                        worst_case_val = float(v)
+                        worst_case_name = case.name
+                if worst_case_name:
+                    self._worst_case_lbl.setText(
+                        f"⚠ {critical_floor}層の最大応答ケース: 「{worst_case_name}」"
+                        f"  {worst_case_val:.4g} {unit}"
+                    )
+                    self._worst_case_lbl.setVisible(True)
+                else:
+                    self._worst_case_lbl.setVisible(False)
+            else:
+                self._critical_floor_label.setText("")
+                self._worst_case_lbl.setVisible(False)
+
         ax.legend(fontsize=8, loc="lower right")
         self._canvas.fig.tight_layout()
         self._canvas.draw()
@@ -393,3 +531,9 @@ class EnvelopeChartWidget(QWidget):
         )
         ax.set_axis_off()
         self._canvas.draw()
+        # UX改善（新④）: 危険層ラベルをクリア
+        if hasattr(self, "_critical_floor_label"):
+            self._critical_floor_label.setText("")
+        # UX改善（第10回⑤）: 最大応答ケースラベルもクリア
+        if hasattr(self, "_worst_case_lbl"):
+            self._worst_case_lbl.setVisible(False)
