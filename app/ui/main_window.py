@@ -67,6 +67,7 @@ from .hysteresis_widget import HysteresisWidget
 from .transfer_function_widget import TransferFunctionWidget
 from .irdt_wizard_dialog import IrdtWizardDialog
 from .minimizer_dialog import MinimizerDialog
+from .damper_injector_dialog import DamperInjectorDialog
 from .model_info_widget import ModelInfoWidget
 from .settings_dialog import SettingsDialog, load_settings
 from .sweep_dialog import SweepDialog
@@ -678,6 +679,11 @@ class MainWindow(QMainWindow):
         act_minimizer.setShortcut("Ctrl+Shift+M")
         act_minimizer.triggered.connect(self._open_minimizer_dialog)
         analysis_menu.addAction(act_minimizer)
+
+        act_injector = QAction("iRDT/iOD ダンパー挿入(&J)…", self)
+        act_injector.setShortcut("Ctrl+Shift+J")
+        act_injector.triggered.connect(self._open_damper_injector)
+        analysis_menu.addAction(act_injector)
 
         act_compare = QAction("ケース詳細比較(&D)…", self)
         act_compare.setShortcut("Ctrl+D")
@@ -2585,6 +2591,28 @@ class MainWindow(QMainWindow):
             f"ダンパー最小化完了 — {placed}本配置",
             8000,
         )
+
+    def _open_damper_injector(self) -> None:
+        """iRDT/iOD ダンパー挿入ダイアログを開きます。"""
+        base_case = None
+        if self._project:
+            case_id = self._case_table.selected_case_id()
+            if case_id:
+                base_case = self._project.get_case(case_id)
+
+        dlg = DamperInjectorDialog(base_case=base_case, parent=self)
+        if dlg.exec():
+            new_case = dlg.accepted_case
+            if new_case and self._project:
+                self._project.add_case(new_case)
+                self._case_table.refresh()
+                self._log.append_line(
+                    f"=== ダンパー挿入完了: ケース「{new_case.name}」を追加 ==="
+                )
+                self.statusBar().showMessage(
+                    f"ダンパー挿入完了 — ケース「{new_case.name}」",
+                    8000,
+                )
 
     def _open_case_compare(self) -> None:
         """2ケース詳細比較ダイアログを開きます。"""
