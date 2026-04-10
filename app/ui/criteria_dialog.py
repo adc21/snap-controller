@@ -17,14 +17,12 @@ from __future__ import annotations
 
 from typing import Optional
 
-from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QCheckBox,
     QDialog,
     QDialogButtonBox,
     QDoubleSpinBox,
     QFormLayout,
-    QFrame,
     QGroupBox,
     QHBoxLayout,
     QLabel,
@@ -58,7 +56,6 @@ class CriteriaDialog(QDialog):
         self._rows: list[tuple[QCheckBox, QDoubleSpinBox, CriterionItem]] = []
         # UX改善① 第5回: 適用中プリセット追跡
         self._applied_preset_label: Optional[QLabel] = None
-        self._guide_panel: Optional[QWidget] = None
         self._setup_ui()
 
     def get_criteria(self) -> PerformanceCriteria:
@@ -73,61 +70,6 @@ class CriteriaDialog(QDialog):
         self.setWindowTitle("目標性能基準の設定")
         self.setMinimumWidth(520)
         layout = QVBoxLayout(self)
-
-        # --- UX改善① 第5回: 建基法解説折りたたみバナー ---
-        guide_toggle_btn = QPushButton("▶ 性能基準とは？（クリックで解説を表示）")
-        guide_toggle_btn.setStyleSheet(
-            "QPushButton {"
-            "  background: #e3f2fd; border: 1px solid #90caf9;"
-            "  border-radius: 4px; padding: 5px 10px;"
-            "  color: #0d47a1; font-size: 11px; text-align: left;"
-            "}"
-            "QPushButton:hover { background: #bbdefb; }"
-        )
-        layout.addWidget(guide_toggle_btn)
-
-        # 折りたたみ式パネル（初期は非表示）
-        self._guide_panel = QFrame()
-        self._guide_panel.setStyleSheet(
-            "QFrame { background: #e8f4fd; border: 1px solid #90caf9; border-radius: 4px; }"
-        )
-        guide_layout = QVBoxLayout(self._guide_panel)
-        guide_layout.setContentsMargins(12, 8, 12, 8)
-        guide_layout.setSpacing(4)
-        guide_lines = [
-            ("📐 <b>層間変形角</b>（story drift angle）:", "#1a237e"),
-            ("　建築基準法施行令 82条の2 により、<b>大地震時に 1/100 rad 以下</b>が必須です。", "#333"),
-            ("　免振建物では 1/200〜1/300 を目標とするケースが多く、高性能な制振ほど小さくなります。", "#555"),
-            ("", ""),
-            ("🚀 <b>絶対加速度</b>（absolute acceleration）:", "#1a237e"),
-            ("　居住性・設備・内容物の保護を目的に設定します。目安: 0.2〜0.4 G（≈2〜4 m/s²）。", "#555"),
-            ("", ""),
-            ("💡 <b>プリセットについて:</b>", "#1a237e"),
-            ("　大地震時(1/100): 建基法最低限 ／ 中地震時(1/200): 一般的な免振目標 ／ 高性能(1/300): 医療・免震倉庫等", "#555"),
-        ]
-        for text, color in guide_lines:
-            if not text:
-                guide_layout.addSpacing(2)
-                continue
-            lbl = QLabel(text)
-            lbl.setTextFormat(Qt.RichText)
-            lbl.setWordWrap(True)
-            lbl.setStyleSheet(f"color: {color}; font-size: 11px; background: transparent;")
-            guide_layout.addWidget(lbl)
-
-        self._guide_panel.setVisible(False)
-        layout.addWidget(self._guide_panel)
-
-        def _toggle_guide():
-            visible = not self._guide_panel.isVisible()
-            self._guide_panel.setVisible(visible)
-            guide_toggle_btn.setText(
-                ("▼ 性能基準とは？（クリックで閉じる）" if visible
-                 else "▶ 性能基準とは？（クリックで解説を表示）")
-            )
-            self.adjustSize()
-
-        guide_toggle_btn.clicked.connect(_toggle_guide)
 
         # --- 基準セット名 ---
         name_row = QHBoxLayout()
