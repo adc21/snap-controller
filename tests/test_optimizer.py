@@ -389,3 +389,195 @@ class TestLatinHypercubeSampling:
             bins = np.floor(samples[:, d] * n).astype(int)
             bins = np.clip(bins, 0, n - 1)
             assert len(set(bins)) == n
+
+
+# ===================================================================
+# GA (遺伝的アルゴリズム)
+# ===================================================================
+
+
+class TestGASearch:
+    def test_finds_minimum_of_quadratic(self):
+        """GA should find the minimum of (x - 0.5)^2 near x=0.5."""
+        def evaluate(params):
+            return {"max_drift": (params["x"] - 0.5) ** 2}
+
+        config = OptimizationConfig(
+            objective_key="max_drift",
+            parameters=[ParameterRange(key="x", min_val=0, max_val=1, step=0)],
+            method="ga",
+            max_iterations=200,
+        )
+        worker = _OptimizationWorker(config, evaluate)
+        result = worker._run_ga_search(config)
+
+        assert result.best is not None
+        assert result.best.objective_value < 0.01
+        assert abs(result.best.params["x"] - 0.5) < 0.15
+
+    def test_empty_params_returns_message(self):
+        config = OptimizationConfig(
+            objective_key="max_drift", parameters=[], method="ga",
+        )
+        worker = _OptimizationWorker(config)
+        result = worker._run_ga_search(config)
+        assert "設定されていません" in result.message
+
+    def test_message_includes_ga_label(self):
+        def evaluate(params):
+            return {"max_drift": params["x"] ** 2}
+
+        config = OptimizationConfig(
+            objective_key="max_drift",
+            parameters=[ParameterRange(key="x", min_val=0, max_val=1, step=0)],
+            method="ga",
+            max_iterations=50,
+        )
+        worker = _OptimizationWorker(config, evaluate)
+        result = worker._run_ga_search(config)
+        assert "遺伝的アルゴリズム" in result.message
+
+    def test_respects_constraints(self):
+        """GA should only accept feasible candidates as best."""
+        def evaluate(params):
+            return {"max_drift": params["x"], "stress": params["x"] * 100}
+
+        config = OptimizationConfig(
+            objective_key="max_drift",
+            parameters=[ParameterRange(key="x", min_val=0, max_val=1, step=0)],
+            method="ga",
+            max_iterations=100,
+            constraints={"stress": 50},  # x must be <= 0.5
+        )
+        worker = _OptimizationWorker(config, evaluate)
+        result = worker._run_ga_search(config)
+        if result.best is not None:
+            assert result.best.is_feasible
+
+    def test_multidimensional(self):
+        """GA should handle multiple parameters."""
+        def evaluate(params):
+            return {"max_drift": (params["x"] - 0.3) ** 2 + (params["y"] - 0.7) ** 2}
+
+        config = OptimizationConfig(
+            objective_key="max_drift",
+            parameters=[
+                ParameterRange(key="x", min_val=0, max_val=1, step=0),
+                ParameterRange(key="y", min_val=0, max_val=1, step=0),
+            ],
+            method="ga",
+            max_iterations=200,
+        )
+        worker = _OptimizationWorker(config, evaluate)
+        result = worker._run_ga_search(config)
+        assert result.best is not None
+        assert result.best.objective_value < 0.05
+
+
+# ===================================================================
+# SA (焼きなまし法)
+# ===================================================================
+
+
+class TestSASearch:
+    def test_finds_minimum_of_quadratic(self):
+        """SA should find the minimum of (x - 0.5)^2 near x=0.5."""
+        def evaluate(params):
+            return {"max_drift": (params["x"] - 0.5) ** 2}
+
+        config = OptimizationConfig(
+            objective_key="max_drift",
+            parameters=[ParameterRange(key="x", min_val=0, max_val=1, step=0)],
+            method="sa",
+            max_iterations=200,
+        )
+        worker = _OptimizationWorker(config, evaluate)
+        result = worker._run_sa_search(config)
+
+        assert result.best is not None
+        assert result.best.objective_value < 0.01
+
+    def test_empty_params_returns_message(self):
+        config = OptimizationConfig(
+            objective_key="max_drift", parameters=[], method="sa",
+        )
+        worker = _OptimizationWorker(config)
+        result = worker._run_sa_search(config)
+        assert "設定されていません" in result.message
+
+    def test_message_includes_sa_label(self):
+        def evaluate(params):
+            return {"max_drift": params["x"] ** 2}
+
+        config = OptimizationConfig(
+            objective_key="max_drift",
+            parameters=[ParameterRange(key="x", min_val=0, max_val=1, step=0)],
+            method="sa",
+            max_iterations=50,
+        )
+        worker = _OptimizationWorker(config, evaluate)
+        result = worker._run_sa_search(config)
+        assert "焼きなまし法" in result.message
+
+    def test_acceptance_ratio_in_message(self):
+        def evaluate(params):
+            return {"max_drift": params["x"]}
+
+        config = OptimizationConfig(
+            objective_key="max_drift",
+            parameters=[ParameterRange(key="x", min_val=0, max_val=1, step=0)],
+            method="sa",
+            max_iterations=50,
+        )
+        worker = _OptimizationWorker(config, evaluate)
+        result = worker._run_sa_search(config)
+        assert "受容率" in result.message
+
+    def test_multidimensional(self):
+        def evaluate(params):
+            return {"max_drift": (params["x"] - 0.3) ** 2 + (params["y"] - 0.7) ** 2}
+
+        config = OptimizationConfig(
+            objective_key="max_drift",
+            parameters=[
+                ParameterRange(key="x", min_val=0, max_val=1, step=0),
+                ParameterRange(key="y", min_val=0, max_val=1, step=0),
+            ],
+            method="sa",
+            max_iterations=300,
+        )
+        worker = _OptimizationWorker(config, evaluate)
+        result = worker._run_sa_search(config)
+        assert result.best is not None
+        assert result.best.objective_value < 0.05
+
+
+class TestMethodDispatch:
+    """Verify that the run() dispatcher routes to GA and SA correctly."""
+
+    def test_ga_dispatch(self):
+        def evaluate(params):
+            return {"max_drift": params["x"]}
+
+        config = OptimizationConfig(
+            objective_key="max_drift",
+            parameters=[ParameterRange(key="x", min_val=0, max_val=1, step=0)],
+            method="ga",
+            max_iterations=30,
+        )
+        worker = _OptimizationWorker(config, evaluate)
+        worker.run()
+        # run() emits finished_signal — we just check no exception was raised
+
+    def test_sa_dispatch(self):
+        def evaluate(params):
+            return {"max_drift": params["x"]}
+
+        config = OptimizationConfig(
+            objective_key="max_drift",
+            parameters=[ParameterRange(key="x", min_val=0, max_val=1, step=0)],
+            method="sa",
+            max_iterations=30,
+        )
+        worker = _OptimizationWorker(config, evaluate)
+        worker.run()
