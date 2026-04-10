@@ -34,10 +34,11 @@ from __future__ import annotations
 from dataclasses import dataclass, field, asdict
 from typing import Any, Dict, List, Optional
 
-from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QBrush, QColor, QPainter, QPen, QFont
+from PySide6.QtCore import Qt, Signal, QKeyCombination
+from PySide6.QtGui import QBrush, QColor, QPainter, QPen, QFont, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QAbstractItemView,
+    QApplication,
     QComboBox,
     QFrame,
     QGroupBox,
@@ -322,6 +323,27 @@ class DamperPlacementWidget(QWidget):
 
         ctrl_row.addStretch()
 
+        # コピー・貼り付けボタン（Excel互換）
+        copy_btn = QPushButton("📋 Excelへコピー")
+        copy_btn.setToolTip(
+            "テーブルの内容をTSV形式でクリップボードにコピーします。\n"
+            "Excelに貼り付けて編集できます。\n"
+            "列順: ダンパー種類 | 本数 | 方向 | 備考（上の階から順）"
+        )
+        copy_btn.clicked.connect(self._copy_to_clipboard)
+        ctrl_row.addWidget(copy_btn)
+
+        paste_btn = QPushButton("📥 Excelから貼り付け (Ctrl+V)")
+        paste_btn.setToolTip(
+            "Excelからコピーしたデータを貼り付けます。\n"
+            "列順: ダンパー種類 | 本数 | 方向 | 備考\n"
+            "行の並び順はテーブルと同じ（上の階から）。\n"
+            "選択中の行から開始します（未選択時は最上行から）。\n"
+            "例: 油圧ダンパー → [Tab] → 4 → [Tab] → X方向"
+        )
+        paste_btn.clicked.connect(self._paste_from_clipboard)
+        ctrl_row.addWidget(paste_btn)
+
         # プリセットボタン
         preset_btn = QPushButton("全層に一括設定")
         preset_btn.setToolTip("全ての層に同じダンパー設定を適用します")
@@ -359,6 +381,22 @@ class DamperPlacementWidget(QWidget):
         self._table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self._table.verticalHeader().setVisible(False)
         self._table.cellChanged.connect(self._on_cell_changed)
+
+        # Ctrl+V ショートカット（テーブルがフォーカスされているときに貼り付け）
+        _paste_sc = QShortcut(QKeySequence("Ctrl+V"), self._table)
+        _paste_sc.setContext(Qt.WidgetShortcut)
+        _paste_sc.activated.connect(self._paste_from_clipboard)
+
+        # ヒントラベル（Excel列順の説明）
+        _hint_lbl = QLabel(
+            "<small>💡 Excel列順: <b>ダンパー種類</b> | <b>本数</b> | <b>方向</b> | <b>備考</b>　"
+            "（上の階から順に）　Ctrl+V で貼り付け可能</small>"
+        )
+        _hint_lbl.setTextFormat(Qt.RichText)
+        _hint_lbl.setWordWrap(True)
+        _hint_lbl.setStyleSheet("color: #666; padding: 2px 0;")
+        table_layout.addWidget(_hint_lbl)
+
         table_layout.addWidget(self._table)
 
         main_row.addWidget(table_group, stretch=2)
@@ -623,3 +661,139 @@ class DamperPlacementWidget(QWidget):
             config.notes = ""
         self._populate_table()
         self.configChanged.emit()
+
+    # ------------------------------------------------------------------
+    # Excel互換 コピー / 貼り付け
+    # ------------------------------------------------------------------
+
+    def _copy_to_clipboard(self) -> None:
+        """テーブルの内容をTSV形式でクリップボードにコピーします（Excel互換）。
+
+        列順: ダンパー種類 | 本数 | 方向 | 備考
+        行順: 上の階（テーブル表示と同じ）から下の階へ
+        """
+        self._read_table()
+        lines = ["ダンパー種類\t本数\t方向\t備考"]
+        # _populate_table が reversed(_configs) で表示しているので同じ順でコピー
+        for config in reversed(self._configs):
+            lines.append(
+                f"{config.damper_type}\t{config.count}\t{config.direction}\t{config.notes}"
+            )
+        text = "\n".join(lines)
+        QApplication.clipboard().setText(text)
+        QMessageBox.information(
+            self, "コピー完了",
+            f"{len(self._configs)} 行をクリップボードにコピーしました。\n"
+            "Excel に貼り付けて編集し、「Excelから貼り付け」で戻してください。\n\n"
+            "列順: ダンパー種類 | 本数 | 方向 | 備考",
+        )
+
+    def _paste_from_clipboard(self) -> None:
+        """クリップボードのTSVデータをテーブルに貼り付けます（Excel互換）。
+
+        Excel でコピーしたデータを貼り付けます。
+        列順（左から）: ダンパー種類 | 本数 | 方向 | 備考
+        ヘッダー行は自動スキップします。
+        選択中の最上行から貼り付けを開始します（未選択時は先頭行から）。
+        """
+        text = QApplication.clipboard().text()
+        if not text.strip():
+            return
+
+        lines = text.splitlines()
+        if not lines:
+            return
+
+        # ヘッダー行の自動スキップ（先頭セルが数値でない場合）
+        skip = 0
+        first_cells = lines[0].split("\t")
+        if first_cells and not first_cells[0].strip().lstrip("-").isdigit():
+            # 先頭セルが「ダンパー種類」「種類」「type」等の場合はスキップ
+            try:
+                int(first_cells[0].strip())
+            except ValueError:
+                # 数値でない → ヘッダー行と見なしてスキップ（ただし本数列が数値でなければスキップ）
+                if len(first_cells) >= 2:
+                    try:
+                        int(first_cells[1].strip())
+                    except ValueError:
+                        skip = 1
+
+        data_lines = lines[skip:]
+        if not data_lines:
+            return
+
+        # 開始行の決定（選択中の最上行 or 0）
+        selected = self._table.selectedItems()
+        start_row = (
+            min(it.row() for it in selected) if selected else 0
+        )
+
+        changed_count = 0
+        self._table.blockSignals(True)
+        for i, line in enumerate(data_lines):
+            row = start_row + i
+            if row >= self._table.rowCount():
+                break
+            cells = line.split("\t")
+
+            # ダンパー種類（列0）
+            if len(cells) >= 1:
+                type_val = cells[0].strip()
+                type_combo = self._table.cellWidget(row, _COL_TYPE)
+                if type_combo and type_val:
+                    # 完全一致 → 部分一致の順で検索
+                    idx = type_combo.findText(type_val)
+                    if idx < 0:
+                        for j in range(type_combo.count()):
+                            if type_val in type_combo.itemText(j):
+                                idx = j
+                                break
+                    if idx >= 0:
+                        type_combo.setCurrentIndex(idx)
+                        changed_count += 1
+
+            # 本数（列1）
+            if len(cells) >= 2:
+                count_str = cells[1].strip()
+                count_spin = self._table.cellWidget(row, _COL_COUNT)
+                if count_spin and count_str:
+                    try:
+                        count_spin.setValue(int(float(count_str)))
+                        changed_count += 1
+                    except ValueError:
+                        pass
+
+            # 方向（列2）
+            if len(cells) >= 3:
+                dir_val = cells[2].strip()
+                dir_combo = self._table.cellWidget(row, _COL_DIRECTION)
+                if dir_combo and dir_val:
+                    idx = dir_combo.findText(dir_val)
+                    if idx < 0:
+                        for j in range(dir_combo.count()):
+                            if dir_val in dir_combo.itemText(j):
+                                idx = j
+                                break
+                    if idx >= 0:
+                        dir_combo.setCurrentIndex(idx)
+
+            # 備考（列3）
+            if len(cells) >= 4:
+                notes_val = cells[3].strip()
+                notes_item = self._table.item(row, _COL_NOTES)
+                if notes_item is not None:
+                    notes_item.setText(notes_val)
+                else:
+                    self._table.setItem(row, _COL_NOTES, QTableWidgetItem(notes_val))
+
+        self._table.blockSignals(False)
+        self._read_table()
+        self._update_visual()
+        self.configChanged.emit()
+
+        # 貼り付け結果のフィードバック
+        actual_rows = min(len(data_lines), self._table.rowCount() - start_row)
+        self._placement_summary_label.setText(
+            f"✅ {actual_rows} 行を貼り付けました（行 {start_row + 1}〜{start_row + actual_rows}）"
+        )
