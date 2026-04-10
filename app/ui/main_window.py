@@ -35,6 +35,7 @@ from PySide6.QtWidgets import (
     QSplitter,
     QStackedWidget,
     QSystemTrayIcon,
+    QTabWidget,
     QVBoxLayout, QHBoxLayout,
     QWidget,
 )
@@ -60,6 +61,9 @@ from .radar_chart_widget import RadarChartWidget
 from .ranking_widget import RankingWidget
 from .result_chart_widget import ResultChartWidget
 from .result_table_widget import ResultTableWidget
+from .binary_result_widget import BinaryResultWidget
+from .mode_shape_widget import ModeShapeWidget
+from .hysteresis_widget import HysteresisWidget
 from .model_info_widget import ModelInfoWidget
 from .settings_dialog import SettingsDialog, load_settings
 from .sweep_dialog import SweepDialog
@@ -153,6 +157,9 @@ class MainWindow(QMainWindow):
         self._envelope_chart = EnvelopeChartWidget()
         self._radar_chart = RadarChartWidget()
         self._result_table = ResultTableWidget()
+        self._binary_result = BinaryResultWidget()
+        self._mode_shape_widget = ModeShapeWidget()
+        self._hysteresis_widget = HysteresisWidget()
         self._ranking = RankingWidget()
         self._dashboard = DashboardWidget()
         self._file_preview = FilePreviewWidget()
@@ -325,16 +332,21 @@ class MainWindow(QMainWindow):
         step3_layout.addWidget(self._step3_footer)
         step3 = step3_widget
 
-        # STEP 4: 結果・戦略 (右側タブだったものをSTEP4に集約)
+        # STEP 4: 結果・戦略
+        # --- ケース比較: CompareChartWidget を BinaryResultWidget の先頭タブに統合 ---
+        self._binary_result.prepend_tab(self._compare_chart, "📊 応答値比較")
+        self._binary_result.prepend_tab(self._hysteresis_widget, "🔄 履歴ループ")
+        self._binary_result.prepend_tab(self._mode_shape_widget, "🏗 モード形状")
+
         self._right_tabs = _QTabWidget()
         _tab_defs = [
-            (self._dashboard,      "fa5s.chart-pie",         "ダッシュボード",       True,  1),
-            (self._chart,          "fa5s.chart-line",        "解析結果",             True,  1),
-            (self._compare_chart,  "fa5s.exchange-alt",      "ケース比較",           True,  2),
-            (self._envelope_chart, "fa5s.ruler-combined",    "エンベロープ",         True,  1),
-            (self._radar_chart,    "fa5s.spider",            "レーダーチャート",     True,  2),
-            (self._result_table,   "fa5s.table",             "結果テーブル",         True,  1),
-            (self._ranking,        "fa5s.trophy",            "ランキング",           True,  1),
+            (self._dashboard,      "fa5s.chart-pie",       "ダッシュボード",   True,  1),
+            (self._chart,          "fa5s.chart-line",      "解析結果",         True,  1),
+            (self._binary_result,  "fa5s.exchange-alt",    "ケース比較",       True,  2),
+            (self._envelope_chart,    "fa5s.ruler-combined",  "エンベロープ",     True,  1),
+            (self._radar_chart,       "fa5s.spider",          "レーダーチャート", True,  2),
+            (self._result_table,      "fa5s.table",           "結果テーブル",     True,  1),
+            (self._ranking,           "fa5s.trophy",          "ランキング",       True,  1),
         ]
         self._tab_result_requirements: dict = {}
         icon_color = "#d4d4d4" if ThemeManager.is_dark() else "#333333"
@@ -834,10 +846,10 @@ class MainWindow(QMainWindow):
         # リストをインスタンス変数に保存してGCを防ぐ
         self._step_shortcuts = _step_shortcuts
 
-        # ---- UX改善②新: Alt+1〜9 で STEP4 の結果タブを直接切り替え ----
-        # Alt+1=ダッシュボード, Alt+2=解析結果, Alt+3=ケース比較, ...
+        # ---- UX改善②新: Alt+1〜7 で STEP4 の結果タブを直接切り替え ----
+        # Alt+1=ダッシュボード, Alt+2=解析結果, Alt+3=ケース比較, ...Alt+7=ランキング
         _result_tab_shortcuts = []
-        for _tab_idx in range(9):
+        for _tab_idx in range(7):
             _sc = _QShortcut(QKeySequence(f"Alt+{_tab_idx + 1}"), self)
             _sc.activated.connect(
                 lambda _n=_tab_idx: self._switch_result_tab(_n)
@@ -1488,7 +1500,7 @@ class MainWindow(QMainWindow):
 
     def _switch_result_tab(self, index: int) -> None:
         """
-        UX改善②新: Alt+1〜9 で STEP4 の結果タブを直接切り替えます。
+        UX改善②新: Alt+1〜7 で STEP4 の結果タブを直接切り替えます。
 
         STEP4（結果・戦略）に移動してから、指定インデックスのタブを選択します。
         ウェルカム画面やタブ範囲外のインデックスでは動作しません。
@@ -1730,6 +1742,19 @@ class MainWindow(QMainWindow):
                 f"入力ファイルの読み込みに失敗しました:\n{e}"
             )
 
+    def _refresh_analysis_widgets(self) -> None:
+        """ModeShapeWidget と HysteresisWidget に最新のローダーを渡す。
+
+        BinaryResultWidget が set_cases() 後に内部で SnapResultLoader を
+        生成・保持しているため、そのエントリを取り出して渡す。
+        """
+        entries = [
+            (e.name, e.loader)
+            for e in self._binary_result._entries.values()
+        ]
+        self._mode_shape_widget.set_entries(entries)
+        self._hysteresis_widget.set_entries(entries)
+
     def _reset_all_cases_for_new_s8i(self, new_s8i_path: str) -> None:
         """
         s8i ファイルが変更された際に全ケースをリセットします。
@@ -1755,6 +1780,9 @@ class MainWindow(QMainWindow):
         self._envelope_chart.set_cases([])
         self._radar_chart.set_cases([])
         self._result_table.set_cases([])
+        self._binary_result.set_cases([])
+        self._mode_shape_widget.set_entries([])
+        self._hysteresis_widget.set_entries([])
         self._ranking.set_cases([])
         self._dashboard.set_cases([])
 
@@ -1992,6 +2020,8 @@ class MainWindow(QMainWindow):
             self._envelope_chart.set_criteria(self._project.criteria)
             self._radar_chart.set_cases(self._project.cases)
             self._result_table.set_cases(self._project.cases)
+            self._binary_result.set_cases(self._project.cases)
+            self._refresh_analysis_widgets()
             self._ranking.set_cases(self._project.cases)
             self._ranking.set_criteria(self._project.criteria)
             self._ranking.set_case_groups(self._project.case_groups)
