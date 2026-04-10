@@ -49,3 +49,6 @@ Desktop.ini
 
 # ===== Test results =====
 example_*Case*
+
+# ===== Claude AI session files =====
+.claude/
