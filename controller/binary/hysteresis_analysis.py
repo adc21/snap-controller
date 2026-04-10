@@ -107,7 +107,7 @@ def compute_peak_stats(data: Dict[str, np.ndarray]) -> Dict[str, float]:
 
     # 力–変位仕事量（台形積分）
     # np.trapezoid は numpy >= 2.0、np.trapz は numpy < 2.0 の互換ラッパー
-    _trapz = getattr(np, "trapezoid", np.trapz)
+    _trapz = getattr(np, "trapezoid", None) or getattr(np, "trapz", None)
     try:
         stats["work"] = float(_trapz(data["F"], data["D"]))
     except Exception:

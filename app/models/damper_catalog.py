@@ -100,6 +100,18 @@ DAMPER_CATEGORIES = {
         "snap_keyword": "DVOD",
         "icon": "⚖️",
     },
+    "irdt": {
+        "label": "iRDT（慣性質量ダンパー）",
+        "description": "回転慣性質量とダッシュポット・バネの組合せによる同調型制振装置",
+        "snap_keyword": "DVOD",
+        "icon": "🔄",
+    },
+    "iod": {
+        "label": "iOD（大質量型オイルダンパー）",
+        "description": "慣性質量と粘性減衰を並列配置した質量系ダンパー",
+        "snap_keyword": "DVOD",
+        "icon": "⚙️",
+    },
     "isolator": {
         "label": "免震装置",
         "description": "建物を地盤から絶縁して地震力を低減",
@@ -385,6 +397,124 @@ def _builtin_catalog() -> List[DamperSpec]:
         tags=["粘弾性", "高減衰ゴム", "風揺れ", "剛性付加"],
     ))
 
+    # ====== iRDT（慣性質量ダンパー — 同調型） ======
+    catalog.append(DamperSpec(
+        id="irdt_standard",
+        name="iRDT 標準型",
+        category="irdt",
+        snap_keyword="DVOD",
+        description="回転慣性質量 m_d + 粘性減衰 c_d + 支持バネ k_b を並列配置した"
+                    "同調質量ダンパー。定点理論による最適同調が可能。",
+        manufacturer="一般",
+        parameters={
+            "1": "0",
+            "2": "0",
+            "3": "0",
+            "4": "iRDT",
+            "5": "0",
+            "6": "1",
+            "7": "0.02",    # 質量比 μ (= m_d / M_total)
+            "8": "0.98",    # 固有振動数比 f (= ω_d / ω_1)
+            "9": "0.05",    # 減衰定数 ζ_d
+            "10": "10000",  # 支持バネ k_b (kN/m)
+        },
+        param_ranges={
+            "7": {"min": 0.005, "max": 0.10, "unit": "-", "label": "質量比 μ"},
+            "8": {"min": 0.80, "max": 1.20, "unit": "-", "label": "振動数比 f"},
+            "9": {"min": 0.01, "max": 0.30, "unit": "-", "label": "減衰定数 ζ_d"},
+            "10": {"min": 1000, "max": 100000, "unit": "kN/m", "label": "支持バネ k_b"},
+        },
+        tags=["iRDT", "慣性質量", "同調", "回転", "TMD型", "定点理論"],
+    ))
+
+    catalog.append(DamperSpec(
+        id="irdt_high_mass",
+        name="iRDT 高質量比型",
+        category="irdt",
+        snap_keyword="DVOD",
+        description="質量比 μ=0.05〜0.10 で大きな慣性質量を利用する iRDT。"
+                    "高層建物の1次モード制振に効果的。",
+        manufacturer="一般",
+        parameters={
+            "1": "0",
+            "2": "0",
+            "3": "0",
+            "4": "iRDT-H",
+            "5": "0",
+            "6": "1",
+            "7": "0.07",
+            "8": "0.96",
+            "9": "0.08",
+            "10": "30000",
+        },
+        param_ranges={
+            "7": {"min": 0.03, "max": 0.15, "unit": "-", "label": "質量比 μ"},
+            "8": {"min": 0.80, "max": 1.10, "unit": "-", "label": "振動数比 f"},
+            "9": {"min": 0.03, "max": 0.20, "unit": "-", "label": "減衰定数 ζ_d"},
+            "10": {"min": 5000, "max": 200000, "unit": "kN/m", "label": "支持バネ k_b"},
+        },
+        tags=["iRDT", "慣性質量", "高質量比", "高層", "定点理論"],
+    ))
+
+    # ====== iOD（大質量型オイルダンパー） ======
+    catalog.append(DamperSpec(
+        id="iod_standard",
+        name="iOD 標準型（慣性質量+粘性減衰）",
+        category="iod",
+        snap_keyword="DVOD",
+        description="慣性質量 m_d と粘性減衰 c_d を並列配置した大質量型オイルダンパー。"
+                    "支持バネなし（k_b=0）でフローティングマス的に機能。",
+        manufacturer="一般",
+        parameters={
+            "1": "0",
+            "2": "0",
+            "3": "0",
+            "4": "iOD",
+            "5": "0",
+            "6": "1",
+            "7": "0.03",   # 質量比 μ
+            "8": "0.0",    # 固有振動数比 f（同調なし）
+            "9": "0.10",   # 減衰定数 ζ_d
+            "10": "0",     # 支持バネ k_b = 0
+        },
+        param_ranges={
+            "7": {"min": 0.01, "max": 0.15, "unit": "-", "label": "質量比 μ"},
+            "8": {"min": 0.0, "max": 0.5, "unit": "-", "label": "振動数比 f"},
+            "9": {"min": 0.02, "max": 0.30, "unit": "-", "label": "減衰定数 ζ_d"},
+            "10": {"min": 0, "max": 50000, "unit": "kN/m", "label": "支持バネ k_b"},
+        },
+        tags=["iOD", "大質量", "慣性質量", "粘性", "フローティング"],
+    ))
+
+    catalog.append(DamperSpec(
+        id="iod_with_spring",
+        name="iOD バネ付き型（iHGD相当）",
+        category="iod",
+        snap_keyword="DVOD",
+        description="慣性質量 m_d + 粘性減衰 c_d + 支持バネ k_b を備えた大質量型オイルダンパー。"
+                    "バネにより同調効果も得られるiRDTの変形。",
+        manufacturer="一般",
+        parameters={
+            "1": "0",
+            "2": "0",
+            "3": "0",
+            "4": "iHGD",
+            "5": "0",
+            "6": "1",
+            "7": "0.04",
+            "8": "0.95",
+            "9": "0.12",
+            "10": "15000",
+        },
+        param_ranges={
+            "7": {"min": 0.01, "max": 0.15, "unit": "-", "label": "質量比 μ"},
+            "8": {"min": 0.70, "max": 1.20, "unit": "-", "label": "振動数比 f"},
+            "9": {"min": 0.02, "max": 0.30, "unit": "-", "label": "減衰定数 ζ_d"},
+            "10": {"min": 1000, "max": 100000, "unit": "kN/m", "label": "支持バネ k_b"},
+        },
+        tags=["iOD", "iHGD", "大質量", "慣性質量", "バネ付き", "同調"],
+    ))
+
     return catalog
 
 
@@ -498,6 +628,42 @@ class DamperCatalog:
             {field_index: value} 形式のパラメータ辞書。
         """
         return dict(spec.parameters)
+
+    @staticmethod
+    def compute_irdt_snap_elements(
+        total_mass: float,
+        omega_1: float,
+        mu: float,
+        f_ratio: float,
+        zeta_d: float,
+    ) -> Dict[str, float]:
+        """
+        iRDT / iOD パラメータから SNAP の mass / dashpot / spring 要素値を算出。
+
+        Parameters
+        ----------
+        total_mass : float
+            建物の総質量 (t)
+        omega_1 : float
+            1次固有円振動数 (rad/s)
+        mu : float
+            質量比 m_d / M_total
+        f_ratio : float
+            振動数比 ω_d / ω_1 (iODで同調なしの場合 0)
+        zeta_d : float
+            減衰定数
+
+        Returns
+        -------
+        dict
+            {"mass_d": float, "dashpot_c": float, "spring_k": float}
+            SNAP に定義する要素値 (t, kN·s/m, kN/m)
+        """
+        m_d = mu * total_mass
+        omega_d = f_ratio * omega_1 if f_ratio > 0 else 0.0
+        k_b = m_d * omega_d ** 2 if omega_d > 0 else 0.0
+        c_d = 2.0 * zeta_d * m_d * omega_d if omega_d > 0 else 2.0 * zeta_d * m_d * omega_1
+        return {"mass_d": m_d, "dashpot_c": c_d, "spring_k": k_b}
 
 
 # ---------------------------------------------------------------------------

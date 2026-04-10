@@ -10,4 +10,5 @@ def __getattr__(name: str):
     """遅延インポート: PySide6 依存モジュールをトップレベルでロードしない。"""
     if name == "AnalysisService":
         from .analysis_service import AnalysisService
-        return AnalysisServi
+        return AnalysisService
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

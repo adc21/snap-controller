@@ -9,6 +9,8 @@ app/services/optimizer.py
   - グリッドサーチ（全パラメータの直積）
   - ランダムサーチ（モンテカルロ）
   - ベイズ最適化（ガウス過程回帰 + 獲得関数による効率的探索）
+  - 遺伝的アルゴリズム（GA）（BLX-α交叉 + ガウシアン突然変異 + エリート保存）
+  - 焼きなまし法（SA）（指数冷却 + メトロポリス基準）
 
 使い方:
   1. OptimizationConfig で目的関数・制約・探索範囲を設定
@@ -474,6 +476,10 @@ class _OptimizationWorker(QThread):
             result = self._run_random_search(config)
         elif config.method == "bayesian":
             result = self._run_bayesian_search(config)
+        elif config.method == "ga":
+            result = self._run_ga_search(config)
+        elif config.method == "sa":
+            result = self._run_sa_search(config)
         else:
             result = OptimizationResult(
                 config=config,
@@ -860,6 +866,272 @@ class _OptimizationWorker(QThread):
                      if config.constraints or config.criteria else ""),
         )
         return result
+
+    # ------------------------------------------------------------------
+    # 遺伝的アルゴリズム (GA)
+    # ------------------------------------------------------------------
+
+    def _run_ga_search(self, config: OptimizationConfig) -> OptimizationResult:
+        """
+        遺伝的アルゴリズムで最適化を実行します。
+
+        染色体: 各パラメータの正規化値 [0, 1] ベクトル
+        選択: トーナメント選択
+        交叉: BLX-α 交叉 (α=0.5)
+        突然変異: ガウシアン突然変異
+        エリート保存: 上位10%を次世代に直接引き継ぎ
+        """
+        if not config.parameters:
+            return OptimizationResult(message="探索パラメータが設定されていません。")
+
+        n_params = len(config.parameters)
+        pop_size = max(20, min(100, config.max_iterations // 5))
+        n_generations = max(1, config.max_iterations // pop_size)
+        n_elite = max(1, pop_size // 10)
+        crossover_rate = 0.8
+        mutation_rate = 0.1
+        mutation_sigma = 0.1
+        blx_alpha = 0.5
+        tournament_size = 3
+
+        all_candidates: List[OptimizationCandidate] = []
+        best: Optional[OptimizationCandidate] = None
+        total = pop_size * n_generations
+
+        def _decode(chromosome: np.ndarray) -> Dict[str, float]:
+            params = {}
+            for j, pr in enumerate(config.parameters):
+                val = pr.min_val + chromosome[j] * (pr.max_val - pr.min_val)
+                if pr.is_integer:
+                    val = round(val)
+                elif pr.step > 0:
+                    val = round(val / pr.step) * pr.step
+                val = max(pr.min_val, min(pr.max_val, val))
+                params[pr.key] = val
+            return params
+
+        def _evaluate_individual(chromosome: np.ndarray, iteration: int) -> OptimizationCandidate:
+            params = _decode(chromosome)
+            response = self._evaluate_fn(params)
+            obj_val = response.get(config.objective_key, float("inf"))
+            is_feasible = self._check_constraints(response, config)
+            return OptimizationCandidate(
+                params=params,
+                objective_value=obj_val,
+                response_values=response,
+                is_feasible=is_feasible,
+                iteration=iteration,
+            )
+
+        def _fitness(c: OptimizationCandidate) -> float:
+            if not c.is_feasible:
+                return float("inf")
+            return c.objective_value
+
+        # 初期集団生成（LHS）
+        population = self._latin_hypercube_sample(pop_size, n_params)
+        pop_candidates = []
+        for i, chromo in enumerate(population):
+            if self._cancelled:
+                break
+            cand = _evaluate_individual(chromo, i)
+            pop_candidates.append(cand)
+            all_candidates.append(cand)
+            self.candidate_found.emit(cand)
+            if best is None or _fitness(cand) < _fitness(best):
+                best = cand
+
+        self.progress.emit(pop_size, total, f"GA: 初期集団評価完了 ({pop_size}個体)")
+
+        # 世代ループ
+        for gen in range(1, n_generations):
+            if self._cancelled:
+                break
+
+            # エリート選択
+            sorted_indices = sorted(range(pop_size), key=lambda i: _fitness(pop_candidates[i]))
+            new_population = np.zeros((pop_size, n_params))
+            new_candidates = [None] * pop_size
+
+            for e in range(n_elite):
+                idx = sorted_indices[e]
+                new_population[e] = population[idx]
+                new_candidates[e] = pop_candidates[idx]
+
+            # 子孫生成
+            for k in range(n_elite, pop_size):
+                if self._cancelled:
+                    break
+
+                # トーナメント選択 (親1)
+                t_indices = random.sample(range(pop_size), tournament_size)
+                p1_idx = min(t_indices, key=lambda i: _fitness(pop_candidates[i]))
+                # トーナメント選択 (親2)
+                t_indices = random.sample(range(pop_size), tournament_size)
+                p2_idx = min(t_indices, key=lambda i: _fitness(pop_candidates[i]))
+
+                parent1 = population[p1_idx]
+                parent2 = population[p2_idx]
+
+                # BLX-α 交叉
+                if random.random() < crossover_rate:
+                    child = np.zeros(n_params)
+                    for j in range(n_params):
+                        lo = min(parent1[j], parent2[j])
+                        hi = max(parent1[j], parent2[j])
+                        d = hi - lo
+                        child[j] = random.uniform(lo - blx_alpha * d, hi + blx_alpha * d)
+                else:
+                    child = parent1.copy()
+
+                # ガウシアン突然変異
+                for j in range(n_params):
+                    if random.random() < mutation_rate:
+                        child[j] += random.gauss(0, mutation_sigma)
+
+                # [0, 1] にクリップ
+                child = np.clip(child, 0.0, 1.0)
+
+                iteration = gen * pop_size + k
+                cand = _evaluate_individual(child, iteration)
+                new_population[k] = child
+                new_candidates[k] = cand
+                all_candidates.append(cand)
+                self.candidate_found.emit(cand)
+
+                if best is None or _fitness(cand) < _fitness(best):
+                    best = cand
+
+            population = new_population
+            pop_candidates = new_candidates
+
+            msg = f"GA: 世代 {gen+1}/{n_generations}"
+            if best:
+                msg += f" | 最良: {best.objective_value:.6g}"
+            self.progress.emit(min((gen + 1) * pop_size, total), total, msg)
+
+        return OptimizationResult(
+            best=best,
+            all_candidates=all_candidates,
+            converged=True,
+            message=f"遺伝的アルゴリズム完了: {n_generations}世代×{pop_size}個体 = {len(all_candidates)}点評価" +
+                    (f", 制約満足 {len([c for c in all_candidates if c.is_feasible])}点"
+                     if config.constraints or config.criteria else ""),
+        )
+
+    # ------------------------------------------------------------------
+    # 焼きなまし法 (SA)
+    # ------------------------------------------------------------------
+
+    def _run_sa_search(self, config: OptimizationConfig) -> OptimizationResult:
+        """
+        焼きなまし法で最適化を実行します。
+
+        初期温度を自動設定し、指数冷却スケジュールで温度を下げていきます。
+        メトロポリス基準に基づいて悪い解も確率的に受容し、局所最適からの脱出を図ります。
+        """
+        if not config.parameters:
+            return OptimizationResult(message="探索パラメータが設定されていません。")
+
+        n_params = len(config.parameters)
+        total = config.max_iterations
+        T_init = 1.0
+        T_min = 1e-6
+        cooling_rate = (T_min / T_init) ** (1.0 / max(1, total - 1))
+        step_size = 0.3  # 正規化空間での初期ステップサイズ
+
+        all_candidates: List[OptimizationCandidate] = []
+        best: Optional[OptimizationCandidate] = None
+
+        def _decode(x: np.ndarray) -> Dict[str, float]:
+            params = {}
+            for j, pr in enumerate(config.parameters):
+                val = pr.min_val + x[j] * (pr.max_val - pr.min_val)
+                if pr.is_integer:
+                    val = round(val)
+                elif pr.step > 0:
+                    val = round(val / pr.step) * pr.step
+                val = max(pr.min_val, min(pr.max_val, val))
+                params[pr.key] = val
+            return params
+
+        def _cost(cand: OptimizationCandidate) -> float:
+            if not cand.is_feasible:
+                return cand.objective_value + 1e10  # ペナルティ
+            return cand.objective_value
+
+        # 初期解（ランダム）
+        current_x = np.random.rand(n_params)
+        params = _decode(current_x)
+        response = self._evaluate_fn(params)
+        obj_val = response.get(config.objective_key, float("inf"))
+        is_feasible = self._check_constraints(response, config)
+        current_cand = OptimizationCandidate(
+            params=params, objective_value=obj_val,
+            response_values=response, is_feasible=is_feasible, iteration=0,
+        )
+        all_candidates.append(current_cand)
+        self.candidate_found.emit(current_cand)
+        best = current_cand
+        current_cost = _cost(current_cand)
+        best_cost = current_cost
+
+        T = T_init
+        n_accept = 0
+
+        for i in range(1, total):
+            if self._cancelled:
+                break
+
+            # 近傍生成
+            perturbation = np.random.randn(n_params) * step_size * (T / T_init) ** 0.5
+            new_x = np.clip(current_x + perturbation, 0.0, 1.0)
+
+            params = _decode(new_x)
+            response = self._evaluate_fn(params)
+            obj_val = response.get(config.objective_key, float("inf"))
+            is_feasible = self._check_constraints(response, config)
+
+            cand = OptimizationCandidate(
+                params=params, objective_value=obj_val,
+                response_values=response, is_feasible=is_feasible, iteration=i,
+            )
+            all_candidates.append(cand)
+            self.candidate_found.emit(cand)
+
+            new_cost = _cost(cand)
+            delta = new_cost - current_cost
+
+            # メトロポリス基準
+            if delta < 0 or (T > 0 and random.random() < math.exp(-delta / max(T, 1e-15))):
+                current_x = new_x
+                current_cost = new_cost
+                current_cand = cand
+                n_accept += 1
+
+            if new_cost < best_cost and is_feasible:
+                best = cand
+                best_cost = new_cost
+
+            # 冷却
+            T *= cooling_rate
+
+            # 進捗報告
+            if i % max(1, total // 50) == 0 or i == total - 1:
+                msg = f"SA: {i+1}/{total}, T={T:.4g}"
+                if best:
+                    msg += f" | 最良: {best.objective_value:.6g}"
+                self.progress.emit(i + 1, total, msg)
+
+        accept_ratio = n_accept / max(1, len(all_candidates) - 1)
+        return OptimizationResult(
+            best=best,
+            all_candidates=all_candidates,
+            converged=True,
+            message=f"焼きなまし法完了: {len(all_candidates)}点評価, 受容率 {accept_ratio:.1%}" +
+                    (f", 制約満足 {len([c for c in all_candidates if c.is_feasible])}点"
+                     if config.constraints or config.criteria else ""),
+        )
 
 
 # ---------------------------------------------------------------------------
