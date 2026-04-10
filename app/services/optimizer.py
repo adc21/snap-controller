@@ -438,6 +438,15 @@ def _mock_evaluate(
     result["max_otm"] = base_otm * yield_effect * damping_effect * noise
     result["max_story_disp"] = result["max_disp"] * 0.3 * noise
 
+    # 伝達関数1次ピークゲイン（dB）の簡易モデル
+    # 減衰が大きいほどピーク倍率は下がる / 質量比の効果も反映
+    base_peak = base_summary.get("peak_gain_db", 20.0)
+    mass_ratio = params.get("mu", params.get("mass_ratio", 0.03))
+    zeta_d = params.get("zeta_d", params.get("damping_ratio", 0.1))
+    # TMD理論: ピーク低減は √(μ) と ζ_d に比例
+    tmd_effect = 1.0 / (1.0 + 3.0 * math.sqrt(max(mass_ratio, 0.001)) * max(zeta_d, 0.01))
+    result["peak_gain_db"] = base_peak * tmd_effect * damping_effect * noise
+
     return result
 
 

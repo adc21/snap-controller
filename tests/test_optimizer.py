@@ -132,7 +132,7 @@ class TestMockEvaluate:
         result = _mock_evaluate({"Cd": 300, "alpha": 0.4}, {}, "max_drift")
         expected_keys = {
             "max_drift", "max_acc", "max_disp", "max_vel",
-            "shear_coeff", "max_otm", "max_story_disp",
+            "shear_coeff", "max_otm", "max_story_disp", "peak_gain_db",
         }
         assert expected_keys == set(result.keys())
 
@@ -147,6 +147,19 @@ class TestMockEvaluate:
         low = [_mock_evaluate({"Cd": 50}, base, "max_drift")["max_drift"] for _ in range(80)]
         high = [_mock_evaluate({"Cd": 2000}, base, "max_drift")["max_drift"] for _ in range(80)]
         assert np.mean(low) > np.mean(high)
+
+    def test_peak_gain_db_tmd_effect(self):
+        """Higher mass ratio and damping ratio reduce peak_gain_db."""
+        base = {"peak_gain_db": 20.0}
+        low_mu = [
+            _mock_evaluate({"mu": 0.01, "zeta_d": 0.05, "Cd": 300}, base, "peak_gain_db")["peak_gain_db"]
+            for _ in range(80)
+        ]
+        high_mu = [
+            _mock_evaluate({"mu": 0.10, "zeta_d": 0.20, "Cd": 300}, base, "peak_gain_db")["peak_gain_db"]
+            for _ in range(80)
+        ]
+        assert np.mean(low_mu) > np.mean(high_mu)
 
 
 # ===================================================================

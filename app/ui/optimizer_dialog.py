@@ -119,6 +119,7 @@ _OBJECTIVE_ITEMS = [
     ("max_story_disp",  "最大層間変形",       "m"),
     ("shear_coeff",     "せん断力係数",       "—"),
     ("max_otm",         "最大転倒モーメント", "kN·m"),
+    ("peak_gain_db",    "伝達関数1次ピーク", "dB"),
 ]
 
 # ダンパー種類に応じたデフォルトパラメータ範囲
@@ -142,6 +143,16 @@ _DAMPER_PARAM_PRESETS = {
     "免震装置（LRB）": [
         ParameterRange("Qd", "切片荷重 Qd [kN]", 50, 500, 50),
         ParameterRange("K2", "2次剛性 K2 [kN/mm]", 0.5, 5.0, 0.5),
+    ],
+    "iRDT（回転慣性ダンパー）": [
+        ParameterRange("mu", "質量比 μ", 0.01, 0.10, 0.01),
+        ParameterRange("zeta_d", "減衰定数 ζ_d", 0.01, 0.30, 0.01),
+        ParameterRange("Cd", "減衰係数 Cd", 50, 2000, 50),
+    ],
+    "iOD（大質量型オイルダンパー）": [
+        ParameterRange("mu", "質量比 μ", 0.01, 0.10, 0.01),
+        ParameterRange("zeta_d", "減衰定数 ζ_d", 0.01, 0.30, 0.01),
+        ParameterRange("Cd", "減衰係数 Cd", 50, 2000, 50),
     ],
 }
 
