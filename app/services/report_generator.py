@@ -41,6 +41,15 @@ try:
 except ImportError:
     pass
 
+# Period.xbn リーダー (固有値解析)
+_PERIOD_READER_AVAILABLE = False
+try:
+    from controller.binary.period_xbn_reader import PeriodXbnReader, ModeInfo
+    _PERIOD_READER_AVAILABLE = True
+except ImportError:
+    PeriodXbnReader = None  # type: ignore
+    ModeInfo = None  # type: ignore
+
 
 # ---------------------------------------------------------------------------
 # 応答値のメタ情報
@@ -99,6 +108,13 @@ def generate_report(
     sections.append(_build_header(report_title, now))
     sections.append(_build_project_summary(project, cases))
     sections.append(_build_result_table(cases, project.criteria))
+
+    if _PERIOD_READER_AVAILABLE and cases:
+        modal_section = _build_modal_analysis_section(
+            cases, include_charts and _MPL_AVAILABLE
+        )
+        if modal_section:
+            sections.append(modal_section)
 
     if include_charts and _MPL_AVAILABLE and cases:
         sections.append(_build_chart_section(cases, project.criteria))
@@ -329,6 +345,153 @@ def _build_criteria_verdict(
         </table>
         </div>
     </section>
+    """
+
+
+def _find_period_xbn(case: AnalysisCase) -> Optional[Path]:
+    """AnalysisCase から Period.xbn ファイルを探します。"""
+    search_dirs: List[Path] = []
+
+    for attr in ("binary_result_dir", "result_path", "output_dir"):
+        v = getattr(case, attr, None)
+        if v:
+            search_dirs.append(Path(v))
+
+    for dr in getattr(case, "dyc_results", []) or []:
+        rd = dr.get("result_dir")
+        if rd:
+            search_dirs.append(Path(rd))
+
+    model_path = getattr(case, "model_path", None)
+    if model_path:
+        base = Path(model_path).parent
+        search_dirs.append(base)
+        if base.exists():
+            for sub in base.iterdir():
+                if sub.is_dir() and sub.name.startswith("D"):
+                    search_dirs.append(sub)
+
+    for d in search_dirs:
+        p = d / "Period.xbn"
+        if p.exists():
+            return p
+    return None
+
+
+def _build_modal_analysis_section(
+    cases: List[AnalysisCase],
+    include_charts: bool,
+) -> Optional[str]:
+    """固有値解析（モード情報）セクションを構築します。"""
+    if not _PERIOD_READER_AVAILABLE:
+        return None
+
+    case_modes: List[Tuple[str, List[Any]]] = []
+    for case in cases:
+        period_path = _find_period_xbn(case)
+        if period_path is None:
+            continue
+        try:
+            reader = PeriodXbnReader(str(period_path))
+            if reader.modes:
+                case_modes.append((case.name, reader.modes))
+        except Exception:
+            continue
+
+    if not case_modes:
+        return None
+
+    parts: List[str] = ['<section class="modal-section"><h2>固有値解析</h2>']
+
+    for case_name, modes in case_modes:
+        # テーブルヘッダ
+        parts.append(f"<h3>{_esc(case_name)}</h3>")
+        parts.append('<div class="table-wrapper"><table class="result-table">')
+        parts.append(
+            "<thead><tr>"
+            "<th>モード</th>"
+            "<th>固有周期<br><small>(s)</small></th>"
+            "<th>振動数<br><small>(Hz)</small></th>"
+            "<th>角振動数<br><small>(rad/s)</small></th>"
+            "<th>支配方向</th>"
+            "<th>β_X</th><th>β_Y</th>"
+            "<th>PM_X<br><small>(%)</small></th>"
+            "<th>PM_Y<br><small>(%)</small></th>"
+            "</tr></thead><tbody>"
+        )
+        for m in modes:
+            dom = m.dominant_direction
+            parts.append(
+                f"<tr>"
+                f"<td>{m.mode_no}</td>"
+                f"<td>{m.period:.4f}</td>"
+                f"<td>{m.frequency:.3f}</td>"
+                f"<td>{m.omega:.3f}</td>"
+                f"<td>{_esc(dom)}</td>"
+                f"<td>{m.beta.get('X', 0):.4f}</td>"
+                f"<td>{m.beta.get('Y', 0):.4f}</td>"
+                f"<td>{m.pm.get('X', 0):.2f}</td>"
+                f"<td>{m.pm.get('Y', 0):.2f}</td>"
+                f"</tr>"
+            )
+        parts.append("</tbody></table></div>")
+
+    # 刺激係数の棒グラフ
+    if include_charts and _MPL_AVAILABLE and case_modes:
+        chart_html = _render_beta_chart(case_modes)
+        if chart_html:
+            parts.append(chart_html)
+
+    parts.append("</section>")
+    return "\n".join(parts)
+
+
+def _render_beta_chart(
+    case_modes: List[Tuple[str, List[Any]]],
+) -> Optional[str]:
+    """刺激係数 β の棒グラフを base64 PNG として返します。"""
+    if not _MPL_AVAILABLE:
+        return None
+
+    fig, axes = plt.subplots(1, 2, figsize=(10, 4), dpi=120)
+
+    colors = ["#3498db", "#e74c3c", "#2ecc71", "#9b59b6", "#f39c12"]
+
+    for ax, direction, label in [
+        (axes[0], "X", "β_X (X方向刺激係数)"),
+        (axes[1], "Y", "β_Y (Y方向刺激係数)"),
+    ]:
+        for ci, (case_name, modes) in enumerate(case_modes):
+            mode_nos = [m.mode_no for m in modes]
+            betas = [abs(m.beta.get(direction, 0)) for m in modes]
+            color = colors[ci % len(colors)]
+            width = 0.8 / len(case_modes)
+            offset = (ci - len(case_modes) / 2 + 0.5) * width
+            x = [mn + offset for mn in mode_nos]
+            ax.bar(x, betas, width=width, color=color, alpha=0.8,
+                   label=case_name, edgecolor="white", linewidth=0.3)
+
+        ax.set_xlabel("モード番号", fontsize=8)
+        ax.set_ylabel("|β|", fontsize=8)
+        ax.set_title(label, fontsize=9)
+        ax.tick_params(labelsize=7)
+        ax.grid(axis="y", alpha=0.3)
+        if len(case_modes) > 1:
+            ax.legend(fontsize=7)
+
+    fig.tight_layout()
+
+    buf = io.BytesIO()
+    fig.savefig(buf, format="png", bbox_inches="tight")
+    plt.close(fig)
+    buf.seek(0)
+    img_data = base64.b64encode(buf.read()).decode("ascii")
+
+    return f"""
+    <div class="chart-container" style="grid-column: 1 / -1;">
+        <h3>刺激係数 |β| (ケース比較)</h3>
+        <img src="data:image/png;base64,{img_data}" alt="刺激係数比較">
+    </div>
     """
 
 
