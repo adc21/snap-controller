@@ -1528,10 +1528,20 @@ class CaseTableWidget(QWidget):
             text=case.name,
         )
         if ok and new_name.strip():
-            case.name = new_name.strip()
+            unique_name = self._project.ensure_unique_case_name(
+                new_name.strip(), exclude_id=case.id
+            )
+            case.name = unique_name
             self._project._touch()  # type: ignore[attr-defined]
             self.refresh()
             self.projectModified.emit()
+            if unique_name != new_name.strip():
+                from PySide6.QtWidgets import QMessageBox
+                QMessageBox.information(
+                    self,
+                    "ケース名の自動調整",
+                    f"同名のケースが既に存在するため、'{unique_name}' に自動調整しました。",
+                )
             # リネームしたケースを再選択
             for row in range(self._table.rowCount()):
                 item = self._table.item(row, _COL_NAME)

@@ -24,6 +24,27 @@ from controller.snap_exec import snap_exec
 _MOCK_FLOORS = 5
 
 
+def _sanitize_for_filename(name: str) -> str:
+    """ファイル名・フォルダ名として安全な文字列に変換します。
+
+    Windows の禁則文字 (``\\ / : * ? " < > |``) と空白・タブを
+    アンダースコアに置換します。長さも制限 (48 文字) します。
+    """
+    if not name:
+        return "case"
+    forbidden = '\\/:*?"<>|\t\r\n '
+    out_chars: list = []
+    for ch in name:
+        if ch in forbidden:
+            out_chars.append("_")
+        else:
+            out_chars.append(ch)
+    safe = "".join(out_chars).strip("._")
+    if not safe:
+        safe = "case"
+    return safe[:48]
+
+
 class _AnalysisWorker(QThread):
     """1ケースを実行する QThread ワーカー。"""
 
@@ -66,7 +87,14 @@ class _AnalysisWorker(QThread):
 
             # ---- 入力ファイルを out_dir に配置（パラメータ変更を適用）----
             # 原本を変更せず、out_dir 内のコピーにのみ変更を加える。
-            run_input = out_dir / src.name
+            # 複数ケースが同じ s8i を使うと SNAP の出力フォルダ
+            # (snap_work_dir/{stem}/D{N}/) が共有されてしまい、
+            # 後続ケースの実行で前のケースの結果が上書きされる。
+            # これを避けるため、ケース名を混ぜたユニークなファイル名に
+            # リネームすることで SNAP の出力フォルダをケースごとに分離する。
+            safe_case_name = _sanitize_for_filename(case.name or case.id[:8])
+            run_input_name = f"{src.stem}__{safe_case_name}{src.suffix}"
+            run_input = out_dir / run_input_name
 
             has_overrides = bool(case.damper_params) or bool(
                 case.parameters.get("_rd_overrides")
@@ -171,9 +199,9 @@ class _AnalysisWorker(QThread):
 
             # ---- DYC ケースごとの結果フォルダを特定してパース ----
             # SNAP は snap_work_dir/{s8i_stem}/D{N}/ に結果を書き出す。
-            # D{N} の N = s8i 内 DYC 行の連番 (1始まり)。
-            # run_flag==1 のケースのみ実際に結果が格納される。
-            s8i_stem = src.stem  # e.g. "example_3D"
+            # stem は実際に SNAP に渡したファイル名のもの (run_input) を使う。
+            # こうすることで複数ケースが別フォルダに分離される。
+            s8i_stem = run_input.stem  # ケース名を含むユニーク名
 
             # DYC ケース情報を取得（パラメータ変更後のファイルから再パース）
             dyc_model = parse_s8i(str(run_input))
@@ -227,12 +255,17 @@ class _AnalysisWorker(QThread):
                                     dr["has_result"] = True
                                     dr["result_data"] = res.get_all()
                                     dr["result_summary"] = self._build_summary_dict(res)
+                                    # SNAP 入力ファイル名にケース名を混ぜているため、
+                                    # rdir はケース固有のフォルダとなり、後続ケースの
+                                    # 実行で上書きされることはない。
+                                    dr["result_dir"] = str(rdir)
                                     self.log_emitted.emit(
                                         f"  [D{dyc.case_no}:{dyc.name}] ✓ 結果取得 "
-                                        f"({len(res.max_disp)}層, フォルダ: {rdir.name})"
+                                        f"({len(res.max_disp)}層, フォルダ: {rdir})"
                                     )
                                     if not main_result_set:
                                         self._store_summary(case, res)
+                                        case.binary_result_dir = str(rdir)
                                         main_result_set = True
                                     break
                         if not dr["has_result"]:
@@ -266,9 +299,10 @@ class _AnalysisWorker(QThread):
                             self.log_emitted.emit(log_line)
                         if res.max_disp or res.max_acc:
                             self._store_summary(case, res)
+                            case.binary_result_dir = str(rdir)
                             main_result_set = True
                             self.log_emitted.emit(
-                                f"  ✓ 結果取得 ({len(res.max_disp)}層, フォルダ: {rdir.name})"
+                                f"  ✓ 結果取得 ({len(res.max_disp)}層, フォルダ: {rdir})"
                             )
                             break
 
@@ -318,12 +352,117 @@ class _AnalysisWorker(QThread):
         if res.max_otm:
             summary["max_otm"] = max(res.max_otm.values())
         summary["result_data"] = res.get_all()
+
+        # 結果フォルダにバイナリファイル（.hst 時刻歴 / Period.xbn）が
+        # あれば、時刻歴と固有値を result_summary に取り込みます。
+        # これにより既存 TimeHistoryWidget / ModalPropertiesWidget が
+        # モックではなく実データを表示できます。
+        try:
+            _AnalysisWorker._attach_binary_results(summary, res)
+        except Exception as e:  # noqa: BLE001
+            # 失敗しても他の結果は有効なので黙ってスキップ
+            summary.setdefault("binary_load_error", str(e))
         return summary
+
+    @staticmethod
+    def _attach_binary_results(summary: dict, res: Result) -> None:
+        """
+        結果フォルダから SNAP バイナリ結果を読み取り、
+        summary["time_history"] と summary["period_modes"] を設定します。
+        """
+        try:
+            from controller.binary import SnapResultLoader  # noqa: WPS433
+        except Exception:
+            return
+
+        result_dir = getattr(res, "result_dir", None)
+        if not result_dir:
+            return
+
+        loader = SnapResultLoader(result_dir, dt=0.005)
+
+        # ----- 時刻歴の取込 -----
+        # TimeHistoryWidget が期待する形式:
+        #   summary["time_history"][type_key] = {
+        #       "time": np.ndarray,
+        #       "<floor_no>": np.ndarray,
+        #       "max_floor": np.ndarray,
+        #   }
+        import numpy as np
+
+        def _extract_timehistory(cat, field_index: int) -> Optional[dict]:
+            """カテゴリから指定 field index の全レコード時刻歴を取得。"""
+            if not cat or not cat.hst or not cat.hst.header:
+                return None
+            if cat.hst.header.fields_per_record <= field_index:
+                return None
+            hst = cat.hst
+            hst.ensure_loaded()
+            t = hst.times()
+            entry: dict = {"time": t.tolist()}
+            peak_curve = None
+            for r in range(hst.header.num_records):
+                name = cat.record_name(r)
+                floor_no = r + 1
+                if name and name.endswith("F"):
+                    try:
+                        floor_no = int(name[:-1])
+                    except ValueError:
+                        pass
+                arr = hst.time_series(r, field_index)
+                entry[str(floor_no)] = arr.tolist()
+                if peak_curve is None or float(np.abs(arr).max()) > float(np.abs(peak_curve).max()):
+                    peak_curve = arr
+            if peak_curve is not None:
+                entry["max_floor"] = peak_curve.tolist()
+            return entry
+
+        floor_cat = loader.get("Floor")
+        story_cat = loader.get("Story")
+        th: dict = {}
+
+        # Floor.hst の field index は SNAP バージョン依存の可能性があるため
+        # 非ゼロ値を持つインデックスから物理量を推定します:
+        #   field 0 : 相対変位 相当
+        #   field 4 : 相対速度 相当
+        #   field 6 : 絶対加速度 相当
+        # 実サンプル example_3D/D4 で観測された分布と一致します。
+        floor_field_map = {"disp": 0, "vel": 4, "acc": 6}
+        for key, fidx in floor_field_map.items():
+            entry = _extract_timehistory(floor_cat, fidx)
+            if entry is not None:
+                th[key] = entry
+
+        # Story.hst: 28 field 中、先頭 3 が変形・せん断・モーメント相当と推定
+        story_field_map = {"story_disp": 0, "shear": 6, "moment": 9}
+        for key, fidx in story_field_map.items():
+            entry = _extract_timehistory(story_cat, fidx)
+            if entry is not None:
+                th[key] = entry
+
+        if th:
+            summary["time_history"] = th
+
+        # ----- 固有値（Period.xbn）の取込 -----
+        if loader.period and loader.period.modes:
+            summary["period_modes"] = [
+                {
+                    "mode_no": m.mode_no,
+                    "period": m.period,
+                    "frequency": m.frequency,
+                    "omega": m.omega,
+                    "dominant": m.dominant_direction,
+                    "beta": dict(m.beta),
+                    "pm": dict(m.pm),
+                }
+                for m in loader.period.modes
+            ]
 
     @staticmethod
     def _store_summary(case: AnalysisCase, res: Result) -> None:
         """主要応答値を result_summary に格納します。"""
         case.result_summary = _AnalysisWorker._build_summary_dict(res)
+
 
 
 class AnalysisService(QObject):

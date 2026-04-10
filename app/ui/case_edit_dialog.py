@@ -1513,9 +1513,24 @@ class CaseEditDialog(QDialog):
         return f"{base_name}_{idx}"
 
     def _save_to_case(self) -> None:
-        """UIの現在値をケースデータモデルに保存します。"""
+        """UIの現在値をケースデータモデルに保存します。
+
+        SNAP 解析時の結果フォルダ分離のため、ケース名は他のケースと
+        重複してはなりません。重複があれば自動採番して一意化します。
+        """
         c = self._case
-        c.name       = self._name_edit.text().strip() or "無名ケース"
+        desired_name = self._name_edit.text().strip() or "無名ケース"
+        # 既存名との重複回避 (自ケース自身の旧名は除外)
+        other_names = {n for n in self._existing_names if n != c.name}
+        if desired_name in other_names:
+            import re
+            m = re.match(r"^(.*?)(?:\s*\((\d+)\))?\s*$", desired_name)
+            base = m.group(1).strip() if m else desired_name
+            n = 2
+            while f"{base} ({n})" in other_names:
+                n += 1
+            desired_name = f"{base} ({n})"
+        c.name       = desired_name
         c.output_dir = self._out_edit.text().strip()
         c.notes      = self._notes_edit.toPlainText()
 

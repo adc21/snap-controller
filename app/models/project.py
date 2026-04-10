@@ -95,16 +95,55 @@ class Project:
     # ------------------------------------------------------------------
 
     def add_case(self, case: Optional[AnalysisCase] = None) -> AnalysisCase:
-        """新しいケースを追加して返します。"""
+        """新しいケースを追加して返します。
+
+        解析時に SNAP 入力ファイル名へケース名を埋め込んで
+        ケース固有の結果フォルダに書き出すため、**ケース名は
+        プロジェクト内で一意である必要があります**。
+        既存ケースと名前が重複する場合、自動で採番して一意化します。
+        """
         if case is None:
             case = AnalysisCase()
             case.name = f"Case {len(self.cases) + 1}"
         # モデルファイルを自動設定
         if self.s8i_path and not case.model_path:
             case.model_path = self.s8i_path
+        # 名前の一意化（他ケースと衝突しないように採番）
+        case.name = self.ensure_unique_case_name(case.name, exclude_id=case.id)
         self.cases.append(case)
         self._touch()
         return case
+
+    def ensure_unique_case_name(self, desired: str,
+                                exclude_id: Optional[str] = None) -> str:
+        """与えられた名前を、既存ケース名と衝突しない一意な名前に調整します。
+
+        Parameters
+        ----------
+        desired : str
+            希望する名前。
+        exclude_id : Optional[str]
+            除外するケース ID（改名対象ケース自身を衝突判定から外す用）。
+
+        Returns
+        -------
+        str
+            衝突しない名前。必要に応じて " (2)", " (3)" ... を付加します。
+        """
+        desired = (desired or "").strip() or "無名ケース"
+        existing = {c.name for c in self.cases if c.id != exclude_id}
+        if desired not in existing:
+            return desired
+        import re
+        # 末尾 " (n)" があれば取り除いてベース名を作る
+        m = re.match(r"^(.*?)(?:\s*\((\d+)\))?\s*$", desired)
+        base = m.group(1).strip() if m else desired
+        n = 2
+        while True:
+            candidate = f"{base} ({n})"
+            if candidate not in existing:
+                return candidate
+            n += 1
 
     def remove_case(self, case_id: str) -> bool:
         """指定 ID のケースを削除します。存在した場合 True を返します。"""
