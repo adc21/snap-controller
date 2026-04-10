@@ -64,6 +64,9 @@ from .result_table_widget import ResultTableWidget
 from .binary_result_widget import BinaryResultWidget
 from .mode_shape_widget import ModeShapeWidget
 from .hysteresis_widget import HysteresisWidget
+from .transfer_function_widget import TransferFunctionWidget
+from .irdt_wizard_dialog import IrdtWizardDialog
+from .minimizer_dialog import MinimizerDialog
 from .model_info_widget import ModelInfoWidget
 from .settings_dialog import SettingsDialog, load_settings
 from .sweep_dialog import SweepDialog
@@ -160,6 +163,7 @@ class MainWindow(QMainWindow):
         self._binary_result = BinaryResultWidget()
         self._mode_shape_widget = ModeShapeWidget()
         self._hysteresis_widget = HysteresisWidget()
+        self._transfer_function_widget = TransferFunctionWidget()
         self._ranking = RankingWidget()
         self._dashboard = DashboardWidget()
         self._file_preview = FilePreviewWidget()
@@ -337,6 +341,7 @@ class MainWindow(QMainWindow):
         self._binary_result.prepend_tab(self._compare_chart, "📊 応答値比較")
         self._binary_result.prepend_tab(self._hysteresis_widget, "🔄 履歴ループ")
         self._binary_result.prepend_tab(self._mode_shape_widget, "🏗 モード形状")
+        self._binary_result.prepend_tab(self._transfer_function_widget, "〜 伝達関数")
 
         self._right_tabs = _QTabWidget()
         _tab_defs = [
@@ -663,6 +668,16 @@ class MainWindow(QMainWindow):
         act_optimize.setShortcut("Ctrl+Shift+O")
         act_optimize.triggered.connect(self._open_optimizer_dialog)
         analysis_menu.addAction(act_optimize)
+
+        act_irdt = QAction("iRDT 設計ウィザード(&I)…", self)
+        act_irdt.setShortcut("Ctrl+Shift+I")
+        act_irdt.triggered.connect(self._open_irdt_wizard)
+        analysis_menu.addAction(act_irdt)
+
+        act_minimizer = QAction("ダンパー本数最小化(&M)…", self)
+        act_minimizer.setShortcut("Ctrl+Shift+M")
+        act_minimizer.triggered.connect(self._open_minimizer_dialog)
+        analysis_menu.addAction(act_minimizer)
 
         act_compare = QAction("ケース詳細比較(&D)…", self)
         act_compare.setShortcut("Ctrl+D")
@@ -1754,6 +1769,7 @@ class MainWindow(QMainWindow):
         ]
         self._mode_shape_widget.set_entries(entries)
         self._hysteresis_widget.set_entries(entries)
+        self._transfer_function_widget.set_entries(entries)
 
     def _reset_all_cases_for_new_s8i(self, new_s8i_path: str) -> None:
         """
@@ -1783,6 +1799,7 @@ class MainWindow(QMainWindow):
         self._binary_result.set_cases([])
         self._mode_shape_widget.set_entries([])
         self._hysteresis_widget.set_entries([])
+        self._transfer_function_widget.set_entries([])
         self._ranking.set_cases([])
         self._dashboard.set_cases([])
 
@@ -2494,6 +2511,80 @@ class MainWindow(QMainWindow):
                 self.statusBar().showMessage(
                     f"最適化結果をケース「{case.name}」として追加しました"
                 )
+
+    def _open_irdt_wizard(self) -> None:
+        """iRDT 設計ウィザードを開きます。"""
+        # PeriodXbnReader があればそこからモード情報を取得
+        period_reader = None
+        floor_masses = None
+        for e in self._binary_result._entries.values():
+            if e.loader:
+                try:
+                    pr = e.loader.period_reader()
+                    if pr and pr.modes:
+                        period_reader = pr
+                        break
+                except Exception:
+                    pass
+        # 層質量: プロジェクトの s8i モデルから取得を試みる
+        if self._project and hasattr(self._project, "model") and self._project.model:
+            model = self._project.model
+            if hasattr(model, "floor_masses"):
+                floor_masses = model.floor_masses
+
+        dlg = IrdtWizardDialog(
+            period_reader=period_reader,
+            floor_masses=floor_masses,
+            parent=self,
+        )
+        dlg.designCompleted.connect(self._on_irdt_design_completed)
+        dlg.exec()
+
+    def _on_irdt_design_completed(self, plan) -> None:
+        """iRDT 設計結果を受け取ります。"""
+        self._log.append_line(f"=== iRDT 設計完了: モード{plan.target_mode}, "
+                              f"μ={plan.total_mass_ratio:.4f} ===")
+        self.statusBar().showMessage(
+            f"iRDT 設計完了 — モード{plan.target_mode}, "
+            f"質量比 μ={plan.total_mass_ratio:.4f}",
+            8000,
+        )
+
+    def _open_minimizer_dialog(self) -> None:
+        """ダンパー本数最小化ダイアログを開きます。"""
+        if self._project is None:
+            return
+        # ダンパー配置候補の位置ラベルを取得
+        n_positions = 10  # デフォルト
+        position_labels = [f"{i+1}F" for i in range(n_positions)]
+
+        # プロジェクトのモデルから層数を取得
+        if hasattr(self._project, "model") and self._project.model:
+            model = self._project.model
+            if hasattr(model, "num_floors") and model.num_floors > 0:
+                n_positions = model.num_floors
+                position_labels = [f"{i+1}F" for i in range(n_positions)]
+
+        dlg = MinimizerDialog(
+            n_positions=n_positions,
+            position_labels=position_labels,
+            evaluate_fn=None,  # 実評価関数は SnapEvaluator 接続時に設定
+            parent=self,
+        )
+        dlg.minimizationCompleted.connect(self._on_minimizer_completed)
+        dlg.exec()
+
+    def _on_minimizer_completed(self, result) -> None:
+        """ダンパー本数最小化結果を受け取ります。"""
+        placed = sum(1 for p in result.placement if p)
+        self._log.append_line(
+            f"=== ダンパー最小化完了: {placed}/{len(result.placement)}本配置, "
+            f"マージン={result.margin:.4f} ==="
+        )
+        self.statusBar().showMessage(
+            f"ダンパー最小化完了 — {placed}本配置",
+            8000,
+        )
 
     def _open_case_compare(self) -> None:
         """2ケース詳細比較ダイアログを開きます。"""

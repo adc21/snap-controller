@@ -267,6 +267,8 @@ class OptimizerDialog(QDialog):
         self._method_combo.addItem("グリッドサーチ", "grid")
         self._method_combo.addItem("ランダムサーチ", "random")
         self._method_combo.addItem("ベイズ最適化 (Bayesian)", "bayesian")
+        self._method_combo.addItem("遺伝的アルゴリズム (GA)", "ga")
+        self._method_combo.addItem("焼きなまし法 (SA)", "sa")
         self._method_combo.currentIndexChanged.connect(self._on_method_changed)
         row1.addWidget(self._method_combo)
 
@@ -606,7 +608,7 @@ class OptimizerDialog(QDialog):
 
     def _on_method_changed(self, index: int) -> None:
         method = self._method_combo.currentData()
-        self._iter_spin.setEnabled(method in ("random", "bayesian"))
+        self._iter_spin.setEnabled(method in ("random", "bayesian", "ga", "sa"))
 
     # ------------------------------------------------------------------
     # Optimization execution
