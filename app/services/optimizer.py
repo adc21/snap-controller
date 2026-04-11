@@ -21,6 +21,7 @@ app/services/optimizer.py
 from __future__ import annotations
 
 import itertools
+import logging
 import math
 import random
 import time
@@ -28,6 +29,8 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import numpy as np
+
+logger = logging.getLogger(__name__)
 
 from PySide6.QtCore import QObject, QThread, Signal
 
@@ -103,7 +106,8 @@ class _GaussianProcessRegressor:
             L_inv = np.linalg.solve(L, np.eye(len(X)))
             self._K_inv = L_inv.T @ L_inv
         except np.linalg.LinAlgError:
-            # コレスキー分解失敗時はフォールバック
+            # コレスキー分解失敗時はフォールバック（正則化を強化）
+            logger.debug("GP: Cholesky failed, falling back to regularized inverse")
             self._K_inv = np.linalg.inv(K + 0.01 * np.eye(len(X)))
             self._alpha = self._K_inv @ y
 
@@ -855,6 +859,7 @@ class _OptimizationWorker(QThread):
 
             except Exception as e:
                 # ベイズ最適化に失敗した場合、残りはランダムサーチでフォールバック
+                logger.warning("Bayesian optimization failed (%s), falling back to random search", e)
                 for i in range(n_bayesian):
                     if self._cancelled:
                         break

@@ -109,9 +109,13 @@ from app.services.optimizer import (
 from app.services.snap_evaluator import create_snap_evaluator
 from .theme import ThemeManager, MPL_STYLES
 
+import logging
+logger = logging.getLogger(__name__)
+
 try:
     plt.rcParams["font.family"] = ["MS Gothic", "Meiryo", "IPAGothic", "sans-serif"]
 except Exception:
+    logger.debug("Japanese font not available, using default")
     pass
 
 # 目的関数の選択肢 (key, label, unit)
@@ -532,8 +536,8 @@ class OptimizerDialog(QDialog):
                     import math
                     n = math.floor((max_v - min_v) / step_v) + 1
                     total *= max(1, n)
-            except Exception:
-                pass
+            except (ValueError, AttributeError, TypeError) as e:
+                logger.debug("_estimate_grid_runs: skipping parameter (%s)", e)
         return total
 
     def _update_est_run_label(self) -> None:

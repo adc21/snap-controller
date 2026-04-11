@@ -6,12 +6,15 @@ app/services/transfer_function_service.py
 
 from __future__ import annotations
 
+import logging
 import math
 from dataclasses import dataclass
 from typing import Dict, Optional, Tuple
 
 import numpy as np
 from scipy import signal
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -159,6 +162,13 @@ class TransferFunctionService:
         magnitude_db = 20 * np.log10(magnitude + eps)
         phase_rad = np.angle(h)
         phase_deg = np.degrees(phase_rad)
+
+        # NaN/Inf 防御
+        if not np.all(np.isfinite(magnitude_db)):
+            logger.warning("compute_transfer_function: NaN/Inf in gain_db, sanitizing")
+            magnitude_db = np.where(np.isfinite(magnitude_db), magnitude_db, -200.0)
+        if not np.all(np.isfinite(phase_deg)):
+            phase_deg = np.where(np.isfinite(phase_deg), phase_deg, 0.0)
 
         # コヒーレンス
         coh_squared = np.zeros_like(pxx, dtype=float)
@@ -409,6 +419,10 @@ def sdof_tmd_transfer_function(
 
     eps = 1e-30
     H = N_mag / (D_mag + eps)
+    # NaN/Inf 防御: 数値不安定時は安全な値に置換
+    if not np.all(np.isfinite(H)):
+        logger.warning("sdof_tmd_transfer_function: NaN/Inf detected, replacing with 0")
+        H = np.where(np.isfinite(H), H, 0.0)
     return H
 
 
@@ -814,4 +828,5 @@ def compute_snap_transfer_function(
             output_label=out_label,
         )
     except Exception:
+        logger.warning("compute_snap_transfer_function: failed", exc_info=True)
         return None

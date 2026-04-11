@@ -33,9 +33,12 @@ from PySide6.QtWidgets import (
     QScrollArea,
 )
 
+import logging
 import numpy as np
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
+
+logger = logging.getLogger(__name__)
 
 from app.services.irdt_designer import (
     IrdtPlacementPlan,
@@ -806,6 +809,7 @@ class IrdtWizardDialog(QDialog):
                 n_steps=5,
             )
         except Exception:
+            logger.warning("Sensitivity analysis failed", exc_info=True)
             return
 
         fig = self._tornado_figure
