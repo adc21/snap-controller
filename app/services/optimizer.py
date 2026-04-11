@@ -308,6 +308,8 @@ class OptimizationConfig:
     damper_type: str = ""
     base_case: Optional[AnalysisCase] = None
     objective_weights: Dict[str, float] = field(default_factory=dict)
+    warm_start_candidates: List["OptimizationCandidate"] = field(default_factory=list)
+    """前回の最適化結果から引き継ぐ候補リスト（ウォームスタート用）。"""
 
     def compute_objective(self, response: Dict[str, float]) -> float:
         """応答値辞書から目的関数値を計算する。
@@ -889,14 +891,39 @@ class _OptimizationWorker(QThread):
         param_mins = np.array([pr.min_val for pr in config.parameters])
         param_ranges = np.array([pr.max_val - pr.min_val for pr in config.parameters])
 
-        # 初期探索フェーズの回数（全体の10%または最小10回）
-        n_init = min(10, max(10, total // 10))
-        n_bayesian = total - n_init
+        # ウォームスタート: 前回結果を初期データとして注入
+        warm_count = 0
+        X_warm = []
+        y_warm = []
+        warm_candidates: List[OptimizationCandidate] = []
+        if config.warm_start_candidates:
+            for wc in config.warm_start_candidates:
+                if all(k in wc.params for k in param_keys):
+                    raw = np.array([wc.params[k] for k in param_keys])
+                    x_norm = (raw - param_mins) / np.where(param_ranges == 0, 1.0, param_ranges)
+                    X_warm.append(x_norm)
+                    y_warm.append(wc.objective_value)
+                    warm_candidates.append(wc)
+            warm_count = len(X_warm)
 
-        # 初期サンプル用のデータ
-        X_init = []  # 正規化されたパラメータ
-        y_init = []  # 目的関数値
-        raw_X_init = []  # 元のスケールのパラメータ
+        # 初期探索フェーズの回数（全体の10%または最小10回）- ウォーム分を差し引き
+        n_init = max(0, min(10, max(10, total // 10)) - warm_count)
+        n_bayesian = total - n_init - warm_count
+
+        # 初期サンプル用のデータ（ウォームスタートデータを先に追加）
+        X_init = list(X_warm)  # 正規化されたパラメータ
+        y_init = list(y_warm)  # 目的関数値
+        raw_X_init = []  # 元のスケールのパラメータ (warm-start分は再評価不要)
+
+        # ウォームスタート候補を結果に追加
+        for idx, wc in enumerate(warm_candidates):
+            all_candidates.append(wc)
+            self.candidate_found.emit(wc)
+            if wc.is_feasible and (best is None or wc.objective_value < best.objective_value):
+                best = wc
+        if warm_count > 0:
+            self.progress.emit(warm_count, total,
+                               f"ウォームスタート: {warm_count}点を引き継ぎ")
 
         # === Phase 1: 初期ランダム探索 ===
         for i in range(n_init):
@@ -923,7 +950,7 @@ class _OptimizationWorker(QThread):
                 objective_value=obj_val,
                 response_values=response,
                 is_feasible=is_feasible,
-                iteration=i,
+                iteration=warm_count + i,
                 constraint_margins=margins,
             )
             all_candidates.append(candidate)
@@ -935,9 +962,11 @@ class _OptimizationWorker(QThread):
             # 進捗報告
             if i % max(1, n_init // 10) == 0 or i == n_init - 1:
                 msg = f"初期探索: {i+1}/{n_init}"
+                if warm_count > 0:
+                    msg += f" (+ ウォーム{warm_count}点)"
                 if best:
                     msg += f" | 暫定最良: {best.objective_value:.6g}"
-                self.progress.emit(i + 1, total, msg)
+                self.progress.emit(warm_count + i + 1, total, msg)
 
         # === Phase 2: ベイズ最適化フェーズ ===
         if len(X_init) > 0 and n_bayesian > 0:
@@ -1124,9 +1153,27 @@ class _OptimizationWorker(QThread):
                 return float("inf")
             return c.objective_value
 
-        # 初期集団生成（LHS）
+        # 初期集団生成（LHS + ウォームスタート）
         population = self._latin_hypercube_sample(pop_size, n_params)
         pop_candidates = []
+
+        # ウォームスタート: 前回結果の上位個体で初期集団の一部を置換
+        warm_injected = 0
+        if config.warm_start_candidates:
+            warm_sorted = sorted(
+                [wc for wc in config.warm_start_candidates
+                 if all(k in wc.params for k in [pr.key for pr in config.parameters])],
+                key=lambda c: c.objective_value if c.is_feasible else float("inf"),
+            )
+            for wc in warm_sorted[:pop_size // 2]:  # 最大で集団の半分まで
+                chromo = np.array([
+                    (wc.params[pr.key] - pr.min_val) / max(pr.max_val - pr.min_val, 1e-12)
+                    for pr in config.parameters
+                ])
+                chromo = np.clip(chromo, 0.0, 1.0)
+                population[warm_injected] = chromo
+                warm_injected += 1
+
         for i, chromo in enumerate(population):
             if self._cancelled:
                 break
@@ -1137,7 +1184,8 @@ class _OptimizationWorker(QThread):
             if best is None or _fitness(cand) < _fitness(best):
                 best = cand
 
-        self.progress.emit(pop_size, total, f"GA: 初期集団評価完了 ({pop_size}個体)")
+        warm_msg = f" (ウォーム{warm_injected}個体)" if warm_injected > 0 else ""
+        self.progress.emit(pop_size, total, f"GA: 初期集団評価完了 ({pop_size}個体{warm_msg})")
 
         # 世代ループ
         for gen in range(1, n_generations):
@@ -1256,8 +1304,25 @@ class _OptimizationWorker(QThread):
                 return cand.objective_value + 1e10  # ペナルティ
             return cand.objective_value
 
-        # 初期解（ランダム）
-        current_x = np.random.rand(n_params)
+        # 初期解（ウォームスタートまたはランダム）
+        if config.warm_start_candidates:
+            # 前回の最良解を初期解として使用
+            warm_sorted = sorted(
+                [wc for wc in config.warm_start_candidates
+                 if all(k in wc.params for k in [pr.key for pr in config.parameters])],
+                key=lambda c: c.objective_value if c.is_feasible else float("inf"),
+            )
+            if warm_sorted:
+                wb = warm_sorted[0]
+                current_x = np.array([
+                    (wb.params[pr.key] - pr.min_val) / max(pr.max_val - pr.min_val, 1e-12)
+                    for pr in config.parameters
+                ])
+                current_x = np.clip(current_x, 0.0, 1.0)
+            else:
+                current_x = np.random.rand(n_params)
+        else:
+            current_x = np.random.rand(n_params)
         params = _decode(current_x)
         response = self._evaluate_fn(params)
         obj_val = config.compute_objective(response)

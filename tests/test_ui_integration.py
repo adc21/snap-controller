@@ -704,3 +704,82 @@ class TestStagnationDetection:
         assert dlg._result_table.item(1, 0).text() == "-"
         assert dlg._result_table.item(1, 3).text() == "NG"
         dlg.close()
+
+
+class TestWarmStartUI:
+    """ウォームスタートUI要素のテスト。"""
+
+    def test_warm_start_checkbox_exists(self, qapp):
+        """OptimizerDialogにウォームスタートチェックボックスがある。"""
+        from app.ui.optimizer_dialog import OptimizerDialog
+        dlg = OptimizerDialog()
+        assert hasattr(dlg, "_warm_start_cb")
+        assert not dlg._warm_start_cb.isChecked()
+        dlg.close()
+
+    def test_warm_start_browse_disabled_by_default(self, qapp):
+        """チェックOFF時は参照ボタンが無効。"""
+        from app.ui.optimizer_dialog import OptimizerDialog
+        dlg = OptimizerDialog()
+        assert not dlg._warm_start_browse_btn.isEnabled()
+        dlg.close()
+
+    def test_warm_start_browse_enabled_on_check(self, qapp):
+        """チェックON時は参照ボタンが有効。"""
+        from app.ui.optimizer_dialog import OptimizerDialog
+        dlg = OptimizerDialog()
+        dlg._warm_start_cb.setChecked(True)
+        assert dlg._warm_start_browse_btn.isEnabled()
+        dlg._warm_start_cb.setChecked(False)
+        assert not dlg._warm_start_browse_btn.isEnabled()
+        dlg.close()
+
+    def test_warm_start_config_empty_when_unchecked(self, qapp):
+        """チェックOFF時はconfigにウォーム候補が含まれない。"""
+        from app.ui.optimizer_dialog import OptimizerDialog, OptimizationCandidate
+        dlg = OptimizerDialog()
+        dlg._warm_start_candidates = [
+            OptimizationCandidate(params={"Cd": 500}, objective_value=0.005)
+        ]
+        dlg._warm_start_cb.setChecked(False)
+        config = dlg._build_config()
+        assert config.warm_start_candidates == []
+        dlg.close()
+
+    def test_warm_start_config_populated_when_checked(self, qapp):
+        """チェックON時はconfigにウォーム候補が含まれる。"""
+        from app.ui.optimizer_dialog import OptimizerDialog, OptimizationCandidate
+        dlg = OptimizerDialog()
+        dlg._warm_start_candidates = [
+            OptimizationCandidate(params={"Cd": 500}, objective_value=0.005)
+        ]
+        dlg._warm_start_cb.setChecked(True)
+        config = dlg._build_config()
+        assert len(config.warm_start_candidates) == 1
+        dlg.close()
+
+
+class TestComparisonDialog:
+    """結果比較ダイアログのテスト。"""
+
+    def test_instantiation(self, qapp):
+        """ComparisonDialogがインスタンス化できる。"""
+        from app.ui.optimizer_dialog import ComparisonDialog
+        dlg = ComparisonDialog()
+        assert dlg.windowTitle() == "最適化結果の比較"
+        dlg.close()
+
+    def test_clear_all(self, qapp):
+        """全クリアが正常動作する。"""
+        from app.ui.optimizer_dialog import ComparisonDialog
+        dlg = ComparisonDialog()
+        dlg._clear_all()
+        assert dlg._table.rowCount() == 0
+        dlg.close()
+
+    def test_compare_button_exists(self, qapp):
+        """OptimizerDialogに結果比較ボタンがある。"""
+        from app.ui.optimizer_dialog import OptimizerDialog
+        dlg = OptimizerDialog()
+        assert hasattr(dlg, "_compare_btn")
+        dlg.close()

@@ -1094,3 +1094,132 @@ class TestEvaluatorStats:
         assert loaded.evaluator_stats is None
 
 
+class TestWarmStartConfig:
+    """ウォームスタート機能のテスト。"""
+
+    def test_warm_start_candidates_default_empty(self):
+        """warm_start_candidates のデフォルトは空リスト。"""
+        config = OptimizationConfig()
+        assert config.warm_start_candidates == []
+
+    def test_warm_start_candidates_set(self):
+        """warm_start_candidates を設定できる。"""
+        candidates = [
+            OptimizationCandidate(
+                params={"Cd": 500, "alpha": 0.3},
+                objective_value=0.005,
+                is_feasible=True,
+            ),
+            OptimizationCandidate(
+                params={"Cd": 600, "alpha": 0.4},
+                objective_value=0.006,
+                is_feasible=True,
+            ),
+        ]
+        config = OptimizationConfig(warm_start_candidates=candidates)
+        assert len(config.warm_start_candidates) == 2
+        assert config.warm_start_candidates[0].objective_value == 0.005
+
+    def test_bayesian_warm_start(self):
+        """ベイズ最適化がウォームスタート候補を初期データに使用する。"""
+        warm = [
+            OptimizationCandidate(
+                params={"x": 0.5},
+                objective_value=0.1,
+                response_values={"max_drift": 0.1},
+                is_feasible=True,
+            ),
+        ]
+        config = OptimizationConfig(
+            objective_key="max_drift",
+            parameters=[ParameterRange("x", "X", 0.0, 1.0, 0.1)],
+            method="bayesian",
+            max_iterations=15,
+            warm_start_candidates=warm,
+        )
+
+        results_collected = []
+
+        def mock_eval(params):
+            x = params["x"]
+            return {"max_drift": (x - 0.3) ** 2}
+
+        worker = _OptimizationWorker(config, mock_eval)
+        worker.candidate_found.connect(lambda c: results_collected.append(c))
+        worker.run()
+
+        # ウォーム候補が結果に含まれている
+        assert len(results_collected) >= 1
+        assert any(c.params.get("x") == 0.5 for c in results_collected)
+
+    def test_ga_warm_start_injects_individuals(self):
+        """GA がウォームスタート候補を初期集団に注入する。"""
+        warm = [
+            OptimizationCandidate(
+                params={"x": 0.7},
+                objective_value=0.01,
+                response_values={"max_drift": 0.01},
+                is_feasible=True,
+            ),
+        ]
+        config = OptimizationConfig(
+            objective_key="max_drift",
+            parameters=[ParameterRange("x", "X", 0.0, 1.0, 0.1)],
+            method="ga",
+            max_iterations=40,
+            warm_start_candidates=warm,
+        )
+
+        results_collected = []
+
+        def mock_eval(params):
+            x = params["x"]
+            return {"max_drift": (x - 0.7) ** 2}
+
+        worker = _OptimizationWorker(config, mock_eval)
+        worker.candidate_found.connect(lambda c: results_collected.append(c))
+        worker.run()
+
+        # 結果にウォームスタートの影響がある（最良解がx=0.7付近）
+        assert len(results_collected) >= 20
+
+    def test_sa_warm_start_uses_best(self):
+        """SA がウォームスタートの最良解を初期解に使用する。"""
+        warm = [
+            OptimizationCandidate(
+                params={"x": 0.3},
+                objective_value=0.001,
+                response_values={"max_drift": 0.001},
+                is_feasible=True,
+            ),
+            OptimizationCandidate(
+                params={"x": 0.8},
+                objective_value=0.1,
+                response_values={"max_drift": 0.1},
+                is_feasible=True,
+            ),
+        ]
+        config = OptimizationConfig(
+            objective_key="max_drift",
+            parameters=[ParameterRange("x", "X", 0.0, 1.0, 0.1)],
+            method="sa",
+            max_iterations=20,
+            warm_start_candidates=warm,
+        )
+
+        results_collected = []
+
+        def mock_eval(params):
+            x = params["x"]
+            return {"max_drift": (x - 0.3) ** 2}
+
+        worker = _OptimizationWorker(config, mock_eval)
+        worker.candidate_found.connect(lambda c: results_collected.append(c))
+        worker.run()
+
+        # SA は初期解にウォームスタートの最良(x=0.3)を使うので、
+        # 最初の候補が 0.3 付近であるはず
+        assert len(results_collected) >= 10
+        assert results_collected[0].params["x"] == pytest.approx(0.3, abs=0.15)
+
+

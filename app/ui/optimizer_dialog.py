@@ -435,6 +435,25 @@ class OptimizerDialog(QDialog):
         self._est_run_label.setStyleSheet("font-size: 11px; color: #1565c0; padding: 2px 4px;")
         layout.addWidget(self._est_run_label)
 
+        # ---- ウォームスタート ----
+        warm_row = QHBoxLayout()
+        self._warm_start_cb = QCheckBox("ウォームスタート（前回結果を初期値に利用）")
+        self._warm_start_cb.setToolTip(
+            "保存済みの最適化結果を読み込み、その上位解を初期値として\n"
+            "新しい最適化を開始します（ベイズ/GA/SAで有効）"
+        )
+        warm_row.addWidget(self._warm_start_cb)
+        self._warm_start_path_label = QLabel("")
+        self._warm_start_path_label.setStyleSheet("color: #666; font-size: 10px;")
+        warm_row.addWidget(self._warm_start_path_label, stretch=1)
+        self._warm_start_browse_btn = QPushButton("参照...")
+        self._warm_start_browse_btn.setFixedWidth(60)
+        self._warm_start_browse_btn.setEnabled(False)
+        warm_row.addWidget(self._warm_start_browse_btn)
+        layout.addLayout(warm_row)
+
+        self._warm_start_candidates: List[OptimizationCandidate] = []
+
         # ---- 実行ボタン + 進捗 ----
         run_row = QHBoxLayout()
         self._run_btn = QPushButton("最適化を開始")
@@ -583,6 +602,12 @@ class OptimizerDialog(QDialog):
         self._load_btn.setToolTip("保存済みの最適化結果をJSONファイルから読み込みます")
         btn_row.addWidget(self._load_btn)
 
+        self._compare_btn = QPushButton("結果比較")
+        self._compare_btn.setToolTip(
+            "複数の最適化結果JSONを読み込み、パラメータ・収束曲線を比較します"
+        )
+        btn_row.addWidget(self._compare_btn)
+
         btn_row.addStretch()
 
         close_btn = QPushButton("閉じる")
@@ -599,6 +624,9 @@ class OptimizerDialog(QDialog):
         self._pareto_btn.clicked.connect(self._show_pareto)
         self._save_btn.clicked.connect(self._save_result_json)
         self._load_btn.clicked.connect(self._load_result_json)
+        self._warm_start_cb.toggled.connect(self._warm_start_browse_btn.setEnabled)
+        self._warm_start_browse_btn.clicked.connect(self._browse_warm_start)
+        self._compare_btn.clicked.connect(self._show_comparison)
         self._result_table.cellDoubleClicked.connect(self._show_candidate_detail)
         self._optimizer.progress.connect(self._on_progress)
         self._optimizer.candidate_found.connect(self._on_candidate)
@@ -1004,6 +1032,13 @@ class OptimizerDialog(QDialog):
                 labels = [w["label"] for w in self._weight_spins if w["spin"].value() > 0]
                 obj_label = "複合: " + " + ".join(labels)
 
+        # ウォームスタート候補
+        warm = (
+            list(self._warm_start_candidates)
+            if self._warm_start_cb.isChecked() and self._warm_start_candidates
+            else []
+        )
+
         return OptimizationConfig(
             objective_key=obj_key,
             objective_label=obj_label,
@@ -1014,6 +1049,7 @@ class OptimizerDialog(QDialog):
             damper_type=self._damper_combo.currentText(),
             base_case=self._base_case,
             objective_weights=objective_weights,
+            warm_start_candidates=warm,
         )
 
     def _start_optimization(self) -> None:
@@ -1710,6 +1746,11 @@ class OptimizerDialog(QDialog):
         dlg = ParetoDialog(self._result, parent=self)
         dlg.exec()
 
+    def _show_comparison(self) -> None:
+        """結果比較ダイアログを表示します。"""
+        dlg = ComparisonDialog(parent=self)
+        dlg.exec()
+
     def _save_result_json(self) -> None:
         """最適化結果をJSONファイルに保存します。"""
         if not self._result:
@@ -1776,6 +1817,188 @@ class OptimizerDialog(QDialog):
         self._progress_label.setText(
             f"JSONから読込 ({result.elapsed_sec:.1f}秒の結果)"
         )
+
+    def _browse_warm_start(self) -> None:
+        """ウォームスタート用の前回結果JSONを選択します。"""
+        path, _ = QFileDialog.getOpenFileName(
+            self, "ウォームスタート用の結果ファイルを選択", "",
+            "JSON Files (*.json);;All Files (*)",
+        )
+        if not path:
+            return
+
+        try:
+            result = OptimizationResult.load_json(path)
+        except (OSError, json.JSONDecodeError, KeyError) as e:
+            QMessageBox.warning(self, "読込エラー", f"ファイルの読み込みに失敗しました:\n{e}")
+            return
+
+        if not result.feasible_candidates:
+            QMessageBox.warning(
+                self, "ウォームスタート",
+                "このファイルには制約を満たす候補が含まれていません。\n"
+                "全候補を初期値として使用します。",
+            )
+            self._warm_start_candidates = list(result.all_candidates)
+        else:
+            self._warm_start_candidates = list(result.feasible_candidates)
+
+        n = len(self._warm_start_candidates)
+        import os
+        fname = os.path.basename(path)
+        self._warm_start_path_label.setText(f"{fname} ({n}点)")
+        self._warm_start_path_label.setToolTip(path)
+
+
+class ComparisonDialog(QDialog):
+    """複数の最適化結果を比較するダイアログ。
+
+    保存済みのJSONファイルを複数読み込み、最良解のパラメータ・目的関数値・
+    計算時間などを一覧表示します。収束曲線のオーバーレイプロットも表示します。
+    """
+
+    def __init__(self, parent: Optional[QWidget] = None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("最適化結果の比較")
+        self.setMinimumSize(800, 500)
+        self._results: List[tuple] = []  # [(label, OptimizationResult), ...]
+        self._setup_ui()
+
+    def _setup_ui(self) -> None:
+        layout = QVBoxLayout(self)
+
+        # ファイル追加ボタン
+        top_row = QHBoxLayout()
+        add_btn = QPushButton("結果ファイルを追加...")
+        add_btn.clicked.connect(self._add_result_file)
+        top_row.addWidget(add_btn)
+        clear_btn = QPushButton("全クリア")
+        clear_btn.clicked.connect(self._clear_all)
+        top_row.addWidget(clear_btn)
+        top_row.addStretch()
+        layout.addLayout(top_row)
+
+        # 比較テーブル
+        self._table = QTableWidget()
+        self._table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self._table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self._table.horizontalHeader().setStretchLastSection(True)
+        layout.addWidget(self._table, stretch=1)
+
+        # 収束曲線オーバーレイ
+        theme = "dark" if ThemeManager.is_dark() else "light"
+        bg = MPL_STYLES[theme]["figure.facecolor"]
+        ax_bg = MPL_STYLES[theme]["axes.facecolor"]
+        self._conv_fig = Figure(figsize=(8, 3), tight_layout=True, facecolor=bg)
+        self._conv_ax = self._conv_fig.add_subplot(111, facecolor=ax_bg)
+        self._conv_canvas = FigureCanvas(self._conv_fig)
+        layout.addWidget(self._conv_canvas, stretch=1)
+
+        # 閉じるボタン
+        btn_box = QDialogButtonBox(QDialogButtonBox.Close)
+        btn_box.rejected.connect(self.reject)
+        layout.addWidget(btn_box)
+
+    def _add_result_file(self) -> None:
+        paths, _ = QFileDialog.getOpenFileNames(
+            self, "比較する結果ファイルを選択", "",
+            "JSON Files (*.json);;All Files (*)",
+        )
+        for path in paths:
+            try:
+                result = OptimizationResult.load_json(path)
+                import os
+                label = os.path.basename(path)
+                self._results.append((label, result))
+            except Exception as e:
+                logger.warning("比較ファイル読込失敗: %s: %s", path, e)
+
+        if self._results:
+            self._refresh_table()
+            self._refresh_convergence()
+
+    def _clear_all(self) -> None:
+        self._results.clear()
+        self._table.setRowCount(0)
+        self._table.setColumnCount(0)
+        self._conv_ax.clear()
+        self._conv_canvas.draw()
+
+    def _refresh_table(self) -> None:
+        headers = [
+            "ファイル", "手法", "ダンパー種類", "評価方式",
+            "評価数", "制約満足", "最良目的関数値",
+            "計算時間(秒)",
+        ]
+        # パラメータ列を動的に追加
+        all_param_keys: list[str] = []
+        for _, r in self._results:
+            if r.best:
+                for k in r.best.params:
+                    if k not in all_param_keys:
+                        all_param_keys.append(k)
+        headers += [f"Best:{k}" for k in all_param_keys]
+
+        self._table.setColumnCount(len(headers))
+        self._table.setHorizontalHeaderLabels(headers)
+        self._table.setRowCount(len(self._results))
+
+        for row, (label, r) in enumerate(self._results):
+            self._table.setItem(row, 0, QTableWidgetItem(label))
+            method = r.config.method if r.config else "?"
+            self._table.setItem(row, 1, QTableWidgetItem(method))
+            dtype = r.config.damper_type if r.config else ""
+            self._table.setItem(row, 2, QTableWidgetItem(dtype))
+            self._table.setItem(row, 3, QTableWidgetItem(r.evaluation_method))
+            self._table.setItem(row, 4, QTableWidgetItem(str(len(r.all_candidates))))
+            self._table.setItem(row, 5, QTableWidgetItem(str(len(r.feasible_candidates))))
+
+            if r.best:
+                item = QTableWidgetItem(f"{r.best.objective_value:.6g}")
+                self._table.setItem(row, 6, item)
+            else:
+                self._table.setItem(row, 6, QTableWidgetItem("N/A"))
+
+            self._table.setItem(row, 7, QTableWidgetItem(f"{r.elapsed_sec:.1f}"))
+
+            # パラメータ値
+            for col_idx, pk in enumerate(all_param_keys):
+                if r.best and pk in r.best.params:
+                    val = r.best.params[pk]
+                    self._table.setItem(row, 8 + col_idx, QTableWidgetItem(f"{val:.6g}"))
+
+        self._table.resizeColumnsToContents()
+
+    def _refresh_convergence(self) -> None:
+        ax = self._conv_ax
+        ax.clear()
+
+        colors = ["#1565c0", "#e65100", "#2e7d32", "#6a1b9a", "#c62828", "#00838f"]
+        for idx, (label, r) in enumerate(self._results):
+            feasible_history = []
+            best_so_far = float("inf")
+            for c in r.all_candidates:
+                if c.is_feasible:
+                    best_so_far = min(best_so_far, c.objective_value)
+                    feasible_history.append(best_so_far)
+            if feasible_history:
+                color = colors[idx % len(colors)]
+                ax.plot(
+                    range(1, len(feasible_history) + 1),
+                    feasible_history,
+                    color=color,
+                    label=label,
+                    linewidth=1.5,
+                )
+
+        if self._results:
+            ax.set_xlabel("制約満足候補の累積数")
+            ax.set_ylabel("累積最良値")
+            ax.set_title("収束曲線の比較")
+            ax.legend(fontsize=8, loc="upper right")
+            ax.grid(True, alpha=0.3)
+
+        self._conv_canvas.draw()
 
 
 class SensitivityDialog(QDialog):
