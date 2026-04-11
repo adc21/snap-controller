@@ -664,3 +664,43 @@ class TestStagnationDetection:
         result = OptimizerDialog._detect_stagnation(candidates)
         # 全feasibleが同値(5.0) → 停滞検出
         assert result is not None
+
+    def test_result_table_shows_infeasible(self, qapp):
+        """結果テーブルが制約違反候補も表示し、feasible優先でソートする。"""
+        from app.ui.optimizer_dialog import OptimizerDialog
+        from app.services.optimizer import (
+            OptimizationCandidate, OptimizationResult, OptimizationConfig,
+        )
+
+        dlg = OptimizerDialog()
+        result = OptimizationResult(
+            config=OptimizationConfig(objective_key="max_drift", method="grid"),
+            best=OptimizationCandidate(
+                params={"Cd": 500}, objective_value=0.003,
+                response_values={"max_drift": 0.003}, is_feasible=True,
+            ),
+            all_candidates=[
+                OptimizationCandidate(
+                    params={"Cd": 300}, objective_value=0.01,
+                    response_values={"max_drift": 0.01}, is_feasible=False,
+                ),
+                OptimizationCandidate(
+                    params={"Cd": 500}, objective_value=0.003,
+                    response_values={"max_drift": 0.003}, is_feasible=True,
+                ),
+                OptimizationCandidate(
+                    params={"Cd": 400}, objective_value=0.006,
+                    response_values={"max_drift": 0.006}, is_feasible=False,
+                ),
+            ],
+        )
+        dlg._populate_result_table(result)
+        # 3行表示される（feasible 1 + infeasible 2）
+        assert dlg._result_table.rowCount() == 3
+        # 1行目はfeasible（順位 "1"）
+        assert dlg._result_table.item(0, 0).text() == "1"
+        assert dlg._result_table.item(0, 3).text() == "OK"
+        # 2行目はinfeasible（順位 "-"）
+        assert dlg._result_table.item(1, 0).text() == "-"
+        assert dlg._result_table.item(1, 3).text() == "NG"
+        dlg.close()

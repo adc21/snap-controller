@@ -1205,6 +1205,14 @@ class OptimizerDialog(QDialog):
                 f"{eval_tag} 最良解: {obj_label} = {result.best.objective_value:.6g}  |  "
                 f"制約満足: {len(result.feasible_candidates)} / {len(result.all_candidates)} 点"
             )
+            # SNAP評価統計を表示
+            if result.evaluator_stats:
+                s = result.evaluator_stats
+                cache_hits = s.get("cache_hits", 0)
+                if cache_hits > 0:
+                    summary_text += (
+                        f"  |  キャッシュ: {cache_hits}hit"
+                    )
             if stagnation:
                 stag_pct = stagnation["stagnation_length"] / stagnation["total_evals"] * 100
                 summary_text += (
@@ -1313,20 +1321,29 @@ class OptimizerDialog(QDialog):
         self._best_summary_card.show()
 
     def _populate_result_table(self, result: OptimizationResult) -> None:
-        """結果テーブルを上位20候補で更新します。"""
+        """結果テーブルを上位20候補で更新します。
+
+        制約を満たす候補を優先表示し、残り枠に制約違反候補も表示します。
+        制約違反候補は薄い背景色で視覚的に区別されます。
+        """
         self._result_table.setRowCount(0)
-        ranked = result.ranked_candidates[:20]
+        ranked = result.all_ranked_candidates[:20]
 
         obj_key = result.config.objective_key if result.config else ""
+        n_feasible = len(result.feasible_candidates)
 
         for rank, cand in enumerate(ranked):
             row = self._result_table.rowCount()
             self._result_table.insertRow(row)
 
-            # 順位
-            rank_item = QTableWidgetItem(str(rank + 1))
+            # 順位（制約違反候補には「-」を表示）
+            if cand.is_feasible:
+                rank_text = str(rank + 1)
+            else:
+                rank_text = "-"
+            rank_item = QTableWidgetItem(rank_text)
             rank_item.setTextAlignment(Qt.AlignCenter)
-            if rank < 3:
+            if cand.is_feasible and rank < 3:
                 font = QFont()
                 font.setBold(True)
                 rank_item.setFont(font)
@@ -1364,11 +1381,19 @@ class OptimizerDialog(QDialog):
                 row, 4, QTableWidgetItem(summary)
             )
 
+            # 制約違反候補の行を薄い赤背景で表示
+            if not cand.is_feasible:
+                bg = QColor(214, 39, 40, 30)  # 薄い赤
+                for col in range(5):
+                    item = self._result_table.item(row, col)
+                    if item:
+                        item.setBackground(bg)
+
     def _show_candidate_detail(self, row: int, _col: int) -> None:
         """結果テーブルの行をダブルクリック → 候補の全詳細を表示。"""
         if not self._result:
             return
-        ranked = self._result.ranked_candidates[:20]
+        ranked = self._result.all_ranked_candidates[:20]
         if row < 0 or row >= len(ranked):
             return
         cand = ranked[row]
@@ -1582,7 +1607,7 @@ class OptimizerDialog(QDialog):
         if not path:
             return
 
-        ranked = self._result.ranked_candidates or self._result.all_candidates
+        ranked = self._result.all_ranked_candidates
         obj_key = self._result.config.objective_key if self._result.config else ""
 
         # ヘッダ構築: パラメータ名 + 目的関数 + 判定 + 応答値 + 制約マージン
@@ -1608,6 +1633,13 @@ class OptimizerDialog(QDialog):
             with open(path, "w", newline="", encoding="utf-8-sig") as f:
                 writer = csv.writer(f)
                 writer.writerow([f"# 評価方式: {eval_label}"])
+                if self._result.evaluator_stats:
+                    s = self._result.evaluator_stats
+                    writer.writerow([
+                        f"# SNAP統計: 成功 {s.get('success', 0)}, "
+                        f"エラー {s.get('error', 0)}, "
+                        f"キャッシュヒット {s.get('cache_hits', 0)}"
+                    ])
                 writer.writerow(header)
                 for rank, cand in enumerate(ranked):
                     row = [rank + 1]

@@ -415,6 +415,7 @@ class OptimizationResult:
     converged: bool = False
     message: str = ""
     evaluation_method: str = "mock"  # "mock" or "snap"
+    evaluator_stats: Optional[Dict[str, int]] = None  # SNAP評価統計
 
     @property
     def feasible_candidates(self) -> List[OptimizationCandidate]:
@@ -426,6 +427,23 @@ class OptimizationResult:
         """目的関数値でソートされた候補リスト（制約満足のみ）。"""
         feasible = self.feasible_candidates
         return sorted(feasible, key=lambda c: c.objective_value)
+
+    @property
+    def all_ranked_candidates(self) -> List[OptimizationCandidate]:
+        """全候補を制約満足優先・目的関数値順でソート。
+
+        制約を満たす候補が先、満たさない候補が後に並びます。
+        設計者が検索空間全体を把握するのに有用です。
+        """
+        feasible = sorted(
+            [c for c in self.all_candidates if c.is_feasible],
+            key=lambda c: c.objective_value,
+        )
+        infeasible = sorted(
+            [c for c in self.all_candidates if not c.is_feasible],
+            key=lambda c: c.objective_value,
+        )
+        return feasible + infeasible
 
     def get_summary_text(self) -> str:
         """結果のテキストサマリーを返します。"""
@@ -443,6 +461,14 @@ class OptimizationResult:
         lines.append(f"計算時間: {self.elapsed_sec:.2f} sec")
         lines.append(f"評価数: {len(self.all_candidates)}")
         lines.append(f"制約満足数: {len(self.feasible_candidates)}")
+
+        if self.evaluator_stats:
+            s = self.evaluator_stats
+            lines.append(
+                f"SNAP統計: 成功 {s.get('success', 0)}, "
+                f"エラー {s.get('error', 0)}, "
+                f"キャッシュヒット {s.get('cache_hits', 0)}"
+            )
 
         if self.best:
             lines.append("")
@@ -470,6 +496,7 @@ class OptimizationResult:
             "converged": self.converged,
             "message": self.message,
             "evaluation_method": self.evaluation_method,
+            "evaluator_stats": self.evaluator_stats,
         }
 
     @classmethod
@@ -487,6 +514,7 @@ class OptimizationResult:
             converged=d.get("converged", False),
             message=d.get("message", ""),
             evaluation_method=d.get("evaluation_method", "mock"),
+            evaluator_stats=d.get("evaluator_stats"),
         )
 
     def save_json(self, path: str) -> None:
@@ -627,6 +655,15 @@ class _OptimizationWorker(QThread):
         result.elapsed_sec = time.time() - start_time
         result.config = config
         result.evaluation_method = "snap" if self._is_snap else "mock"
+
+        # SNAP評価統計を取得（SnapEvaluatorの場合）
+        evaluator = self._evaluate_fn
+        if hasattr(evaluator, "stats"):
+            try:
+                result.evaluator_stats = evaluator.stats
+            except Exception:
+                pass
+
         self.finished_signal.emit(result)
 
     def _default_evaluate(self, params: Dict[str, float]) -> Dict[str, float]:

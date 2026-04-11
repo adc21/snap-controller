@@ -988,3 +988,109 @@ class TestConstraintMargins:
             assert "max_drift" in cand.constraint_margins
 
 
+# ---------------------------------------------------------------------------
+# Phase K: all_ranked_candidates + evaluator_stats tests
+# ---------------------------------------------------------------------------
+
+class TestAllRankedCandidates:
+    """all_ranked_candidates が制約満足優先でソートされることを検証。"""
+
+    def test_feasible_first_then_infeasible(self):
+        """制約満足候補が先、制約違反候補が後に並ぶ。"""
+        r = OptimizationResult(all_candidates=[
+            OptimizationCandidate(is_feasible=False, objective_value=0.01),
+            OptimizationCandidate(is_feasible=True, objective_value=0.03),
+            OptimizationCandidate(is_feasible=False, objective_value=0.02),
+            OptimizationCandidate(is_feasible=True, objective_value=0.01),
+        ])
+        ranked = r.all_ranked_candidates
+        assert len(ranked) == 4
+        # 先頭2つは feasible (0.01, 0.03)
+        assert ranked[0].is_feasible is True
+        assert ranked[0].objective_value == 0.01
+        assert ranked[1].is_feasible is True
+        assert ranked[1].objective_value == 0.03
+        # 後半2つは infeasible (0.01, 0.02)
+        assert ranked[2].is_feasible is False
+        assert ranked[2].objective_value == 0.01
+        assert ranked[3].is_feasible is False
+        assert ranked[3].objective_value == 0.02
+
+    def test_all_feasible(self):
+        """全候補が制約満足の場合、目的関数値順。"""
+        r = OptimizationResult(all_candidates=[
+            OptimizationCandidate(is_feasible=True, objective_value=0.03),
+            OptimizationCandidate(is_feasible=True, objective_value=0.01),
+        ])
+        ranked = r.all_ranked_candidates
+        assert [c.objective_value for c in ranked] == [0.01, 0.03]
+
+    def test_all_infeasible(self):
+        """全候補が制約違反の場合、目的関数値順。"""
+        r = OptimizationResult(all_candidates=[
+            OptimizationCandidate(is_feasible=False, objective_value=0.05),
+            OptimizationCandidate(is_feasible=False, objective_value=0.02),
+        ])
+        ranked = r.all_ranked_candidates
+        assert [c.objective_value for c in ranked] == [0.02, 0.05]
+
+    def test_empty(self):
+        r = OptimizationResult(all_candidates=[])
+        assert r.all_ranked_candidates == []
+
+
+class TestEvaluatorStats:
+    """evaluator_stats がサマリーテキスト・JSON保存に含まれることを検証。"""
+
+    def test_summary_includes_stats(self):
+        r = OptimizationResult(
+            config=OptimizationConfig(objective_label="テスト", method="grid"),
+            best=OptimizationCandidate(
+                params={"Cd": 500}, objective_value=0.005,
+                response_values={"max_drift": 0.005},
+            ),
+            all_candidates=[],
+            evaluation_method="snap",
+            evaluator_stats={"total": 20, "success": 15, "error": 1, "cache_hits": 4},
+        )
+        text = r.get_summary_text()
+        assert "SNAP統計" in text
+        assert "成功 15" in text
+        assert "キャッシュヒット 4" in text
+
+    def test_summary_without_stats(self):
+        r = OptimizationResult(
+            config=OptimizationConfig(objective_label="テスト", method="grid"),
+            best=OptimizationCandidate(
+                params={"Cd": 500}, objective_value=0.005,
+                response_values={"max_drift": 0.005},
+            ),
+            all_candidates=[],
+        )
+        text = r.get_summary_text()
+        assert "SNAP統計" not in text
+
+    def test_stats_save_load_json(self, tmp_path):
+        """evaluator_stats が JSON保存/読込で保持される。"""
+        r = OptimizationResult(
+            config=OptimizationConfig(objective_label="テスト", method="grid"),
+            all_candidates=[],
+            evaluator_stats={"total": 10, "success": 8, "error": 0, "cache_hits": 2},
+        )
+        path = str(tmp_path / "test_stats.json")
+        r.save_json(path)
+        loaded = OptimizationResult.load_json(path)
+        assert loaded.evaluator_stats == {"total": 10, "success": 8, "error": 0, "cache_hits": 2}
+
+    def test_stats_none_json(self, tmp_path):
+        """evaluator_stats が None の場合も JSON保存/読込で維持される。"""
+        r = OptimizationResult(
+            config=OptimizationConfig(objective_label="テスト", method="grid"),
+            all_candidates=[],
+        )
+        path = str(tmp_path / "test_stats_none.json")
+        r.save_json(path)
+        loaded = OptimizationResult.load_json(path)
+        assert loaded.evaluator_stats is None
+
+
