@@ -42,7 +42,9 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Sequence
+from typing import Dict, List, Optional, Sequence, Tuple
+
+import numpy as np
 
 # ---------------------------------------------------------------------------
 # データクラス
@@ -402,6 +404,200 @@ def design_from_period_reader(
     )
 
 
+# ---------------------------------------------------------------------------
+# 周波数応答関数 (FRF) と応答低減率 η
+# ---------------------------------------------------------------------------
+#
+# 参考: Ikago K, Saito K, Inoue N (2012)
+#       "Seismic Control of Single-Degree-of-Freedom Structure Using
+#        Tuned Viscous Mass Damper", EESD, 41(3): 453-474.
+#
+# TVMD (Tuned Viscous Mass Damper) の SDOF モデル:
+#   主構造:  M·ü + C·u̇ + K·u + k_d·(u − w) = −M·ü_g
+#   TVMD:    m_d·ẅ + c_d·ẇ + k_d·(w − u)    = 0
+#
+# ここで w は TVMD 内部自由度（inerter + dashpot の変位）。
+# 調和入力に対する定常応答の振幅比 |H(r)| を計算する。
+
+
+def compute_frf_sdof_tvmd(
+    mass_ratio: float,
+    freq_ratio: float,
+    damping_ratio_tvmd: float,
+    damping_ratio_primary: float = 0.0,
+    r_min: float = 0.01,
+    r_max: float = 3.0,
+    n_points: int = 1000,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    SDOF + TVMD 系の変位伝達関数 |H(r)| を計算する。
+
+    H(r) = |U / U_st| （U_st = F_0/K は静的変位）
+
+    Parameters
+    ----------
+    mass_ratio : float
+        μ = m_d / M
+    freq_ratio : float
+        f = ω_d / ω_s  (ω_d = √(k_d/m_d))
+    damping_ratio_tvmd : float
+        ζ_d = c_d / (2·m_d·ω_d)
+    damping_ratio_primary : float
+        ζ_s = C / (2·M·ω_s)  主構造の減衰比（デフォルト 0）
+    r_min, r_max : float
+        振動数比 r = ω/ω_s の範囲
+    n_points : int
+        計算点数
+
+    Returns
+    -------
+    (r_array, H_array)
+        振動数比と伝達関数の振幅
+    """
+    mu = mass_ratio
+    g = freq_ratio      # f = ω_d / ω_s
+    zd = damping_ratio_tvmd
+    zs = damping_ratio_primary
+
+    r = np.linspace(r_min, r_max, n_points)
+
+    # 分子: TVMD 側の動剛性
+    # N(r) = g² - r² + 2i·ζ_d·g·r
+    N = g**2 - r**2 + 2j * zd * g * r
+
+    # 分母: 2×2 系の行列式
+    # D₁₁ = 1 - r² + 2i·ζ_s·r + μ·g²  (主構造 + 支持剛性)
+    #   ※ k_d/K = μ·g² (∵ k_d = m_d·ω_d² = μ·M·(g·ω_s)² = μ·g²·K)
+    # D₂₂ = g² - r² + 2i·ζ_d·g·r   = N(r)
+    # D₁₂ = D₂₁ = -μ·g²
+    # det(D) = D₁₁·D₂₂ - D₁₂²
+    D11 = 1 - r**2 + 2j * zs * r + mu * g**2
+    D12 = -mu * g**2
+    det_D = D11 * N - D12**2
+
+    # H(r) = |N(r) / det(D)|
+    H = np.abs(N / det_D)
+
+    return r, H
+
+
+def compute_frf_sdof(
+    damping_ratio: float = 0.0,
+    r_min: float = 0.01,
+    r_max: float = 3.0,
+    n_points: int = 1000,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    制振なし SDOF 系の変位伝達関数 |H(r)| を計算する。
+
+    H(r) = 1 / |1 - r² + 2i·ζ·r|
+    """
+    r = np.linspace(r_min, r_max, n_points)
+    H = 1.0 / np.abs(1 - r**2 + 2j * damping_ratio * r)
+    return r, H
+
+
+def response_reduction_ratio(
+    mass_ratio: float,
+    freq_ratio: Optional[float] = None,
+    damping_ratio_tvmd: Optional[float] = None,
+    damping_ratio_primary: float = 0.02,
+) -> float:
+    """
+    応答低減率 η = peak(H_with_TVMD) / peak(H_without_TVMD) を計算する。
+
+    η < 1 であれば応答が低減していることを示す。
+    η の値が小さいほど制振効果が大きい。
+
+    Parameters
+    ----------
+    mass_ratio : float
+        μ = m_d / M
+    freq_ratio : float or None
+        f = ω_d / ω_s。None の場合は定点理論最適値を使用。
+    damping_ratio_tvmd : float or None
+        ζ_d。None の場合は定点理論最適値を使用。
+    damping_ratio_primary : float
+        ζ_s 主構造の減衰比（デフォルト 2%: RC 構造の一般値）
+
+    Returns
+    -------
+    float
+        応答低減率 η (0 < η < 1 が典型)
+    """
+    if freq_ratio is None or damping_ratio_tvmd is None:
+        f_opt, z_opt = fixed_point_optimal(mass_ratio)
+        if freq_ratio is None:
+            freq_ratio = f_opt
+        if damping_ratio_tvmd is None:
+            damping_ratio_tvmd = z_opt
+
+    # 制振なし
+    _, H_bare = compute_frf_sdof(
+        damping_ratio=damping_ratio_primary,
+        r_min=0.01,
+        r_max=3.0,
+        n_points=2000,
+    )
+    # 制振あり
+    _, H_tvmd = compute_frf_sdof_tvmd(
+        mass_ratio=mass_ratio,
+        freq_ratio=freq_ratio,
+        damping_ratio_tvmd=damping_ratio_tvmd,
+        damping_ratio_primary=damping_ratio_primary,
+        r_min=0.01,
+        r_max=3.0,
+        n_points=2000,
+    )
+
+    peak_bare = float(np.max(H_bare))
+    peak_tvmd = float(np.max(H_tvmd))
+
+    if peak_bare <= 0:
+        return 1.0
+    return peak_tvmd / peak_bare
+
+
+def compute_irdt_performance(
+    params: IrdtParameters,
+    damping_ratio_primary: float = 0.02,
+) -> Dict[str, float]:
+    """
+    iRDT 設計結果の性能指標を計算する。
+
+    Returns
+    -------
+    dict with keys:
+        - eta: 応答低減率
+        - peak_bare: 制振なしピーク倍率
+        - peak_tvmd: 制振ありピーク倍率
+        - reduction_pct: 応答低減率 [%] = (1 - η) * 100
+    """
+    mu = params.mass_ratio
+    f = params.frequency_ratio
+    zd = params.damping_ratio
+
+    _, H_bare = compute_frf_sdof(damping_ratio=damping_ratio_primary, n_points=2000)
+    _, H_tvmd = compute_frf_sdof_tvmd(
+        mass_ratio=mu,
+        freq_ratio=f,
+        damping_ratio_tvmd=zd,
+        damping_ratio_primary=damping_ratio_primary,
+        n_points=2000,
+    )
+
+    peak_bare = float(np.max(H_bare))
+    peak_tvmd = float(np.max(H_tvmd))
+    eta = peak_tvmd / peak_bare if peak_bare > 0 else 1.0
+
+    return {
+        "eta": eta,
+        "peak_bare": peak_bare,
+        "peak_tvmd": peak_tvmd,
+        "reduction_pct": (1.0 - eta) * 100.0,
+    }
+
+
 __all__ = [
     "IrdtParameters",
     "IrdtFloorAssignment",
@@ -410,4 +606,8 @@ __all__ = [
     "design_irdt_sdof",
     "design_irdt_placement",
     "design_from_period_reader",
+    "compute_frf_sdof_tvmd",
+    "compute_frf_sdof",
+    "response_reduction_ratio",
+    "compute_irdt_performance",
 ]

@@ -33,10 +33,17 @@ from PySide6.QtWidgets import (
     QScrollArea,
 )
 
+import numpy as np
+from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
+from matplotlib.figure import Figure
+
 from app.services.irdt_designer import (
     IrdtPlacementPlan,
     fixed_point_optimal,
     design_irdt_placement,
+    compute_frf_sdof,
+    compute_frf_sdof_tvmd,
+    compute_irdt_performance,
 )
 from app.services.damper_injector import DamperInjector, DamperInsertSpec
 from controller.binary.period_xbn_reader import PeriodXbnReader
@@ -244,6 +251,41 @@ class IrdtWizardDialog(QDialog):
 
         layout.addWidget(QLabel("設計結果:"))
 
+        # --- 応答低減率 η の表示 ---
+        self._eta_group = QGroupBox("応答低減率 η（制振効果の指標）")
+        eta_layout = QHBoxLayout(self._eta_group)
+
+        self._eta_label = QLabel()
+        self._eta_label.setStyleSheet(
+            "font-family: monospace; font-size: 13px; padding: 4px;"
+        )
+        eta_layout.addWidget(self._eta_label, 1)
+
+        # 主構造減衰比の入力
+        eta_param = QVBoxLayout()
+        eta_param.addWidget(QLabel("主構造減衰比 ζ_s:"))
+        self._primary_damping_spin = QDoubleSpinBox()
+        self._primary_damping_spin.setRange(0.001, 0.200)
+        self._primary_damping_spin.setSingleStep(0.005)
+        self._primary_damping_spin.setDecimals(3)
+        self._primary_damping_spin.setValue(0.020)
+        self._primary_damping_spin.setToolTip(
+            "主構造の減衰比（RC造: 0.02〜0.05, S造: 0.01〜0.02）"
+        )
+        self._primary_damping_spin.valueChanged.connect(self._update_eta_display)
+        eta_param.addWidget(self._primary_damping_spin)
+        eta_layout.addLayout(eta_param)
+
+        layout.addWidget(self._eta_group)
+
+        # --- FRF チャート ---
+        self._frf_figure = Figure(figsize=(6, 2.5))
+        self._frf_canvas = FigureCanvas(self._frf_figure)
+        self._frf_canvas.setMinimumHeight(180)
+        self._frf_canvas.setMaximumHeight(220)
+        layout.addWidget(self._frf_canvas)
+
+        # --- 配置テーブル ---
         self._result_table = QTableWidget()
         self._result_table.setColumnCount(6)
         self._result_table.setHorizontalHeaderLabels(
@@ -259,7 +301,7 @@ class IrdtWizardDialog(QDialog):
 
         self._summary_text = QTextEdit()
         self._summary_text.setReadOnly(True)
-        self._summary_text.setMaximumHeight(160)
+        self._summary_text.setMaximumHeight(120)
         self._summary_text.setStyleSheet("font-family: monospace; font-size: 11px;")
         layout.addWidget(self._summary_text)
 
@@ -618,6 +660,82 @@ class IrdtWizardDialog(QDialog):
 
         # サマリ
         self._summary_text.setPlainText(plan.summary_text())
+
+        # 応答低減率とFRFチャート
+        self._update_eta_display()
+
+    def _update_eta_display(self) -> None:
+        """応答低減率 η の表示を更新する。"""
+        plan = self._placement_plan
+        if plan is None or plan.base_parameters is None:
+            return
+
+        zs = self._primary_damping_spin.value()
+        perf = compute_irdt_performance(plan.base_parameters, damping_ratio_primary=zs)
+
+        eta = perf["eta"]
+        reduction = perf["reduction_pct"]
+
+        # 効果の評価テキスト
+        if reduction >= 60:
+            effect = "非常に大きい"
+        elif reduction >= 40:
+            effect = "大きい"
+        elif reduction >= 20:
+            effect = "中程度"
+        else:
+            effect = "小さい"
+
+        self._eta_label.setText(
+            f"応答低減率  η = {eta:.3f}  "
+            f"（ピーク応答を {reduction:.1f}% 低減）\n"
+            f"制振効果: {effect}\n"
+            f"制振なしピーク倍率: {perf['peak_bare']:.1f}  →  "
+            f"制振ありピーク倍率: {perf['peak_tvmd']:.2f}"
+        )
+
+        self._update_frf_chart(zs)
+
+    def _update_frf_chart(self, damping_ratio_primary: float = 0.02) -> None:
+        """FRF チャートを更新する。"""
+        plan = self._placement_plan
+        if plan is None or plan.base_parameters is None:
+            return
+
+        params = plan.base_parameters
+        mu = params.mass_ratio
+        f_opt = params.frequency_ratio
+        zd = params.damping_ratio
+
+        fig = self._frf_figure
+        fig.clear()
+        ax = fig.add_subplot(111)
+
+        r_bare, H_bare = compute_frf_sdof(
+            damping_ratio=damping_ratio_primary,
+            r_min=0.01, r_max=2.5, n_points=500,
+        )
+        r_tvmd, H_tvmd = compute_frf_sdof_tvmd(
+            mass_ratio=mu,
+            freq_ratio=f_opt,
+            damping_ratio_tvmd=zd,
+            damping_ratio_primary=damping_ratio_primary,
+            r_min=0.01, r_max=2.5, n_points=500,
+        )
+
+        ax.semilogy(r_bare, H_bare, "b--", linewidth=1.2, label="制振なし (SDOF)")
+        ax.semilogy(r_tvmd, H_tvmd, "r-", linewidth=1.5, label=f"iRDT付 (μ={mu:.3f})")
+
+        ax.set_xlabel("振動数比 r = ω/ω_s", fontsize=9)
+        ax.set_ylabel("|H(r)|", fontsize=9)
+        ax.set_title("変位伝達関数 (FRF)", fontsize=10)
+        ax.legend(fontsize=8, loc="upper right")
+        ax.set_xlim(0, 2.5)
+        ax.grid(True, alpha=0.3, which="both")
+        ax.tick_params(labelsize=8)
+
+        fig.tight_layout()
+        self._frf_canvas.draw()
 
     def _apply_design(self) -> None:
         if self._placement_plan is not None:

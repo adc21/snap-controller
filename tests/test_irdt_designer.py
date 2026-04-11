@@ -6,10 +6,16 @@ import math
 
 import pytest
 
+import numpy as np
+
 from app.services.irdt_designer import (
+    compute_frf_sdof,
+    compute_frf_sdof_tvmd,
+    compute_irdt_performance,
     design_irdt_placement,
     design_irdt_sdof,
     fixed_point_optimal,
+    response_reduction_ratio,
 )
 
 
@@ -139,3 +145,105 @@ class TestDesignIrdtPlacement:
         # 各層で k_b / m_d = ω_d^2 = 一定
         ratios = [f.support_stiffness / f.inertance for f in plan.floor_plan if f.inertance > 0]
         assert max(ratios) == pytest.approx(min(ratios), rel=1e-9)
+
+
+class TestComputeFrfSdof:
+    def test_peak_at_resonance_undamped(self):
+        r, H = compute_frf_sdof(damping_ratio=0.0, n_points=5000)
+        # 無減衰 SDOF は r=1 で発散 → ピークは r≈1 付近で非常に大きい
+        idx_peak = np.argmax(H)
+        assert r[idx_peak] == pytest.approx(1.0, abs=0.05)
+        assert H[idx_peak] > 100  # 十分大きい
+
+    def test_peak_with_damping(self):
+        r, H = compute_frf_sdof(damping_ratio=0.02, n_points=5000)
+        # ζ=0.02 → ピーク ≈ 1/(2ζ) = 25
+        peak = np.max(H)
+        assert peak == pytest.approx(25.0, rel=0.05)
+
+    def test_static_response(self):
+        # r→0 で |H| → 1
+        r, H = compute_frf_sdof(damping_ratio=0.05)
+        assert H[0] == pytest.approx(1.0, rel=0.01)
+
+
+class TestComputeFrfSdofTvmd:
+    def test_two_peaks(self):
+        """TVMD 付き系は共振点が 2 つに分裂する。"""
+        r, H = compute_frf_sdof_tvmd(
+            mass_ratio=0.05,
+            freq_ratio=1.0 / 1.05,
+            damping_ratio_tvmd=0.0,
+            damping_ratio_primary=0.0,
+            n_points=5000,
+        )
+        # 無減衰 TVMD → 2 つの急峻なピーク
+        # ピークの位置を見つける（局所最大）
+        local_max = (H[1:-1] > H[:-2]) & (H[1:-1] > H[2:])
+        n_peaks = np.sum(local_max & (H[1:-1] > 5.0))
+        assert n_peaks >= 2
+
+    def test_optimal_reduces_peak(self):
+        """最適パラメータで制振なしよりピークが下がる。"""
+        f_opt, z_opt = fixed_point_optimal(0.05)
+        _, H_tvmd = compute_frf_sdof_tvmd(
+            mass_ratio=0.05,
+            freq_ratio=f_opt,
+            damping_ratio_tvmd=z_opt,
+            damping_ratio_primary=0.02,
+            n_points=2000,
+        )
+        _, H_bare = compute_frf_sdof(damping_ratio=0.02, n_points=2000)
+        assert np.max(H_tvmd) < np.max(H_bare)
+
+    def test_static_response(self):
+        """r→0 で |H| → 1。"""
+        r, H = compute_frf_sdof_tvmd(
+            mass_ratio=0.05,
+            freq_ratio=0.95,
+            damping_ratio_tvmd=0.10,
+            n_points=1000,
+        )
+        assert H[0] == pytest.approx(1.0, rel=0.05)
+
+
+class TestResponseReductionRatio:
+    def test_eta_less_than_one(self):
+        """最適パラメータで η < 1（応答低減される）。"""
+        eta = response_reduction_ratio(0.05, damping_ratio_primary=0.02)
+        assert 0 < eta < 1.0
+
+    def test_larger_mu_gives_lower_eta(self):
+        """質量比が大きいほど η が小さい（制振効果が大きい）。"""
+        eta_small = response_reduction_ratio(0.02, damping_ratio_primary=0.02)
+        eta_large = response_reduction_ratio(0.10, damping_ratio_primary=0.02)
+        assert eta_large < eta_small
+
+    def test_uses_optimal_by_default(self):
+        """freq_ratio と damping_ratio_tvmd を省略すると最適値を使う。"""
+        f_opt, z_opt = fixed_point_optimal(0.05)
+        eta_auto = response_reduction_ratio(0.05, damping_ratio_primary=0.02)
+        eta_explicit = response_reduction_ratio(
+            0.05,
+            freq_ratio=f_opt,
+            damping_ratio_tvmd=z_opt,
+            damping_ratio_primary=0.02,
+        )
+        assert eta_auto == pytest.approx(eta_explicit, rel=1e-6)
+
+
+class TestComputeIrdtPerformance:
+    def test_returns_all_keys(self):
+        p = design_irdt_sdof(primary_mass=1e6, primary_period=1.0, mass_ratio=0.05)
+        perf = compute_irdt_performance(p)
+        assert "eta" in perf
+        assert "peak_bare" in perf
+        assert "peak_tvmd" in perf
+        assert "reduction_pct" in perf
+
+    def test_reduction_positive(self):
+        p = design_irdt_sdof(primary_mass=1e6, primary_period=1.0, mass_ratio=0.05)
+        perf = compute_irdt_performance(p)
+        assert perf["reduction_pct"] > 0
+        assert perf["eta"] < 1.0
+        assert perf["peak_tvmd"] < perf["peak_bare"]
