@@ -816,6 +816,161 @@ def sensitivity_analysis(
     }
 
 
+@dataclass
+class MultiParamSensitivityEntry:
+    """多パラメータ感度解析の1エントリ。"""
+    param_name: str
+    param_label: str
+    variation_values: List[float]
+    eta_values: List[float]
+    reduction_pct_values: List[float]
+    base_index: int
+
+
+def multi_param_sensitivity_analysis(
+    primary_mass: float,
+    primary_period: float,
+    base_mass_ratio: float,
+    damping_ratio_primary: float = 0.02,
+    variation_pct: float = 20.0,
+    n_steps: int = 5,
+) -> List[MultiParamSensitivityEntry]:
+    """
+    複数パラメータ（μ, ζ_d, f_opt）の感度を同時に解析する。
+
+    各パラメータを独立に ±variation_pct% 変動させ、応答低減率への影響を評価。
+    設計者はどのパラメータが性能に最も影響するか把握できる。
+
+    Parameters
+    ----------
+    primary_mass : float
+        主構造の等価質量 M_s [kg]
+    primary_period : float
+        主構造の固有周期 T_s [s]
+    base_mass_ratio : float
+        基準質量比 μ
+    damping_ratio_primary : float
+        主構造の減衰比 ζ_s
+    variation_pct : float
+        変動幅 [%]（デフォルト ±20%）
+    n_steps : int
+        片側ステップ数（全 2*n_steps+1 点）
+
+    Returns
+    -------
+    list of MultiParamSensitivityEntry
+        各パラメータの感度解析結果。
+    """
+    omega_s = 2.0 * math.pi / primary_period
+
+    # 基準設計値を取得
+    base_params = design_irdt_sdof_extended(
+        primary_mass=primary_mass,
+        primary_period=primary_period,
+        mass_ratio=base_mass_ratio,
+        damping_ratio_primary=damping_ratio_primary,
+    )
+    base_f_opt = base_params.frequency_ratio
+    base_zeta_d = base_params.damping_ratio
+
+    factor_lo = 1.0 - variation_pct / 100.0
+    factor_hi = 1.0 + variation_pct / 100.0
+    n_total = 2 * n_steps + 1
+
+    results: List[MultiParamSensitivityEntry] = []
+
+    # --- (1) μ (質量比) の感度 ---
+    mu_range = np.linspace(
+        base_mass_ratio * factor_lo, base_mass_ratio * factor_hi, n_total,
+    )
+    mu_eta = []
+    mu_red = []
+    mu_vals = []
+    for mu in mu_range:
+        if mu <= 0:
+            continue
+        params = design_irdt_sdof_extended(
+            primary_mass=primary_mass,
+            primary_period=primary_period,
+            mass_ratio=float(mu),
+            damping_ratio_primary=damping_ratio_primary,
+        )
+        perf = compute_irdt_performance(params, damping_ratio_primary)
+        mu_vals.append(float(mu))
+        mu_eta.append(perf["eta"])
+        mu_red.append(perf["reduction_pct"])
+
+    results.append(MultiParamSensitivityEntry(
+        param_name="mu", param_label="質量比 μ",
+        variation_values=mu_vals, eta_values=mu_eta,
+        reduction_pct_values=mu_red, base_index=n_steps,
+    ))
+
+    # --- (2) ζ_d (ダンパー減衰比) の感度 ---
+    zeta_range = np.linspace(
+        base_zeta_d * factor_lo, base_zeta_d * factor_hi, n_total,
+    )
+    zeta_eta = []
+    zeta_red = []
+    zeta_vals = []
+    for zd in zeta_range:
+        if zd <= 0:
+            continue
+        _, H_bare = compute_frf_sdof(damping_ratio=damping_ratio_primary, n_points=2000)
+        _, H_tvmd = compute_frf_sdof_tvmd(
+            mass_ratio=base_mass_ratio,
+            freq_ratio=base_f_opt,
+            damping_ratio_tvmd=float(zd),
+            damping_ratio_primary=damping_ratio_primary,
+            n_points=2000,
+        )
+        peak_bare = float(np.max(H_bare))
+        peak_tvmd = float(np.max(H_tvmd))
+        eta = peak_tvmd / peak_bare if peak_bare > 0 else 1.0
+        zeta_vals.append(float(zd))
+        zeta_eta.append(eta)
+        zeta_red.append((1.0 - eta) * 100.0)
+
+    results.append(MultiParamSensitivityEntry(
+        param_name="zeta_d", param_label="ダンパー減衰比 ζ_d",
+        variation_values=zeta_vals, eta_values=zeta_eta,
+        reduction_pct_values=zeta_red, base_index=n_steps,
+    ))
+
+    # --- (3) f_opt (同調比) の感度 ---
+    f_range = np.linspace(
+        base_f_opt * factor_lo, base_f_opt * factor_hi, n_total,
+    )
+    f_eta = []
+    f_red = []
+    f_vals = []
+    for f in f_range:
+        if f <= 0:
+            continue
+        _, H_bare = compute_frf_sdof(damping_ratio=damping_ratio_primary, n_points=2000)
+        _, H_tvmd = compute_frf_sdof_tvmd(
+            mass_ratio=base_mass_ratio,
+            freq_ratio=float(f),
+            damping_ratio_tvmd=base_zeta_d,
+            damping_ratio_primary=damping_ratio_primary,
+            n_points=2000,
+        )
+        peak_bare = float(np.max(H_bare))
+        peak_tvmd = float(np.max(H_tvmd))
+        eta = peak_tvmd / peak_bare if peak_bare > 0 else 1.0
+        f_vals.append(float(f))
+        f_eta.append(eta)
+        f_red.append((1.0 - eta) * 100.0)
+
+    results.append(MultiParamSensitivityEntry(
+        param_name="f_opt", param_label="同調比 f_opt",
+        variation_values=f_vals, eta_values=f_eta,
+        reduction_pct_values=f_red, base_index=n_steps,
+    ))
+
+    return results
+
+
 # ---------------------------------------------------------------------------
 # MDOF 多モード性能チェック
 # ---------------------------------------------------------------------------
@@ -941,5 +1096,7 @@ __all__ = [
     "response_reduction_ratio",
     "compute_irdt_performance",
     "sensitivity_analysis",
+    "MultiParamSensitivityEntry",
+    "multi_param_sensitivity_analysis",
     "mdof_multimode_check",
 ]

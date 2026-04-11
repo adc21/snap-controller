@@ -19,6 +19,8 @@ from app.services.irdt_designer import (
     tvmd_optimal_damped,
     response_reduction_ratio,
     sensitivity_analysis,
+    multi_param_sensitivity_analysis,
+    MultiParamSensitivityEntry,
     mdof_multimode_check,
 )
 
@@ -400,3 +402,48 @@ class TestMdofMultimodeCheck:
                 target_mode=99,
                 total_mass_ratio=0.05,
             )
+
+
+class TestMultiParamSensitivityAnalysis:
+    def test_returns_three_entries(self):
+        results = multi_param_sensitivity_analysis(1e6, 1.0, 0.05, 0.02)
+        assert len(results) == 3
+
+    def test_entry_param_names(self):
+        results = multi_param_sensitivity_analysis(1e6, 1.0, 0.05, 0.02)
+        names = [e.param_name for e in results]
+        assert "mu" in names
+        assert "zeta_d" in names
+        assert "f_opt" in names
+
+    def test_correct_number_of_points(self):
+        results = multi_param_sensitivity_analysis(1e6, 1.0, 0.05, 0.02, n_steps=5)
+        for entry in results:
+            assert len(entry.variation_values) == 11  # 2*5+1
+            assert len(entry.eta_values) == 11
+            assert len(entry.reduction_pct_values) == 11
+
+    def test_base_index_is_center(self):
+        results = multi_param_sensitivity_analysis(1e6, 1.0, 0.05, 0.02, n_steps=5)
+        for entry in results:
+            assert entry.base_index == 5
+
+    def test_all_eta_positive(self):
+        results = multi_param_sensitivity_analysis(1e6, 1.0, 0.05, 0.02)
+        for entry in results:
+            for eta in entry.eta_values:
+                assert eta > 0
+
+    def test_mu_entry_matches_single_param(self):
+        """μ entry should give similar results to the single-param sensitivity_analysis."""
+        multi = multi_param_sensitivity_analysis(1e6, 1.0, 0.05, 0.02, n_steps=3)
+        single = sensitivity_analysis(1e6, 1.0, 0.05, 0.02, n_steps=3)
+        mu_entry = [e for e in multi if e.param_name == "mu"][0]
+        # Values should be very close
+        for a, b in zip(mu_entry.reduction_pct_values, single["reduction_pct_values"]):
+            assert a == pytest.approx(b, rel=1e-6)
+
+    def test_entry_is_dataclass_instance(self):
+        results = multi_param_sensitivity_analysis(1e6, 1.0, 0.05, 0.02)
+        for entry in results:
+            assert isinstance(entry, MultiParamSensitivityEntry)

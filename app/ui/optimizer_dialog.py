@@ -454,6 +454,27 @@ class OptimizerDialog(QDialog):
 
         self._warm_start_candidates: List[OptimizationCandidate] = []
 
+        # ---- 制約ペナルティ重み ----
+        penalty_row = QHBoxLayout()
+        self._penalty_cb = QCheckBox("制約ペナルティ法")
+        self._penalty_cb.setToolTip(
+            "制約違反に比例したペナルティを目的関数に加算し、\n"
+            "制約境界付近の探索を改善します（GA/SA/ベイズで有効）"
+        )
+        penalty_row.addWidget(self._penalty_cb)
+        penalty_row.addWidget(QLabel("ペナルティ重み:"))
+        self._penalty_spin = QDoubleSpinBox()
+        self._penalty_spin.setRange(0.1, 1000.0)
+        self._penalty_spin.setValue(10.0)
+        self._penalty_spin.setSingleStep(5.0)
+        self._penalty_spin.setDecimals(1)
+        self._penalty_spin.setEnabled(False)
+        self._penalty_spin.setFixedWidth(80)
+        penalty_row.addWidget(self._penalty_spin)
+        penalty_row.addStretch()
+        self._penalty_cb.toggled.connect(self._penalty_spin.setEnabled)
+        layout.addLayout(penalty_row)
+
         # ---- 実行ボタン + 進捗 ----
         run_row = QHBoxLayout()
         self._run_btn = QPushButton("最適化を開始")
@@ -1039,6 +1060,13 @@ class OptimizerDialog(QDialog):
             else []
         )
 
+        # 制約ペナルティ重み
+        penalty_weight = (
+            self._penalty_spin.value()
+            if self._penalty_cb.isChecked()
+            else 0.0
+        )
+
         return OptimizationConfig(
             objective_key=obj_key,
             objective_label=obj_label,
@@ -1050,6 +1078,7 @@ class OptimizerDialog(QDialog):
             base_case=self._base_case,
             objective_weights=objective_weights,
             warm_start_candidates=warm,
+            constraint_penalty_weight=penalty_weight,
         )
 
     def _start_optimization(self) -> None:

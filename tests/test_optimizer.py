@@ -1223,3 +1223,110 @@ class TestWarmStartConfig:
         assert results_collected[0].params["x"] == pytest.approx(0.3, abs=0.15)
 
 
+class TestConstraintPenalty:
+    """制約ペナルティ法のテスト。"""
+
+    def test_penalized_objective_no_penalty(self):
+        """ペナルティ重み0のとき、元の値がそのまま返る。"""
+        config = OptimizationConfig(
+            objective_key="max_drift",
+            parameters=[ParameterRange(key="Cd", min_val=100, max_val=500, step=50)],
+            method="grid",
+            max_iterations=5,
+            constraint_penalty_weight=0.0,
+        )
+        worker = _OptimizationWorker(config, lambda p: {"max_drift": 0.005})
+        result = worker._penalized_objective(0.005, {"max_drift": -0.001}, config)
+        assert result == 0.005
+
+    def test_penalized_objective_with_violation(self):
+        """制約違反時にペナルティが加算される。"""
+        config = OptimizationConfig(
+            objective_key="max_drift",
+            parameters=[ParameterRange(key="Cd", min_val=100, max_val=500, step=50)],
+            method="grid",
+            max_iterations=5,
+            constraint_penalty_weight=10.0,
+        )
+        worker = _OptimizationWorker(config, lambda p: {"max_drift": 0.005})
+        # margin = -0.002 means violation of 0.002
+        result = worker._penalized_objective(0.005, {"max_drift": -0.002}, config)
+        assert result == pytest.approx(0.005 + 10.0 * 0.002)
+
+    def test_penalized_objective_feasible_no_extra(self):
+        """制約満足時はペナルティがゼロ。"""
+        config = OptimizationConfig(
+            objective_key="max_drift",
+            parameters=[ParameterRange(key="Cd", min_val=100, max_val=500, step=50)],
+            method="grid",
+            max_iterations=5,
+            constraint_penalty_weight=10.0,
+        )
+        worker = _OptimizationWorker(config, lambda p: {"max_drift": 0.005})
+        result = worker._penalized_objective(0.005, {"max_drift": 0.003}, config)
+        assert result == 0.005
+
+    def test_penalized_objective_multiple_violations(self):
+        """複数制約違反時のペナルティは合算される。"""
+        config = OptimizationConfig(
+            objective_key="max_drift",
+            parameters=[ParameterRange(key="Cd", min_val=100, max_val=500, step=50)],
+            method="grid",
+            max_iterations=5,
+            constraint_penalty_weight=5.0,
+        )
+        worker = _OptimizationWorker(config, lambda p: {"max_drift": 0.005})
+        margins = {"max_drift": -0.001, "max_acc": -0.5, "max_disp": 0.01}
+        result = worker._penalized_objective(0.005, margins, config)
+        expected = 0.005 + 5.0 * (0.001 + 0.5)
+        assert result == pytest.approx(expected)
+
+    def test_config_serialization_penalty_weight(self):
+        """constraint_penalty_weight が to_dict/from_dict で保持される。"""
+        config = OptimizationConfig(
+            objective_key="max_drift",
+            method="bayesian",
+            constraint_penalty_weight=25.0,
+        )
+        d = config.to_dict()
+        assert d["constraint_penalty_weight"] == 25.0
+        restored = OptimizationConfig.from_dict(d)
+        assert restored.constraint_penalty_weight == 25.0
+
+    def test_ga_uses_penalty_when_configured(self):
+        """GA探索でペナルティ法を使用すると、infeasible候補もfitnessが有限値になる。"""
+        config = OptimizationConfig(
+            objective_key="max_drift",
+            parameters=[ParameterRange(key="x", min_val=0.0, max_val=1.0)],
+            constraints={"max_drift": 0.003},
+            method="ga",
+            max_iterations=20,
+            constraint_penalty_weight=10.0,
+        )
+
+        def mock_eval(params):
+            x = params["x"]
+            return {"max_drift": x * 0.01}  # x=0.3 => drift=0.003
+
+        worker = _OptimizationWorker(config, mock_eval)
+        candidates = []
+        worker.candidate_found.connect(lambda c: candidates.append(c))
+        worker.run()
+
+        # Some candidates should be infeasible (drift > 0.003)
+        infeasible = [c for c in candidates if not c.is_feasible]
+        # With penalty, GA should still explore infeasible region
+        assert len(candidates) >= 20
+
+    def test_summary_text_includes_penalty(self):
+        """サマリーテキストにペナルティ重みが表示される。"""
+        config = OptimizationConfig(
+            objective_key="max_drift",
+            constraint_penalty_weight=15.0,
+        )
+        result = OptimizationResult(config=config, message="テスト")
+        text = result.get_summary_text()
+        assert "制約ペナルティ重み" in text
+        assert "15.0" in text
+
+

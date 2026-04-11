@@ -50,6 +50,7 @@ from app.services.irdt_designer import (
     compute_frf_sdof_tvmd,
     compute_irdt_performance,
     sensitivity_analysis,
+    multi_param_sensitivity_analysis,
 )
 from app.services.damper_injector import DamperInjector, DamperInsertSpec
 from controller.binary.period_xbn_reader import PeriodXbnReader
@@ -350,15 +351,15 @@ class IrdtWizardDialog(QDialog):
         self._summary_text.setStyleSheet("font-family: monospace; font-size: 11px;")
         layout.addWidget(self._summary_text)
 
-        # --- 感度解析 (Tornado Chart) ---
+        # --- 感度解析 (Multi-parameter Sensitivity Chart) ---
         self._sensitivity_group = QGroupBox(
-            "感度解析 — 質量比 μ を ±20% 変動"
+            "感度解析 — μ / ζ_d / f_opt を ±20% 変動"
         )
         sens_layout = QVBoxLayout(self._sensitivity_group)
-        self._tornado_figure = Figure(figsize=(6, 2.0))
+        self._tornado_figure = Figure(figsize=(6, 3.0))
         self._tornado_canvas = FigureCanvas(self._tornado_figure)
-        self._tornado_canvas.setMinimumHeight(140)
-        self._tornado_canvas.setMaximumHeight(180)
+        self._tornado_canvas.setMinimumHeight(200)
+        self._tornado_canvas.setMaximumHeight(280)
         sens_layout.addWidget(self._tornado_canvas)
         layout.addWidget(self._sensitivity_group)
 
@@ -791,7 +792,11 @@ class IrdtWizardDialog(QDialog):
         self._update_tornado_chart(zs)
 
     def _update_tornado_chart(self, damping_ratio_primary: float = 0.02) -> None:
-        """感度解析トルネードチャートを更新する。"""
+        """多パラメータ感度解析チャートを更新する。
+
+        μ (質量比), ζ_d (ダンパー減衰比), f_opt (同調比) の3パラメータを
+        ±20% 変動させた感度曲線を重ね描きで表示する。
+        """
         plan = self._placement_plan
         if plan is None or plan.base_parameters is None:
             return
@@ -800,7 +805,7 @@ class IrdtWizardDialog(QDialog):
         mu = params.mass_ratio
 
         try:
-            result = sensitivity_analysis(
+            entries = multi_param_sensitivity_analysis(
                 primary_mass=params.target_mass,
                 primary_period=params.target_period,
                 base_mass_ratio=mu,
@@ -809,47 +814,59 @@ class IrdtWizardDialog(QDialog):
                 n_steps=5,
             )
         except Exception:
-            logger.warning("Sensitivity analysis failed", exc_info=True)
+            logger.warning("Multi-param sensitivity analysis failed", exc_info=True)
+            return
+
+        if not entries:
             return
 
         fig = self._tornado_figure
         fig.clear()
+
+        # 上段: 感度曲線（3パラメータの変動率 vs 応答低減率）
         ax = fig.add_subplot(111)
 
-        mu_vals = result["mu_values"]
-        red_vals = result["reduction_pct_values"]
-        base_idx = result["base_index"]
+        colors = ["#1565c0", "#c62828", "#2e7d32"]
+        markers = ["o", "s", "^"]
 
-        if not mu_vals:
-            return
-
-        base_red = red_vals[base_idx] if base_idx < len(red_vals) else red_vals[len(red_vals) // 2]
-
-        colors = []
-        for i, r in enumerate(red_vals):
-            if i == base_idx:
-                colors.append("#1565c0")
-            elif r >= base_red:
-                colors.append("#2e7d32")
+        for idx, entry in enumerate(entries):
+            if not entry.variation_values or not entry.reduction_pct_values:
+                continue
+            bi = entry.base_index
+            if bi >= len(entry.variation_values):
+                bi = len(entry.variation_values) // 2
+            base_val = entry.variation_values[bi]
+            # X軸: 基準値からの変動率 [%]
+            if base_val > 0:
+                pct_change = [(v / base_val - 1.0) * 100.0 for v in entry.variation_values]
             else:
-                colors.append("#c62828")
+                pct_change = list(range(len(entry.variation_values)))
+            ax.plot(
+                pct_change,
+                entry.reduction_pct_values,
+                color=colors[idx % len(colors)],
+                marker=markers[idx % len(markers)],
+                markersize=4,
+                linewidth=1.5,
+                label=entry.param_label,
+            )
+            # 基準点をハイライト
+            ax.plot(
+                pct_change[bi],
+                entry.reduction_pct_values[bi],
+                color=colors[idx % len(colors)],
+                marker=markers[idx % len(markers)],
+                markersize=8,
+                zorder=5,
+            )
 
-        bars = ax.barh(
-            range(len(mu_vals)),
-            red_vals,
-            color=colors,
-            height=0.7,
-            edgecolor="none",
-        )
-
-        ax.set_yticks(range(len(mu_vals)))
-        ax.set_yticklabels([f"{m:.4f}" for m in mu_vals], fontsize=7)
-        ax.set_xlabel("応答低減率 [%]", fontsize=8)
-        ax.set_ylabel("質量比 μ", fontsize=8)
-        ax.set_title("感度解析: μ ±20% 変動時の応答低減率", fontsize=9)
-        ax.axvline(base_red, color="#1565c0", linestyle="--", linewidth=0.8, alpha=0.6)
+        ax.axvline(0, color="#888", linestyle="--", linewidth=0.8, alpha=0.5)
+        ax.set_xlabel("パラメータ変動率 [%]", fontsize=8)
+        ax.set_ylabel("応答低減率 [%]", fontsize=8)
+        ax.set_title("多パラメータ感度解析: ±20% 変動時の性能変化", fontsize=9)
+        ax.legend(fontsize=7, loc="best")
         ax.tick_params(labelsize=7)
-        ax.grid(True, axis="x", alpha=0.3)
+        ax.grid(True, alpha=0.3)
 
         fig.tight_layout()
         self._tornado_canvas.draw()

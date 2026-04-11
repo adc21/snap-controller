@@ -310,6 +310,10 @@ class OptimizationConfig:
     objective_weights: Dict[str, float] = field(default_factory=dict)
     warm_start_candidates: List["OptimizationCandidate"] = field(default_factory=list)
     """前回の最適化結果から引き継ぐ候補リスト（ウォームスタート用）。"""
+    constraint_penalty_weight: float = 0.0
+    """制約ペナルティ重み。0の場合は従来のハード制約。正の値でペナルティ法を使用。
+    ペナルティ = weight × Σ max(0, -margin_i) で目的関数に加算される。
+    構造設計では 10.0〜100.0 程度が有効。"""
 
     def compute_objective(self, response: Dict[str, float]) -> float:
         """応答値辞書から目的関数値を計算する。
@@ -337,6 +341,7 @@ class OptimizationConfig:
             "max_iterations": self.max_iterations,
             "damper_type": self.damper_type,
             "objective_weights": dict(self.objective_weights),
+            "constraint_penalty_weight": self.constraint_penalty_weight,
         }
 
     @classmethod
@@ -350,6 +355,7 @@ class OptimizationConfig:
             max_iterations=d.get("max_iterations", 100),
             damper_type=d.get("damper_type", ""),
             objective_weights=d.get("objective_weights", {}),
+            constraint_penalty_weight=d.get("constraint_penalty_weight", 0.0),
         )
 
 
@@ -460,6 +466,8 @@ class OptimizationResult:
 
         eval_label = "SNAP実解析" if self.evaluation_method == "snap" else "モック評価（デモ用）"
         lines.append(f"評価方式: {eval_label}")
+        if self.config and self.config.constraint_penalty_weight > 0:
+            lines.append(f"制約ペナルティ重み: {self.config.constraint_penalty_weight:.1f}")
         lines.append(f"計算時間: {self.elapsed_sec:.2f} sec")
         lines.append(f"評価数: {len(self.all_candidates)}")
         lines.append(f"制約満足数: {len(self.feasible_candidates)}")
@@ -706,6 +714,37 @@ class _OptimizationWorker(QThread):
                     margins[f"criteria:{k}"] = 1.0
         return is_feasible, margins
 
+    def _penalized_objective(
+        self,
+        obj_val: float,
+        margins: Dict[str, float],
+        config: OptimizationConfig,
+    ) -> float:
+        """制約ペナルティ付き目的関数値を計算する。
+
+        constraint_penalty_weight > 0 の場合、制約違反量に比例したペナルティを
+        目的関数に加算する。これにより制約境界付近の探索が改善される。
+
+        Parameters
+        ----------
+        obj_val : float
+            元の目的関数値。
+        margins : dict
+            各制約のマージン（正=余裕, 負=違反量）。
+        config : OptimizationConfig
+            最適化設定。
+
+        Returns
+        -------
+        float
+            ペナルティ付き目的関数値。制約ペナルティ重みが0なら元の値を返す。
+        """
+        w = config.constraint_penalty_weight
+        if w <= 0 or not margins:
+            return obj_val
+        violation = sum(max(0.0, -m) for m in margins.values())
+        return obj_val + w * violation
+
     def _run_grid_search(self, config: OptimizationConfig) -> OptimizationResult:
         """グリッドサーチで最適化を実行します。"""
         if not config.parameters:
@@ -943,7 +982,8 @@ class _OptimizationWorker(QThread):
             response = self._evaluate_fn(params)
             obj_val = config.compute_objective(response)
             is_feasible, margins = self._check_constraints(response, config)
-            y_init.append(obj_val)
+            y_penalized = self._penalized_objective(obj_val, margins, config)
+            y_init.append(y_penalized)
 
             candidate = OptimizationCandidate(
                 params=params,
@@ -1037,10 +1077,11 @@ class _OptimizationWorker(QThread):
                     if is_feasible and (best is None or obj_val < best.objective_value):
                         best = candidate
 
-                    # GPの履歴を更新
+                    # GPの履歴を更新（ペナルティ付き値でモデリング）
+                    y_penalized = self._penalized_objective(obj_val, margins, config)
                     x_next_normalized = (raw_params - param_mins) / param_ranges
                     X_history = np.vstack([X_history, x_next_normalized])
-                    y_history = np.hstack([y_history, obj_val])
+                    y_history = np.hstack([y_history, y_penalized])
 
                     # 進捗報告
                     if (n_init + i) % max(1, total // 100) == 0 or (n_init + i) == total - 1:
@@ -1149,6 +1190,10 @@ class _OptimizationWorker(QThread):
             )
 
         def _fitness(c: OptimizationCandidate) -> float:
+            if config.constraint_penalty_weight > 0:
+                return self._penalized_objective(
+                    c.objective_value, c.constraint_margins, config,
+                )
             if not c.is_feasible:
                 return float("inf")
             return c.objective_value
@@ -1300,6 +1345,10 @@ class _OptimizationWorker(QThread):
             return params
 
         def _cost(cand: OptimizationCandidate) -> float:
+            if config.constraint_penalty_weight > 0:
+                return self._penalized_objective(
+                    cand.objective_value, cand.constraint_margins, config,
+                )
             if not cand.is_feasible:
                 return cand.objective_value + 1e10  # ペナルティ
             return cand.objective_value
