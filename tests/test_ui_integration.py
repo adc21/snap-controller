@@ -149,6 +149,106 @@ class TestDialogInteractions:
         for i in range(dlg._method_combo.count()):
             dlg._method_combo.setCurrentIndex(i)
 
+    def test_optimizer_damper_type_switch(self, qapp):
+        """全ダンパー種類を切り替えてもクラッシュしないこと。"""
+        from app.ui.optimizer_dialog import OptimizerDialog
+        dlg = OptimizerDialog()
+        for i in range(dlg._damper_combo.count()):
+            dlg._damper_combo.setCurrentIndex(i)
+            # パラメータウィジェットが更新されること
+            assert isinstance(dlg._param_widgets, list)
+
+    def test_optimizer_damper_type_roundtrip(self, qapp):
+        """ダンパー種類を往復切替してもウィジェットリークしないこと。"""
+        from app.ui.optimizer_dialog import OptimizerDialog
+        dlg = OptimizerDialog()
+        n = dlg._damper_combo.count()
+        for _ in range(3):
+            for i in range(n):
+                dlg._damper_combo.setCurrentIndex(i)
+        # クラッシュせず、パラメータウィジェットが正常な数であること
+        dtype = dlg._damper_combo.currentText()
+        from app.ui.optimizer_dialog import _DAMPER_PARAM_PRESETS
+        expected = len(_DAMPER_PARAM_PRESETS.get(dtype, []))
+        assert len(dlg._param_widgets) == expected
+
+    def test_optimizer_composite_toggle(self, qapp):
+        """複合目的関数チェックボックスのトグルがクラッシュしないこと。"""
+        from app.ui.optimizer_dialog import OptimizerDialog
+        dlg = OptimizerDialog()
+        # 非表示ダイアログでは isVisible() は常にFalseなので isVisibleTo() を使用
+        assert not dlg._composite_panel.isVisibleTo(dlg)
+        dlg._composite_check.setChecked(True)
+        assert dlg._composite_panel.isVisibleTo(dlg)
+        assert not dlg._obj_combo.isEnabled()
+        dlg._composite_check.setChecked(False)
+        assert not dlg._composite_panel.isVisibleTo(dlg)
+        assert dlg._obj_combo.isEnabled()
+
+    def test_optimizer_guide_panel_toggle(self, qapp):
+        """ガイドパネルの開閉でクラッシュしないこと、状態が切り替わること。"""
+        from app.ui.optimizer_dialog import OptimizerDialog
+        dlg = OptimizerDialog()
+        initial = dlg._guide_panel.isHidden()
+        dlg._toggle_guide_panel()
+        assert dlg._guide_panel.isHidden() != initial
+        dlg._toggle_guide_panel()
+        assert dlg._guide_panel.isHidden() == initial
+
+    def test_optimizer_build_config(self, qapp):
+        """_build_config()が正常にOptimizationConfigを返すこと。"""
+        from app.ui.optimizer_dialog import OptimizerDialog
+        dlg = OptimizerDialog()
+        config = dlg._build_config()
+        assert config.parameters is not None
+        assert len(config.parameters) >= 1
+        assert config.method in ("grid", "random", "bayesian", "ga", "sa")
+        assert config.damper_type == dlg._damper_combo.currentText()
+
+    def test_optimizer_estimate_grid_runs(self, qapp):
+        """推定試行数が正の整数であること。"""
+        from app.ui.optimizer_dialog import OptimizerDialog
+        dlg = OptimizerDialog()
+        n = dlg._estimate_grid_runs()
+        assert isinstance(n, int)
+        assert n >= 1
+
+    def test_optimizer_iter_spin_enabled_by_method(self, qapp):
+        """反復数スピンボックスがメソッドに応じて有効/無効になること。"""
+        from app.ui.optimizer_dialog import OptimizerDialog
+        dlg = OptimizerDialog()
+        # グリッドサーチ: 無効
+        dlg._method_combo.setCurrentIndex(0)
+        assert not dlg._iter_spin.isEnabled()
+        # ランダムサーチ: 有効
+        dlg._method_combo.setCurrentIndex(1)
+        assert dlg._iter_spin.isEnabled()
+
+    def test_optimizer_initial_button_states(self, qapp):
+        """初期状態で各ボタンの有効/無効が正しいこと。"""
+        from app.ui.optimizer_dialog import OptimizerDialog
+        dlg = OptimizerDialog()
+        assert dlg._run_btn.isEnabled()
+        assert not dlg._cancel_btn.isEnabled()
+        assert not dlg._apply_btn.isEnabled()
+        assert not dlg._export_csv_btn.isEnabled()
+        assert not dlg._best_summary_card.isVisibleTo(dlg)
+
+    def test_optimizer_clear_layout_safety(self, qapp):
+        """_clear_layout静的メソッドが空レイアウトでクラッシュしないこと。"""
+        from app.ui.optimizer_dialog import OptimizerDialog
+        from PySide6.QtWidgets import QVBoxLayout, QWidget
+        layout = QVBoxLayout()
+        # 空レイアウトのクリア
+        OptimizerDialog._clear_layout(layout)
+        assert layout.count() == 0
+        # ウィジェット入りレイアウトのクリア
+        layout.addWidget(QWidget())
+        layout.addWidget(QWidget())
+        assert layout.count() == 2
+        OptimizerDialog._clear_layout(layout)
+        assert layout.count() == 0
+
     def test_minimizer_strategy_switch(self, qapp):
         from app.ui.minimizer_dialog import MinimizerDialog
         dlg = MinimizerDialog(

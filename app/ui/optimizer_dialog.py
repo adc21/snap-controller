@@ -512,7 +512,7 @@ class OptimizerDialog(QDialog):
 
     def _toggle_guide_panel(self) -> None:
         """「最適化とは？」ガイドパネルの表示/非表示を切り替えます。"""
-        visible = not self._guide_panel.isVisible()
+        visible = self._guide_panel.isHidden()
         self._guide_panel.setVisible(visible)
         self._guide_toggle_btn.setText(
             "▼ 最適化とは？（初めての方へ）" if visible
@@ -589,6 +589,28 @@ class OptimizerDialog(QDialog):
     # Parameter range widgets
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _clear_layout(layout) -> None:
+        """レイアウト内の全ウィジェット・サブレイアウトを安全に削除します。
+
+        無限ループ防止のため最大1000回のイテレーションで打ち切ります。
+        """
+        max_iters = 1000
+        count = 0
+        while layout.count() and count < max_iters:
+            count += 1
+            child = layout.takeAt(0)
+            if child is None:
+                break
+            widget = child.widget()
+            if widget is not None:
+                widget.setParent(None)
+                widget.deleteLater()
+            elif child.layout() is not None:
+                OptimizerDialog._clear_layout(child.layout())
+        if count >= max_iters:
+            logger.warning("_clear_layout: max iterations reached (%d)", max_iters)
+
     def _on_damper_type_changed(self, dtype: str) -> None:
         """ダンパー種類変更時にパラメータ範囲ウィジェットを更新します。"""
         # 既存ウィジェットを削除
@@ -598,16 +620,8 @@ class OptimizerDialog(QDialog):
                     widget.deleteLater()
         self._param_widgets.clear()
 
-        # 新しいパラメータ行を追加
-        while self._param_layout.count():
-            child = self._param_layout.takeAt(0)
-            if child.widget():
-                child.widget().deleteLater()
-            elif child.layout():
-                while child.layout().count():
-                    sub = child.layout().takeAt(0)
-                    if sub.widget():
-                        sub.widget().deleteLater()
+        # レイアウトをクリア
+        self._clear_layout(self._param_layout)
 
         presets = _DAMPER_PARAM_PRESETS.get(dtype, [])
 
