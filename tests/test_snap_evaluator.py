@@ -34,6 +34,18 @@ class TestSnapEvaluatorCacheKey:
         key2 = SnapEvaluator._make_cache_key({"Cd": 600.0})
         assert key1 != key2
 
+    def test_float_precision_tolerance(self):
+        """浮動小数点の微小差がキャッシュヒットを妨げないこと。"""
+        key1 = SnapEvaluator._make_cache_key({"Cd": 500.0})
+        key2 = SnapEvaluator._make_cache_key({"Cd": 500.0000001})
+        assert key1 == key2
+
+    def test_float_precision_distinct(self):
+        """有意な差はキャッシュミスになること。"""
+        key1 = SnapEvaluator._make_cache_key({"Cd": 500.0})
+        key2 = SnapEvaluator._make_cache_key({"Cd": 500.1})
+        assert key1 != key2
+
 
 class TestSnapEvaluatorErrorResponse:
     """エラーレスポンスのテスト。"""

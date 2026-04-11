@@ -410,6 +410,7 @@ class OptimizationResult:
     elapsed_sec: float = 0.0
     converged: bool = False
     message: str = ""
+    evaluation_method: str = "mock"  # "mock" or "snap"
 
     @property
     def feasible_candidates(self) -> List[OptimizationCandidate]:
@@ -433,6 +434,8 @@ class OptimizationResult:
             lines.append(f"探索手法: {self.config.method}")
             lines.append(f"ダンパー種類: {self.config.damper_type or '未指定'}")
 
+        eval_label = "SNAP実解析" if self.evaluation_method == "snap" else "モック評価（デモ用）"
+        lines.append(f"評価方式: {eval_label}")
         lines.append(f"計算時間: {self.elapsed_sec:.2f} sec")
         lines.append(f"評価数: {len(self.all_candidates)}")
         lines.append(f"制約満足数: {len(self.feasible_candidates)}")
@@ -462,6 +465,7 @@ class OptimizationResult:
             "elapsed_sec": self.elapsed_sec,
             "converged": self.converged,
             "message": self.message,
+            "evaluation_method": self.evaluation_method,
         }
 
     @classmethod
@@ -478,6 +482,7 @@ class OptimizationResult:
             elapsed_sec=d.get("elapsed_sec", 0.0),
             converged=d.get("converged", False),
             message=d.get("message", ""),
+            evaluation_method=d.get("evaluation_method", "mock"),
         )
 
     def save_json(self, path: str) -> None:
@@ -588,6 +593,7 @@ class _OptimizationWorker(QThread):
     ) -> None:
         super().__init__(parent)
         self._config = config
+        self._is_snap = evaluate_fn is not None
         self._evaluate_fn = evaluate_fn or self._default_evaluate
         self._cancelled = False
 
@@ -616,6 +622,7 @@ class _OptimizationWorker(QThread):
 
         result.elapsed_sec = time.time() - start_time
         result.config = config
+        result.evaluation_method = "snap" if self._is_snap else "mock"
         self.finished_signal.emit(result)
 
     def _default_evaluate(self, params: Dict[str, float]) -> Dict[str, float]:

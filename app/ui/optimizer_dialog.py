@@ -951,8 +951,9 @@ class OptimizerDialog(QDialog):
         # サマリー
         if result.best:
             obj_label = result.config.objective_label if result.config else "目的関数"
+            eval_tag = "[SNAP]" if result.evaluation_method == "snap" else "[モック]"
             self._result_summary.setText(
-                f"最良解: {obj_label} = {result.best.objective_value:.6g}  |  "
+                f"{eval_tag} 最良解: {obj_label} = {result.best.objective_value:.6g}  |  "
                 f"制約満足: {len(result.feasible_candidates)} / {len(result.all_candidates)} 点"
             )
             self._apply_btn.setEnabled(True)
@@ -1314,8 +1315,10 @@ class OptimizerDialog(QDialog):
         header = ["順位"] + param_keys + ["目的関数値", "判定"] + response_keys
 
         try:
+            eval_label = "SNAP実解析" if self._result.evaluation_method == "snap" else "モック評価（デモ用）"
             with open(path, "w", newline="", encoding="utf-8-sig") as f:
                 writer = csv.writer(f)
+                writer.writerow([f"# 評価方式: {eval_label}"])
                 writer.writerow(header)
                 for rank, cand in enumerate(ranked):
                     row = [rank + 1]

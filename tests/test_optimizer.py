@@ -828,6 +828,43 @@ class TestOptimizationResultSerialization:
         assert len(restored.all_candidates) == 0
         assert restored.message == "空の結果"
 
+    def test_evaluation_method_default_mock(self):
+        """evaluation_method のデフォルトは 'mock'。"""
+        result = OptimizationResult()
+        assert result.evaluation_method == "mock"
+
+    def test_evaluation_method_snap_round_trip(self):
+        """evaluation_method='snap' が to_dict/from_dict で保持される。"""
+        result = self._make_result()
+        result.evaluation_method = "snap"
+        d = result.to_dict()
+        assert d["evaluation_method"] == "snap"
+        restored = OptimizationResult.from_dict(d)
+        assert restored.evaluation_method == "snap"
+
+    def test_evaluation_method_in_summary(self):
+        """get_summary_text() に評価方式が表示される。"""
+        result = self._make_result()
+        result.evaluation_method = "mock"
+        assert "モック評価" in result.get_summary_text()
+        result.evaluation_method = "snap"
+        assert "SNAP実解析" in result.get_summary_text()
+
+    def test_evaluation_method_missing_in_dict(self):
+        """旧JSONに evaluation_method がない場合、'mock' にフォールバック。"""
+        d = {"message": "旧形式", "all_candidates": []}
+        restored = OptimizationResult.from_dict(d)
+        assert restored.evaluation_method == "mock"
+
+    def test_evaluation_method_save_load_json(self, tmp_path):
+        """evaluation_method が JSON保存/読込で保持される。"""
+        result = self._make_result()
+        result.evaluation_method = "snap"
+        path = str(tmp_path / "test_eval_method.json")
+        result.save_json(path)
+        loaded = OptimizationResult.load_json(path)
+        assert loaded.evaluation_method == "snap"
+
 
 # ===========================================================================
 # Pareto front extraction test (F-2)

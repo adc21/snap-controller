@@ -302,9 +302,13 @@ class SnapEvaluator:
 
     @staticmethod
     def _make_cache_key(params: Dict[str, float]) -> str:
-        """パラメータからキャッシュキーを生成。"""
+        """パラメータからキャッシュキーを生成。
+
+        浮動小数点の表現差異によるキャッシュミスを防ぐため、
+        値を有効数字6桁に丸めてからキーを生成します。
+        """
         items = sorted(params.items())
-        return "|".join(f"{k}={v}" for k, v in items)
+        return "|".join(f"{k}={v:.6g}" for k, v in items)
 
     @property
     def stats(self) -> Dict[str, int]:
