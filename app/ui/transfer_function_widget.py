@@ -61,6 +61,10 @@ from PySide6.QtWidgets import (
 )
 
 from controller.binary.result_loader import SnapResultLoader
+from app.services.transfer_function_service import (
+    compute_snap_transfer_function,
+    TransferFunctionResult,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -176,6 +180,15 @@ class TransferFunctionWidget(QWidget):
         btn_refresh.clicked.connect(self._refresh)
         ctrl.addWidget(btn_refresh)
 
+        self._btn_snap_tf = QPushButton("SNAP伝達関数")
+        self._btn_snap_tf.setFixedWidth(110)
+        self._btn_snap_tf.setToolTip(
+            "選択した入力レコード(1F)と出力レコードから\n"
+            "Welch法ベースの伝達関数 H(f)=Y/X を計算"
+        )
+        self._btn_snap_tf.clicked.connect(self._compute_snap_transfer_function)
+        ctrl.addWidget(self._btn_snap_tf)
+
         root.addLayout(ctrl)
 
         # ---- ピーク情報ラベル ----
@@ -281,6 +294,92 @@ class TransferFunctionWidget(QWidget):
 
     def _on_selection_changed(self, *_) -> None:
         self._refresh()
+
+    # ------------------------------------------------------------------
+    # SNAP 伝達関数計算
+    # ------------------------------------------------------------------
+
+    def _compute_snap_transfer_function(self) -> None:
+        """入力レコード(rec=0=1F)と選択出力レコードから伝達関数を計算して重ね描きする。"""
+        if not self._entries:
+            self._status_label.setText("ケースがありません")
+            return
+
+        cat = self._cat_combo.currentText()
+        output_rec = self._rec_combo.currentData()
+        field_idx = self._field_combo.currentData()
+
+        if not cat or output_rec is None or field_idx is None:
+            self._status_label.setText("カテゴリ/レコード/成分を選択してください")
+            return
+
+        ax = self._canvas.ax
+        ax.clear()
+
+        colors = plt.rcParams["axes.prop_cycle"].by_key()["color"]
+        use_log = self._log_check.isChecked()
+        peak_texts: List[str] = []
+        plotted = 0
+
+        for ci, (case_name, loader) in enumerate(self._entries):
+            tf = compute_snap_transfer_function(
+                result_loader=loader,
+                input_category=cat,
+                input_record=0,
+                input_field=field_idx,
+                output_category=cat,
+                output_record=output_rec,
+                output_field=field_idx,
+                freq_range=(0.1, 50.0),
+            )
+            if tf is None:
+                continue
+
+            c = colors[ci % len(colors)]
+            # Convert dB to linear amplitude for consistency with FFT view
+            amplitude = 10.0 ** (tf.gain_db / 20.0)
+            ax.plot(tf.frequencies, amplitude, color=c, linewidth=0.9,
+                    label=f"{case_name} H(f)", alpha=0.85)
+
+            peak_idx = int(np.argmax(amplitude))
+            peak_freq = float(tf.frequencies[peak_idx])
+            peak_amp = float(amplitude[peak_idx])
+            ax.plot(peak_freq, peak_amp, "v", color=c, markersize=7)
+
+            peak_texts.append(
+                f"{case_name}: f={peak_freq:.3f} Hz, |H|={peak_amp:.4g}, "
+                f"{tf.peak_gain_db:.1f} dB"
+            )
+            plotted += 1
+
+        if plotted == 0:
+            self._canvas.show_message(
+                "伝達関数を計算できませんでした\n"
+                "入力レコード(1F)と出力レコードのデータを確認してください"
+            )
+            self._peak_label.setText("")
+            self._status_label.setText("伝達関数計算失敗")
+            return
+
+        if use_log:
+            ax.set_yscale("log")
+
+        rec_name = self._rec_combo.currentText()
+        field_name = self._field_combo.currentText()
+        ax.set_xlabel("周波数 [Hz]")
+        ax.set_ylabel("|H(f)|")
+        ax.set_title(f"伝達関数 — {cat}/{field_name}: 1F → {rec_name}")
+        ax.grid(True, linestyle=":", alpha=0.5)
+        ax.set_xlim(left=0)
+        ax.legend(fontsize=8)
+        self._canvas.fig.tight_layout()
+        self._canvas.draw()
+
+        self._peak_label.setText("  |  ".join(peak_texts))
+        self._status_label.setText(
+            f"伝達関数 {plotted} ケース  "
+            f"[{cat} / 入力=rec0 / 出力=rec{output_rec} / field={field_idx}]"
+        )
 
     # ------------------------------------------------------------------
     # メイン描画

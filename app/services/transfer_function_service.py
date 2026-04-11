@@ -265,6 +265,44 @@ class TransferFunctionService:
 
 # Phase 2-C: Transfer Function Peak Minimization Optimizer
 
+def compute_bandwidth(
+    frequencies: np.ndarray,
+    gain_db: np.ndarray,
+    threshold_db: float = -3.0,
+) -> float:
+    """伝達関数のピーク周りの帯域幅を計算する。
+
+    ピークゲインから threshold_db（デフォルト -3 dB）下がった範囲の
+    周波数幅を返す。帯域幅が広いほど同調ずれに対してロバスト。
+
+    Parameters
+    ----------
+    frequencies : array
+        周波数 [Hz]
+    gain_db : array
+        ゲイン [dB]
+    threshold_db : float
+        ピークからの閾値 [dB]（負値）。デフォルト -3.0。
+
+    Returns
+    -------
+    float
+        帯域幅 [Hz]。算出不能の場合は 0.0。
+    """
+    if len(frequencies) < 2:
+        return 0.0
+
+    peak_val = np.max(gain_db)
+    cutoff = peak_val + threshold_db  # threshold_db is negative
+
+    above = gain_db >= cutoff
+    if not np.any(above):
+        return 0.0
+
+    f_above = frequencies[above]
+    return float(f_above[-1] - f_above[0])
+
+
 @dataclass
 class PeakMinimizationResult:
     """Peak minimization optimization result."""
@@ -276,6 +314,8 @@ class PeakMinimizationResult:
     initial_peak_freq: float
     optimized_peak_freq: float
     num_evaluations: int
+    bandwidth_hz: float = 0.0
+    initial_bandwidth_hz: float = 0.0
 
     def summary_text(self) -> str:
         """最適化結果をテキスト形式でまとめます。"""
@@ -297,6 +337,10 @@ class PeakMinimizationResult:
             f"  最適同調比 (f_d/f_n): {self.optimal_stiffness_ratio:.4f}",
             f"  評価回数: {self.num_evaluations}",
         ]
+        if self.bandwidth_hz > 0:
+            lines.append(f"  有効帯域幅 (-3dB): {self.bandwidth_hz:.3f} Hz")
+        if self.initial_bandwidth_hz > 0:
+            lines.append(f"  初期帯域幅 (-3dB): {self.initial_bandwidth_hz:.3f} Hz")
         return "\n".join(lines)
 
 
@@ -405,6 +449,8 @@ class TransferFunctionPeakMinimizer:
         self.zeta_s = structural_damping
         self.mu = mass_ratio
         self._eval_count = 0
+        self._objective_mode: str = "peak"
+        self._bandwidth_weight: float = 0.0
 
     def _synthesize_damper_response(
         self, damping_ratio: float, stiffness_ratio: float
@@ -463,7 +509,13 @@ class TransferFunctionPeakMinimizer:
         )
 
     def _evaluate_objective(self, damping_ratio: float, stiffness_ratio: float) -> float:
-        """Evaluate objective function (peak gain to minimize)."""
+        """Evaluate objective function.
+
+        Supports three modes via self._objective_mode:
+        - "peak": minimize peak gain (dB)
+        - "bandwidth": minimize peak gain penalized by narrow bandwidth
+        - "robust": weighted sum of peak gain and bandwidth penalty
+        """
         self._eval_count += 1
 
         if not (0.001 <= damping_ratio <= 0.5):
@@ -472,7 +524,18 @@ class TransferFunctionPeakMinimizer:
             return 1000.0
 
         tf_damped = self._synthesize_damper_response(damping_ratio, stiffness_ratio)
-        return tf_damped.peak_gain_db
+
+        if self._objective_mode == "peak" or self._bandwidth_weight <= 0:
+            return tf_damped.peak_gain_db
+
+        # Compute bandwidth penalty: narrower bandwidth → larger penalty
+        bw = compute_bandwidth(tf_damped.frequencies, tf_damped.gain_db)
+        # Normalize bandwidth by natural frequency to get a dimensionless measure
+        bw_norm = bw / self.natural_freq if self.natural_freq > 0 else bw
+        # Penalty: invert bandwidth (wider is better → lower penalty)
+        bw_penalty = -bw_norm  # negative = wider is rewarded
+
+        return tf_damped.peak_gain_db + self._bandwidth_weight * bw_penalty
 
     def optimize(
         self,
@@ -480,6 +543,8 @@ class TransferFunctionPeakMinimizer:
         stiffness_range: Tuple[float, float] = (0.5, 1.5),
         method: str = "grid",
         grid_points: int = 20,
+        objective: str = "peak",
+        bandwidth_weight: float = 5.0,
     ) -> PeakMinimizationResult:
         """TMD パラメータ最適化を実行する。
 
@@ -494,10 +559,20 @@ class TransferFunctionPeakMinimizer:
             "grid" (グリッドサーチ) or "simplex" (L-BFGS-B)。
         grid_points : int
             グリッドサーチの各軸の分割数。
+        objective : str
+            目的関数の種類:
+            - "peak": ピークゲイン最小化（従来動作）
+            - "robust": ピーク最小化 + 帯域幅最大化の重み付き和
+        bandwidth_weight : float
+            objective="robust" 時の帯域幅項の重み。デフォルト 5.0。
+            大きいほど帯域幅（ロバスト性）を重視する。
         """
         self._eval_count = 0
+        self._objective_mode = objective
+        self._bandwidth_weight = bandwidth_weight if objective == "robust" else 0.0
         initial_peak = self.tf.peak_gain_db
         initial_freq = self.tf.peak_freq
+        initial_bw = compute_bandwidth(self.tf.frequencies, self.tf.gain_db)
 
         if method == "grid":
             result = self._optimize_grid(
@@ -510,6 +585,7 @@ class TransferFunctionPeakMinimizer:
             result.optimal_damping_ratio, result.optimal_stiffness_ratio
         )
         peak_reduction = initial_peak - result.optimized_peak_gain_db
+        opt_bw = compute_bandwidth(tf_opt.frequencies, tf_opt.gain_db)
 
         return PeakMinimizationResult(
             optimal_damping_ratio=result.optimal_damping_ratio,
@@ -520,6 +596,8 @@ class TransferFunctionPeakMinimizer:
             initial_peak_freq=initial_freq,
             optimized_peak_freq=tf_opt.peak_freq,
             num_evaluations=self._eval_count,
+            bandwidth_hz=opt_bw,
+            initial_bandwidth_hz=initial_bw,
         )
 
     def _optimize_grid(
@@ -600,3 +678,140 @@ class TransferFunctionPeakMinimizer:
             optimized_peak_freq=0.0,
             num_evaluations=self._eval_count,
         )
+
+
+# ---------------------------------------------------------------------------
+# SNAP 伝達関数パイプライン
+# ---------------------------------------------------------------------------
+
+
+def compute_transfer_function_from_time_histories(
+    input_time_history: np.ndarray,
+    output_time_history: np.ndarray,
+    dt: float,
+    freq_range: Optional[Tuple[float, float]] = None,
+    input_label: str = "地動入力",
+    output_label: str = "応答",
+) -> TransferFunctionResult:
+    """時刻歴データのペアから伝達関数を計算する。
+
+    SNAP 解析結果の入力波形（地動加速度）と応答波形（層間変位・加速度等）から
+    Welch 法ベースの伝達関数を算出する。
+
+    Parameters
+    ----------
+    input_time_history : array
+        入力時刻歴（地動加速度など）
+    output_time_history : array
+        出力時刻歴（応答加速度・変位など）
+    dt : float
+        時刻刻み [秒]
+    freq_range : tuple, optional
+        表示周波数範囲 (f_min, f_max) [Hz]
+    input_label, output_label : str
+        ラベル
+
+    Returns
+    -------
+    TransferFunctionResult
+    """
+    svc = TransferFunctionService(dt=dt)
+    return svc.compute_transfer_function(
+        input_signal=input_time_history,
+        output_signal=output_time_history,
+        input_label=input_label,
+        output_label=output_label,
+        freq_range=freq_range,
+    )
+
+
+def compute_snap_transfer_function(
+    result_loader: "SnapResultLoader",
+    input_category: str = "Floor",
+    input_record: int = 0,
+    input_field: int = 0,
+    output_category: str = "Floor",
+    output_record: int = -1,
+    output_field: int = 0,
+    freq_range: Optional[Tuple[float, float]] = None,
+) -> Optional[TransferFunctionResult]:
+    """SnapResultLoader から伝達関数を計算する。
+
+    入力・出力それぞれのカテゴリ・レコード・フィールドを指定し、
+    Welch 法で伝達関数 H(f) = Y(f)/X(f) を計算する。
+
+    典型的な使い方:
+    - 入力: Floor[0] (1F = 地動入力相当) の加速度
+    - 出力: Floor[-1] (最上階) の加速度
+    → 建物の加速度増幅率の周波数応答
+
+    Parameters
+    ----------
+    result_loader : SnapResultLoader
+        SNAP 解析結果ローダー
+    input_category, output_category : str
+        入出力のカテゴリ (Floor, Story, Damper 等)
+    input_record, output_record : int
+        レコード番号。-1 は最終レコード（最上階）。
+    input_field, output_field : int
+        フィールド番号（成分インデックス）
+    freq_range : tuple, optional
+        表示周波数範囲
+
+    Returns
+    -------
+    TransferFunctionResult or None
+        計算に失敗した場合は None。
+    """
+    try:
+        # 入力側
+        bc_in = result_loader.get(input_category)
+        if not bc_in or not bc_in.hst or not bc_in.hst.header:
+            return None
+        hst_in = bc_in.hst
+        hst_in.ensure_loaded()
+        h_in = hst_in.header
+
+        rec_in = input_record
+        if rec_in < 0:
+            rec_in = h_in.num_records + rec_in
+        x = hst_in.time_series(rec_in, input_field)
+
+        # 出力側
+        bc_out = result_loader.get(output_category)
+        if not bc_out or not bc_out.hst or not bc_out.hst.header:
+            return None
+        hst_out = bc_out.hst
+        hst_out.ensure_loaded()
+        h_out = hst_out.header
+
+        rec_out = output_record
+        if rec_out < 0:
+            rec_out = h_out.num_records + rec_out
+        y = hst_out.time_series(rec_out, output_field)
+
+        if len(x) < 2 or len(y) < 2:
+            return None
+
+        # 短い方に合わせる
+        n = min(len(x), len(y))
+        x = x[:n]
+        y = y[:n]
+
+        dt = hst_in.dt
+
+        in_name = bc_in.record_name(rec_in)
+        out_name = bc_out.record_name(rec_out)
+        in_label = f"{input_category}/{in_name}"
+        out_label = f"{output_category}/{out_name}"
+
+        return compute_transfer_function_from_time_histories(
+            input_time_history=x,
+            output_time_history=y,
+            dt=dt,
+            freq_range=freq_range,
+            input_label=in_label,
+            output_label=out_label,
+        )
+    except Exception:
+        return None

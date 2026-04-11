@@ -15,6 +15,8 @@ from app.services.transfer_function_service import (
     TransferFunctionPeakMinimizer,
     PeakMinimizationResult,
     sdof_tmd_transfer_function,
+    compute_bandwidth,
+    compute_transfer_function_from_time_histories,
 )
 
 
@@ -277,3 +279,94 @@ class TestTransferFunctionPeakMinimizer:
         assert "TMD ピーク最小化最適化結果" in text
         assert "zeta_d" in text
         assert "f_d/f_n" in text
+
+    def test_robust_objective(self, sample_tf):
+        """objective='robust' で帯域幅を考慮した最適化ができる。"""
+        minimizer = TransferFunctionPeakMinimizer(sample_tf)
+        result = minimizer.optimize(
+            method="grid", grid_points=5, objective="robust", bandwidth_weight=5.0
+        )
+        assert isinstance(result, PeakMinimizationResult)
+        assert result.bandwidth_hz >= 0
+        assert result.initial_bandwidth_hz >= 0
+        assert result.num_evaluations == 25
+
+    def test_robust_vs_peak_different_result(self, sample_tf):
+        """objective='robust' は 'peak' と異なる最適解を返す可能性がある。"""
+        minimizer_peak = TransferFunctionPeakMinimizer(sample_tf)
+        res_peak = minimizer_peak.optimize(method="grid", grid_points=10, objective="peak")
+
+        minimizer_robust = TransferFunctionPeakMinimizer(sample_tf)
+        res_robust = minimizer_robust.optimize(
+            method="grid", grid_points=10, objective="robust", bandwidth_weight=10.0
+        )
+
+        # 両方とも有効な結果を返す
+        assert res_peak.optimal_damping_ratio > 0
+        assert res_robust.optimal_damping_ratio > 0
+
+    def test_bandwidth_in_summary(self, sample_tf):
+        """帯域幅が summary_text に表示される。"""
+        minimizer = TransferFunctionPeakMinimizer(sample_tf)
+        result = minimizer.optimize(
+            method="grid", grid_points=5, objective="robust"
+        )
+        text = result.summary_text()
+        assert "帯域幅" in text
+
+
+# ---------------------------------------------------------------------------
+# compute_bandwidth
+# ---------------------------------------------------------------------------
+
+class TestComputeBandwidth:
+    def test_basic(self):
+        """ピーク周りの帯域幅を正しく計算する。"""
+        f = np.linspace(0.1, 10.0, 1000)
+        # ピーク at 5 Hz, -3dB 帯域幅 ≈ 1 Hz のベルカーブ
+        gain_db = -((f - 5.0) ** 2) * 10  # 二乗で急峻なピーク
+        bw = compute_bandwidth(f, gain_db, threshold_db=-3.0)
+        assert bw > 0
+        assert bw < 5.0  # 全帯域よりは狭い
+
+    def test_flat_spectrum(self):
+        """フラットスペクトルでは全帯域が帯域幅になる。"""
+        f = np.linspace(1.0, 10.0, 100)
+        gain_db = np.zeros_like(f)
+        bw = compute_bandwidth(f, gain_db, threshold_db=-3.0)
+        assert bw == pytest.approx(f[-1] - f[0], rel=0.01)
+
+    def test_empty_returns_zero(self):
+        """空配列で 0 を返す。"""
+        bw = compute_bandwidth(np.array([]), np.array([]))
+        assert bw == 0.0
+
+
+# ---------------------------------------------------------------------------
+# compute_transfer_function_from_time_histories
+# ---------------------------------------------------------------------------
+
+class TestComputeTransferFunctionFromTimeHistories:
+    def test_basic(self):
+        """時刻歴ペアから伝達関数が計算できる。"""
+        dt = 0.005
+        t = np.arange(0, 10.0, dt)
+        x = np.sin(2 * np.pi * 3.0 * t)
+        y = 2.0 * np.sin(2 * np.pi * 3.0 * t)
+
+        tf = compute_transfer_function_from_time_histories(x, y, dt)
+        assert isinstance(tf, TransferFunctionResult)
+        assert tf.peak_freq > 0
+        assert tf.input_label == "地動入力"
+        assert tf.output_label == "応答"
+
+    def test_custom_labels(self):
+        dt = 0.005
+        t = np.arange(0, 5.0, dt)
+        x = np.random.randn(len(t))
+        y = np.random.randn(len(t))
+        tf = compute_transfer_function_from_time_histories(
+            x, y, dt, input_label="Acc", output_label="Disp"
+        )
+        assert tf.input_label == "Acc"
+        assert tf.output_label == "Disp"
