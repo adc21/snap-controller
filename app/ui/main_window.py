@@ -2538,9 +2538,18 @@ class MainWindow(QMainWindow):
             if hasattr(model, "floor_masses"):
                 floor_masses = model.floor_masses
 
+        # ベース .s8i パスを取得
+        base_s8i_path = None
+        if self._project and hasattr(self._project, "cases") and self._project.cases:
+            for case in self._project.cases:
+                if case.model_path and Path(case.model_path).exists():
+                    base_s8i_path = case.model_path
+                    break
+
         dlg = IrdtWizardDialog(
             period_reader=period_reader,
             floor_masses=floor_masses,
+            base_s8i_path=base_s8i_path,
             parent=self,
         )
         dlg.designCompleted.connect(self._on_irdt_design_completed)

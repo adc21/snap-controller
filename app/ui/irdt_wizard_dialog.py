@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+from pathlib import Path
 from typing import List, Optional
 
 from PySide6.QtCore import Signal, Qt
@@ -25,6 +26,11 @@ from PySide6.QtWidgets import (
     QWidget,
     QAbstractItemView,
     QLineEdit,
+    QFileDialog,
+    QMessageBox,
+    QFormLayout,
+    QSpinBox,
+    QScrollArea,
 )
 
 from app.services.irdt_designer import (
@@ -32,6 +38,7 @@ from app.services.irdt_designer import (
     fixed_point_optimal,
     design_irdt_placement,
 )
+from app.services.damper_injector import DamperInjector, DamperInsertSpec
 from controller.binary.period_xbn_reader import PeriodXbnReader
 
 
@@ -41,22 +48,26 @@ class IrdtWizardDialog(QDialog):
     designCompleted = Signal(object)
 
     _STEP_TITLES = [
-        "ステップ 1/4 — 対象モード選択",
-        "ステップ 2/4 — 質量比設定",
-        "ステップ 3/4 — 配分戦略",
-        "ステップ 4/4 — 設計結果プレビュー",
+        "ステップ 1/5 — 対象モード選択",
+        "ステップ 2/5 — 質量比設定",
+        "ステップ 3/5 — 配分戦略",
+        "ステップ 4/5 — 設計結果プレビュー",
+        "ステップ 5/5 — SNAPケースとして保存",
     ]
 
     def __init__(
         self,
         period_reader: Optional[PeriodXbnReader] = None,
         floor_masses: Optional[List[float]] = None,
+        base_s8i_path: Optional[str] = None,
         parent: Optional[QWidget] = None,
     ) -> None:
         super().__init__(parent)
         self._reader = period_reader
         self._floor_masses = floor_masses or []
+        self._base_s8i_path = base_s8i_path or ""
         self._placement_plan: Optional[IrdtPlacementPlan] = None
+        self._saved_case = None
 
         self.setWindowTitle("iRDT 設計ウィザード（定点理論）")
         self.setMinimumWidth(720)
@@ -81,6 +92,7 @@ class IrdtWizardDialog(QDialog):
         self._stack.addWidget(self._build_page_mass_ratio())
         self._stack.addWidget(self._build_page_distribution())
         self._stack.addWidget(self._build_page_result())
+        self._stack.addWidget(self._build_page_save())
         root.addWidget(self._stack, 1)
 
         # ナビゲーションボタン
@@ -259,6 +271,201 @@ class IrdtWizardDialog(QDialog):
 
         return page
 
+    def _build_page_save(self) -> QWidget:
+        """ステップ 5: SNAPケースとして保存。"""
+        page = QWidget()
+        layout = QVBoxLayout(page)
+
+        layout.addWidget(
+            QLabel("設計結果を .s8i ファイルに挿入してSNAPケースとして保存します。")
+        )
+
+        # ファイル設定
+        file_group = QGroupBox("ファイル設定")
+        file_form = QFormLayout(file_group)
+
+        h_base = QHBoxLayout()
+        self._save_base_path = QLineEdit(self._base_s8i_path)
+        self._save_base_path.setPlaceholderText("元の .s8i ファイルを選択…")
+        btn_browse_base = QPushButton("参照…")
+        btn_browse_base.clicked.connect(self._browse_base_s8i)
+        h_base.addWidget(self._save_base_path)
+        h_base.addWidget(btn_browse_base)
+        file_form.addRow("元モデル (.s8i):", h_base)
+
+        h_out = QHBoxLayout()
+        self._save_out_path = QLineEdit()
+        self._save_out_path.setPlaceholderText("出力先 .s8i を指定…")
+        btn_browse_out = QPushButton("参照…")
+        btn_browse_out.clicked.connect(self._browse_out_s8i)
+        h_out.addWidget(self._save_out_path)
+        h_out.addWidget(btn_browse_out)
+        file_form.addRow("出力ファイル (.s8i):", h_out)
+
+        self._save_case_name = QLineEdit()
+        self._save_case_name.setPlaceholderText("新規ケース名（省略時は自動生成）")
+        file_form.addRow("ケース名:", self._save_case_name)
+
+        layout.addWidget(file_group)
+
+        # 節点マッピング
+        node_group = QGroupBox("各層の節点マッピング")
+        node_vlayout = QVBoxLayout(node_group)
+        node_vlayout.addWidget(
+            QLabel("各層のダンパー取付節点（始端 I・終端 J）を指定してください:")
+        )
+
+        self._node_scroll = QScrollArea()
+        self._node_scroll.setWidgetResizable(True)
+        self._node_container = QWidget()
+        self._node_container_layout = QVBoxLayout(self._node_container)
+        self._node_container_layout.setSpacing(4)
+        self._node_container_layout.addStretch()
+        self._node_scroll.setWidget(self._node_container)
+        self._node_scroll.setMinimumHeight(150)
+        node_vlayout.addWidget(self._node_scroll)
+
+        layout.addWidget(node_group)
+
+        # 保存結果ログ
+        self._save_log = QTextEdit()
+        self._save_log.setReadOnly(True)
+        self._save_log.setMaximumHeight(100)
+        self._save_log.setStyleSheet("font-family: monospace; font-size: 11px;")
+        layout.addWidget(self._save_log)
+
+        # 保存ボタン
+        self._btn_save_snap = QPushButton("SNAPケースとして保存")
+        self._btn_save_snap.setStyleSheet(
+            "QPushButton { background: #2e7d32; color: white; padding: 6px 16px; }"
+        )
+        self._btn_save_snap.clicked.connect(self._save_as_snap_case)
+        layout.addWidget(self._btn_save_snap, alignment=Qt.AlignmentFlag.AlignRight)
+
+        self._node_rows: List[_NodeRow] = []
+        return page
+
+    def _browse_base_s8i(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(
+            self, "元 .s8i を選択", "", "SNAP input (*.s8i);;All files (*)"
+        )
+        if path:
+            self._save_base_path.setText(path)
+            # 出力パスを自動提案
+            out = Path(path).with_stem(Path(path).stem + "_irdt")
+            self._save_out_path.setText(str(out))
+
+    def _browse_out_s8i(self) -> None:
+        path, _ = QFileDialog.getSaveFileName(
+            self, "出力 .s8i を保存", "", "SNAP input (*.s8i);;All files (*)"
+        )
+        if path:
+            self._save_out_path.setText(path)
+
+    def _populate_node_rows(self) -> None:
+        """配置計画に基づいて節点入力行を生成する。"""
+        # 既存行をクリア
+        for row in self._node_rows:
+            row.deleteLater()
+        self._node_rows.clear()
+
+        if self._placement_plan is None:
+            return
+
+        for assignment in self._placement_plan.floor_plan:
+            if assignment.inertance <= 0:
+                continue
+            row = _NodeRow(
+                floor=assignment.floor,
+                parent=self._node_container,
+            )
+            self._node_rows.append(row)
+            insert_pos = self._node_container_layout.count() - 1
+            self._node_container_layout.insertWidget(insert_pos, row)
+
+    def _save_as_snap_case(self) -> None:
+        """設計結果を DamperInjector で .s8i に挿入して保存。"""
+        base_path = self._save_base_path.text().strip()
+        out_path = self._save_out_path.text().strip()
+
+        if not base_path:
+            QMessageBox.warning(self, "エラー", "元モデル (.s8i) を指定してください。")
+            return
+        if not Path(base_path).exists():
+            QMessageBox.warning(
+                self, "エラー", f"ファイルが見つかりません:\n{base_path}"
+            )
+            return
+        if not out_path:
+            QMessageBox.warning(self, "エラー", "出力ファイルパスを指定してください。")
+            return
+        if self._placement_plan is None:
+            QMessageBox.warning(self, "エラー", "設計結果がありません。前のステップに戻ってください。")
+            return
+
+        # IrdtFloorAssignment → DamperInsertSpec に変換
+        specs: List[DamperInsertSpec] = []
+        for row in self._node_rows:
+            assignment = None
+            for a in self._placement_plan.floor_plan:
+                if a.floor == row.floor:
+                    assignment = a
+                    break
+            if assignment is None or assignment.inertance <= 0:
+                continue
+
+            # 単位変換: irdt_designer は SI (kg, N·s/m, N/m)
+            # DamperInsertSpec は kN·s²/m, kN/m, kN·s/m
+            mass_kN_s2_m = assignment.inertance / 1000.0
+            spring_kN_m = assignment.support_stiffness / 1000.0
+            damping_kN_s_m = assignment.damping / 1000.0
+
+            specs.append(DamperInsertSpec(
+                damper_type="iRDT",
+                def_name=f"IRDT{assignment.floor}",
+                floor_name=f"{assignment.floor}F",
+                node_i=row.node_i,
+                node_j=row.node_j,
+                quantity=1,
+                mass_kN_s2_m=mass_kN_s2_m,
+                spring_kN_m=spring_kN_m,
+                damping_kN_s_m=damping_kN_s_m,
+                stroke_m=0.3,
+            ))
+
+        if not specs:
+            QMessageBox.warning(self, "エラー", "挿入するダンパー仕様がありません。")
+            return
+
+        self._save_log.clear()
+        self._save_log.append("挿入開始…")
+
+        injector = DamperInjector()
+        case_name = self._save_case_name.text().strip() or None
+        result = injector.inject(
+            base_s8i_path=base_path,
+            specs=specs,
+            output_s8i_path=out_path,
+            new_case_name=case_name,
+        )
+
+        for w in result.warnings:
+            self._save_log.append(f"⚠ {w}")
+
+        if result.success:
+            self._save_log.append(result.message)
+            self._save_log.append(f"→ 出力: {result.output_s8i_path}")
+            self._saved_case = result.new_case
+            self._placement_plan.saved_s8i_path = out_path  # type: ignore[attr-defined]
+            self.designCompleted.emit(self._placement_plan)
+            QMessageBox.information(
+                self, "保存完了",
+                f"SNAPケースとして保存しました:\n{result.output_s8i_path}"
+            )
+        else:
+            self._save_log.append(f"✕ {result.message}")
+            QMessageBox.critical(self, "保存失敗", result.message)
+
     def _connect_signals(self) -> None:
         self._btn_back.clicked.connect(self._go_back)
         self._btn_next.clicked.connect(self._go_next)
@@ -281,6 +488,14 @@ class IrdtWizardDialog(QDialog):
             if idx == 2:
                 # 結果ページに進む前に計算を実行
                 self._compute_placement()
+            elif idx == 3:
+                # 保存ページに進む前に節点行を生成
+                self._populate_node_rows()
+                # ベースパスから出力パスを自動提案
+                base = self._save_base_path.text().strip()
+                if base and not self._save_out_path.text().strip():
+                    out = Path(base).with_stem(Path(base).stem + "_irdt")
+                    self._save_out_path.setText(str(out))
             self._stack.setCurrentIndex(idx + 1)
             self._title_label.setText(self._STEP_TITLES[idx + 1])
             self._update_nav_buttons()
@@ -412,3 +627,52 @@ class IrdtWizardDialog(QDialog):
     @property
     def placement_plan(self) -> Optional[IrdtPlacementPlan]:
         return self._placement_plan
+
+    @property
+    def saved_case(self):
+        """保存後に生成された AnalysisCase（未保存時は None）。"""
+        return self._saved_case
+
+
+class _NodeRow(QWidget):
+    """各層のダンパー取付節点（I, J）を入力する行ウィジェット。"""
+
+    def __init__(
+        self, floor: int, parent: Optional[QWidget] = None
+    ) -> None:
+        super().__init__(parent)
+        self._floor = floor
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(0, 2, 0, 2)
+
+        layout.addWidget(QLabel(f"{floor}F:"))
+
+        layout.addWidget(QLabel("節点I:"))
+        self._node_i = QSpinBox()
+        self._node_i.setRange(0, 99999)
+        self._node_i.setValue(0)
+        self._node_i.setMaximumWidth(80)
+        self._node_i.setToolTip(f"{floor}層 始端節点番号")
+        layout.addWidget(self._node_i)
+
+        layout.addWidget(QLabel("J:"))
+        self._node_j = QSpinBox()
+        self._node_j.setRange(0, 99999)
+        self._node_j.setValue(0)
+        self._node_j.setMaximumWidth(80)
+        self._node_j.setToolTip(f"{floor}層 終端節点番号")
+        layout.addWidget(self._node_j)
+
+        layout.addStretch()
+
+    @property
+    def floor(self) -> int:
+        return self._floor
+
+    @property
+    def node_i(self) -> int:
+        return self._node_i.value()
+
+    @property
+    def node_j(self) -> int:
+        return self._node_j.value()
