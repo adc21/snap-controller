@@ -131,6 +131,563 @@ def generate_report(
     return html_content
 
 
+def generate_optimization_report(
+    result: "OptimizationResult",
+    output_path: Optional[str] = None,
+    include_charts: bool = True,
+    title: Optional[str] = None,
+) -> str:
+    """
+    最適化結果を HTML レポートとして生成します。
+
+    Parameters
+    ----------
+    result : OptimizationResult
+        最適化結果オブジェクト。
+    output_path : str, optional
+        出力先ファイルパス。None の場合は HTML 文字列のみ返却。
+    include_charts : bool
+        チャート画像を含めるかどうか (matplotlib 必須)。
+    title : str, optional
+        レポートタイトル。None の場合はデフォルトタイトル。
+
+    Returns
+    -------
+    str
+        生成された HTML 文字列。
+    """
+    from app.services.optimizer import OptimizationResult, OptimizationCandidate  # noqa: F401
+
+    report_title = title or "ダンパー最適化レポート"
+    now = datetime.now().strftime("%Y-%m-%d %H:%M")
+
+    sections: List[str] = []
+    sections.append(_build_header(report_title, now))
+    sections.append(_build_opt_config_summary(result))
+    sections.append(_build_opt_best_solution(result))
+    sections.append(_build_opt_ranking_table(result))
+
+    if include_charts and _MPL_AVAILABLE:
+        conv_chart = _build_opt_convergence_chart(result)
+        if conv_chart:
+            sections.append(conv_chart)
+        space_chart = _build_opt_parameter_space_chart(result)
+        if space_chart:
+            sections.append(space_chart)
+
+    sections.append(_build_footer(now))
+
+    html_content = _wrap_html(report_title, "\n".join(sections))
+
+    if output_path:
+        Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+        Path(output_path).write_text(html_content, encoding="utf-8")
+
+    return html_content
+
+
+# ---------------------------------------------------------------------------
+# 最適化レポート セクションビルダー
+# ---------------------------------------------------------------------------
+
+def _build_opt_config_summary(result: Any) -> str:
+    """設定概要セクション。"""
+    cfg = result.config
+    elapsed = getattr(result, "elapsed_sec", None)
+    converged = getattr(result, "converged", None)
+    message = getattr(result, "message", None)
+    eval_method = getattr(result, "evaluation_method", None)
+    evaluator_stats = getattr(result, "evaluator_stats", None)
+
+    all_candidates = getattr(result, "all_candidates", []) or []
+    num_evaluations = len(all_candidates)
+    num_feasible = sum(1 for c in all_candidates if getattr(c, "is_feasible", True))
+
+    penalty = getattr(cfg, "constraint_penalty_weight", 0) or 0
+
+    method_map = {
+        "genetic_algorithm": "遺伝的アルゴリズム (GA)",
+        "simulated_annealing": "焼きなまし法 (SA)",
+        "grid_search": "グリッドサーチ",
+        "random_search": "ランダムサーチ",
+        "bayesian": "ベイズ最適化",
+    }
+    method_str = _esc(method_map.get(str(getattr(cfg, "method", "") or ""), str(getattr(cfg, "method", "") or "—")))
+
+    obj_label = _esc(str(getattr(cfg, "objective_label", None) or getattr(cfg, "objective_key", "") or "—"))
+    damper_type = _esc(str(getattr(cfg, "damper_type", "") or "—"))
+    eval_method_str = _esc(str(eval_method or "—"))
+
+    rows = [
+        ("<th>目的関数</th>", f"<td>{obj_label}</td>"),
+        ("<th>最適化手法</th>", f"<td>{method_str}</td>"),
+        ("<th>ダンパー種別</th>", f"<td>{damper_type}</td>"),
+        ("<th>評価方法</th>", f"<td>{eval_method_str}</td>"),
+    ]
+
+    if elapsed is not None:
+        rows.append(("<th>計算時間</th>", f"<td>{elapsed:.1f} 秒</td>"))
+
+    rows.append(("<th>評価回数</th>", f"<td>{num_evaluations}</td>"))
+    rows.append(("<th>実行可能解数</th>", f"<td>{num_feasible} / {num_evaluations}</td>"))
+
+    if converged is not None:
+        conv_str = "収束" if converged else "未収束"
+        rows.append(("<th>収束状態</th>", f"<td>{_esc(conv_str)}</td>"))
+
+    if message:
+        rows.append(("<th>メッセージ</th>", f"<td>{_esc(str(message))}</td>"))
+
+    if penalty > 0:
+        rows.append(("<th>制約ペナルティ重み</th>", f"<td>{penalty:.4g}</td>"))
+
+    # 複合目的関数の重み
+    obj_weights = getattr(cfg, "objective_weights", None)
+    if obj_weights and isinstance(obj_weights, dict):
+        weight_parts = [f"{_esc(str(k))}: {v:.4g}" for k, v in obj_weights.items()]
+        rows.append(("<th>目的関数重み</th>", f"<td>{', '.join(weight_parts)}</td>"))
+
+    # SNAP 評価統計
+    if evaluator_stats and isinstance(evaluator_stats, dict):
+        stats_parts = [f"{_esc(str(k))}: {_esc(str(v))}" for k, v in evaluator_stats.items()]
+        rows.append(("<th>評価統計 (SNAP)</th>", f"<td>{'<br>'.join(stats_parts)}</td>"))
+
+    table_rows_html = "\n".join(f"<tr>{th}{td}</tr>" for th, td in rows)
+
+    return f"""
+    <section class="summary-section">
+        <h2>設定概要</h2>
+        <table class="info-table">
+            {table_rows_html}
+        </table>
+    </section>
+    """
+
+
+def _build_opt_best_solution(result: Any) -> str:
+    """最良解カードセクション。"""
+    best = getattr(result, "best", None)
+    if best is None:
+        return '<section><h2>最良解</h2><p>最良解が見つかりませんでした。</p></section>'
+
+    cfg = result.config
+    params = getattr(best, "params", {}) or {}
+    obj_val = getattr(best, "objective_value", None)
+    response_values = getattr(best, "response_values", {}) or {}
+    constraint_margins = getattr(best, "constraint_margins", {}) or {}
+    is_feasible = getattr(best, "is_feasible", True)
+
+    # パラメータ名ラベルマップ
+    param_label_map: Dict[str, str] = {}
+    for pr in (getattr(cfg, "parameters", None) or []):
+        param_label_map[getattr(pr, "key", "")] = getattr(pr, "label", "") or getattr(pr, "key", "")
+
+    feasible_badge = (
+        "<span class='badge badge-pass'>実行可能</span>"
+        if is_feasible
+        else "<span class='badge badge-fail'>制約違反</span>"
+    )
+
+    obj_label = _esc(str(getattr(cfg, "objective_label", None) or getattr(cfg, "objective_key", "") or "目的関数"))
+
+    # パラメータ行
+    param_rows = []
+    for k, v in params.items():
+        label = _esc(param_label_map.get(k, k))
+        val_str = f"{v:.4g}" if isinstance(v, float) else _esc(str(v))
+        param_rows.append(f"<tr><th>{label}</th><td>{val_str}</td></tr>")
+
+    obj_str = f"{obj_val:.6g}" if obj_val is not None else "N/A"
+
+    # 応答値行
+    resp_rows = []
+    for k, v in response_values.items():
+        label = _esc(str(k))
+        val_str = _format_value(v, k)
+        resp_rows.append(f"<tr><th>{label}</th><td>{val_str}</td></tr>")
+
+    # 制約マージン行
+    margin_rows = []
+    for k, v in constraint_margins.items():
+        label = _esc(str(k))
+        if isinstance(v, float):
+            margin_str = f"{v:.4g}"
+            cls = "pass" if v >= 0 else "fail"
+        else:
+            margin_str = _esc(str(v))
+            cls = ""
+        margin_rows.append(f"<tr><th>{label}</th><td class='{cls}'>{margin_str}</td></tr>")
+
+    params_table = f"""
+    <table class="info-table">
+        {''.join(param_rows)}
+        <tr><th>{obj_label}</th><td><strong>{_esc(obj_str)}</strong></td></tr>
+    </table>
+    """ if param_rows else ""
+
+    resp_table = f"""
+    <h3>応答値</h3>
+    <table class="info-table">{''.join(resp_rows)}</table>
+    """ if resp_rows else ""
+
+    margin_table = f"""
+    <h3>制約マージン</h3>
+    <table class="info-table">{''.join(margin_rows)}</table>
+    """ if margin_rows else ""
+
+    return f"""
+    <section class="opt-best-section">
+        <h2>最良解</h2>
+        <div class="opt-best-card">
+            <div class="opt-best-header">
+                {feasible_badge}
+                <span class="opt-best-obj">{obj_label}: <strong>{_esc(obj_str)}</strong></span>
+            </div>
+            <div class="opt-best-body">
+                <div class="opt-best-col">
+                    <h3>パラメータ</h3>
+                    {params_table}
+                </div>
+                <div class="opt-best-col">
+                    {resp_table}
+                    {margin_table}
+                </div>
+            </div>
+        </div>
+    </section>
+    """
+
+
+def _build_opt_ranking_table(result: Any) -> str:
+    """候補ランキングテーブルセクション (上位20件)。"""
+    all_candidates = getattr(result, "all_candidates", []) or []
+    if not all_candidates:
+        return '<section><h2>候補ランキング</h2><p>候補がありません。</p></section>'
+
+    cfg = result.config
+
+    # パラメータ名ラベルマップ
+    param_label_map: Dict[str, str] = {}
+    param_keys: List[str] = []
+    for pr in (getattr(cfg, "parameters", None) or []):
+        k = getattr(pr, "key", "")
+        param_keys.append(k)
+        param_label_map[k] = getattr(pr, "label", "") or k
+
+    # 全パラメータキーを収集 (config にない場合のフォールバック)
+    if not param_keys and all_candidates:
+        first_params = getattr(all_candidates[0], "params", {}) or {}
+        param_keys = list(first_params.keys())
+
+    # 応答値キー収集
+    resp_keys: List[str] = []
+    for c in all_candidates[:10]:
+        rv = getattr(c, "response_values", {}) or {}
+        for k in rv:
+            if k not in resp_keys:
+                resp_keys.append(k)
+
+    obj_label = _esc(str(getattr(cfg, "objective_label", None) or getattr(cfg, "objective_key", "") or "目的関数"))
+
+    # ソート: 実行可能解を優先、次に目的関数値
+    def _sort_key(c: Any):
+        feasible = getattr(c, "is_feasible", True)
+        obj = getattr(c, "objective_value", None)
+        obj_v = float(obj) if obj is not None else float("inf")
+        return (0 if feasible else 1, obj_v)
+
+    sorted_candidates = sorted(all_candidates, key=_sort_key)
+    top20 = sorted_candidates[:20]
+
+    # ヘッダ
+    param_headers = "".join(
+        f"<th>{_esc(param_label_map.get(k, k))}</th>" for k in param_keys
+    )
+    resp_headers = "".join(f"<th>{_esc(k)}</th>" for k in resp_keys)
+
+    header_row = f"<th>順位</th>{param_headers}<th>{obj_label}</th><th>判定</th>{resp_headers}"
+
+    # データ行
+    rows_html = []
+    for rank, c in enumerate(top20, 1):
+        params = getattr(c, "params", {}) or {}
+        obj_val = getattr(c, "objective_value", None)
+        rv = getattr(c, "response_values", {}) or {}
+        is_feasible = getattr(c, "is_feasible", True)
+
+        obj_str = f"{obj_val:.6g}" if obj_val is not None else "N/A"
+        verdict = (
+            "<span class='badge badge-pass'>○</span>"
+            if is_feasible
+            else "<span class='badge badge-fail'>✗</span>"
+        )
+
+        param_cells = "".join(
+            f"<td>{f'{params.get(k):.4g}' if isinstance(params.get(k), float) else _esc(str(params.get(k, '—')))}</td>"
+            for k in param_keys
+        )
+        resp_cells = "".join(f"<td>{_format_value(rv.get(k), k)}</td>" for k in resp_keys)
+
+        row_cls = "" if is_feasible else " class='infeasible-row'"
+        rows_html.append(
+            f"<tr{row_cls}>"
+            f"<td>{rank}</td>{param_cells}<td><strong>{_esc(obj_str)}</strong></td>"
+            f"<td>{verdict}</td>{resp_cells}"
+            f"</tr>"
+        )
+
+    return f"""
+    <section class="opt-ranking-section">
+        <h2>候補ランキング (上位20件)</h2>
+        <div class="table-wrapper">
+        <table class="result-table">
+            <thead><tr>{header_row}</tr></thead>
+            <tbody>{''.join(rows_html)}</tbody>
+        </table>
+        </div>
+    </section>
+    """
+
+
+def _build_opt_convergence_chart(result: Any) -> Optional[str]:
+    """収束グラフセクション。"""
+    if not _MPL_AVAILABLE:
+        return None
+
+    all_candidates = getattr(result, "all_candidates", []) or []
+    if not all_candidates:
+        return None
+
+    iterations: List[float] = []
+    obj_vals: List[float] = []
+    feasibles: List[bool] = []
+
+    for c in all_candidates:
+        it = getattr(c, "iteration", None)
+        obj = getattr(c, "objective_value", None)
+        feas = getattr(c, "is_feasible", True)
+        if it is not None and obj is not None:
+            try:
+                iterations.append(float(it))
+                obj_vals.append(float(obj))
+                feasibles.append(bool(feas))
+            except (ValueError, TypeError):
+                continue
+
+    if not iterations:
+        return None
+
+    fig, ax = plt.subplots(figsize=(9, 4), dpi=120)
+
+    # 実行不可能解 (赤 x)
+    ix_inf = [it for it, f in zip(iterations, feasibles) if not f]
+    ov_inf = [ov for ov, f in zip(obj_vals, feasibles) if not f]
+    if ix_inf:
+        ax.scatter(ix_inf, ov_inf, c="#e74c3c", marker="x", s=20, alpha=0.6,
+                   linewidths=0.8, label="制約違反", zorder=2)
+
+    # 実行可能解 (青 o)
+    ix_feas = [it for it, f in zip(iterations, feasibles) if f]
+    ov_feas = [ov for ov, f in zip(obj_vals, feasibles) if f]
+    if ix_feas:
+        ax.scatter(ix_feas, ov_feas, c="#3498db", marker="o", s=18, alpha=0.7,
+                   label="実行可能", zorder=3)
+
+    # 累積ベスト (橙線): 実行可能解のみで追跡
+    if ix_feas:
+        sorted_feas = sorted(zip(ix_feas, ov_feas), key=lambda x: x[0])
+        best_it, best_ov = [], []
+        current_best = float("inf")
+        for it, ov in sorted_feas:
+            if ov < current_best:
+                current_best = ov
+            best_it.append(it)
+            best_ov.append(current_best)
+        ax.plot(best_it, best_ov, c="#e67e22", linewidth=1.8, label="累積ベスト", zorder=4)
+
+    obj_label = str(getattr(result.config, "objective_label", None) or
+                    getattr(result.config, "objective_key", "") or "目的関数値")
+    ax.set_xlabel("イテレーション", fontsize=9)
+    ax.set_ylabel(_esc(obj_label), fontsize=9)
+    ax.set_title("収束グラフ", fontsize=11, fontweight="bold")
+    ax.tick_params(labelsize=8)
+    ax.grid(alpha=0.3)
+    ax.legend(fontsize=8)
+
+    fig.tight_layout()
+    buf = io.BytesIO()
+    fig.savefig(buf, format="png", bbox_inches="tight")
+    plt.close(fig)
+    buf.seek(0)
+    img_data = base64.b64encode(buf.read()).decode("ascii")
+
+    return f"""
+    <section class="opt-chart-section">
+        <h2>収束グラフ</h2>
+        <div class="chart-container" style="max-width:800px;">
+            <img src="data:image/png;base64,{img_data}" alt="収束グラフ">
+        </div>
+    </section>
+    """
+
+
+def _build_opt_parameter_space_chart(result: Any) -> Optional[str]:
+    """パラメータ空間探索グラフセクション。"""
+    if not _MPL_AVAILABLE:
+        return None
+
+    all_candidates = getattr(result, "all_candidates", []) or []
+    if not all_candidates:
+        return None
+
+    cfg = result.config
+    param_ranges = getattr(cfg, "parameters", None) or []
+    param_keys = [getattr(pr, "key", "") for pr in param_ranges]
+    param_labels = [getattr(pr, "label", None) or getattr(pr, "key", "") for pr in param_ranges]
+
+    # フォールバック: config にパラメータ定義がない場合
+    if not param_keys and all_candidates:
+        first_params = getattr(all_candidates[0], "params", {}) or {}
+        param_keys = list(first_params.keys())
+        param_labels = param_keys[:]
+
+    if not param_keys:
+        return None
+
+    # データ収集
+    rows_data: List[Dict] = []
+    for c in all_candidates:
+        params = getattr(c, "params", {}) or {}
+        obj = getattr(c, "objective_value", None)
+        feas = getattr(c, "is_feasible", True)
+        if obj is not None:
+            try:
+                row = {k: float(params[k]) for k in param_keys if k in params}
+                row["_obj"] = float(obj)
+                row["_feas"] = bool(feas)
+                rows_data.append(row)
+            except (ValueError, TypeError):
+                continue
+
+    if not rows_data:
+        return None
+
+    obj_label = str(getattr(cfg, "objective_label", None) or
+                    getattr(cfg, "objective_key", "") or "目的関数値")
+
+    obj_vals_all = [r["_obj"] for r in rows_data]
+    obj_min = min(obj_vals_all)
+    obj_max = max(obj_vals_all)
+
+    img_data: Optional[str] = None
+
+    if len(param_keys) == 1:
+        # 1パラメータ: X=パラメータ値, Y=目的関数値
+        k0 = param_keys[0]
+        x_vals = [r[k0] for r in rows_data if k0 in r]
+        y_vals = [r["_obj"] for r in rows_data if k0 in r]
+        feas_flags = [r["_feas"] for r in rows_data if k0 in r]
+
+        fig, ax = plt.subplots(figsize=(7, 4), dpi=120)
+        inf_x = [x for x, f in zip(x_vals, feas_flags) if not f]
+        inf_y = [y for y, f in zip(y_vals, feas_flags) if not f]
+        feas_x = [x for x, f in zip(x_vals, feas_flags) if f]
+        feas_y = [y for y, f in zip(y_vals, feas_flags) if f]
+
+        if inf_x:
+            ax.scatter(inf_x, inf_y, c="#e74c3c", marker="x", s=20, alpha=0.5,
+                       linewidths=0.8, label="制約違反")
+        if feas_x:
+            ax.scatter(feas_x, feas_y, c="#3498db", marker="o", s=20, alpha=0.7,
+                       label="実行可能")
+
+        ax.set_xlabel(_esc(param_labels[0]), fontsize=9)
+        ax.set_ylabel(_esc(obj_label), fontsize=9)
+        ax.set_title("パラメータ空間探索", fontsize=11, fontweight="bold")
+        ax.tick_params(labelsize=8)
+        ax.grid(alpha=0.3)
+        ax.legend(fontsize=8)
+
+        fig.tight_layout()
+        buf = io.BytesIO()
+        fig.savefig(buf, format="png", bbox_inches="tight")
+        plt.close(fig)
+        buf.seek(0)
+        img_data = base64.b64encode(buf.read()).decode("ascii")
+
+    else:
+        # 2+パラメータ: 最初の2つでスキャッタ、色=目的関数値
+        k0, k1 = param_keys[0], param_keys[1]
+        valid_rows = [r for r in rows_data if k0 in r and k1 in r]
+        if not valid_rows:
+            return None
+
+        x_vals = [r[k0] for r in valid_rows]
+        y_vals = [r[k1] for r in valid_rows]
+        c_vals = [r["_obj"] for r in valid_rows]
+        feas_flags = [r["_feas"] for r in valid_rows]
+
+        fig, ax = plt.subplots(figsize=(7, 5), dpi=120)
+
+        import numpy as np
+        c_arr = np.array(c_vals, dtype=float)
+        scatter = ax.scatter(
+            x_vals, y_vals,
+            c=c_arr,
+            cmap="RdYlGn_r",
+            s=20, alpha=0.75,
+            edgecolors="none",
+        )
+        cb = fig.colorbar(scatter, ax=ax, shrink=0.8)
+        cb.set_label(_esc(obj_label), fontsize=8)
+        cb.ax.tick_params(labelsize=7)
+
+        # 最良解をスター印で強調
+        best = getattr(result, "best", None)
+        if best:
+            best_params = getattr(best, "params", {}) or {}
+            bx = best_params.get(k0)
+            by = best_params.get(k1)
+            if bx is not None and by is not None:
+                ax.scatter([float(bx)], [float(by)], c="#e74c3c", marker="*",
+                           s=120, zorder=5, label="最良解")
+                ax.legend(fontsize=8)
+
+        ax.set_xlabel(_esc(param_labels[0]), fontsize=9)
+        ax.set_ylabel(_esc(param_labels[1]), fontsize=9)
+        ax.set_title("パラメータ空間探索 (色=目的関数値)", fontsize=11, fontweight="bold")
+        ax.tick_params(labelsize=8)
+        ax.grid(alpha=0.2)
+
+        # 追加パラメータ軸がある場合の注記
+        if len(param_keys) > 2:
+            extra = ", ".join(_esc(param_labels[i]) for i in range(2, len(param_keys)))
+            ax.set_title(
+                f"パラメータ空間探索 ({_esc(param_labels[0])} vs {_esc(param_labels[1])}, 色=目的関数値)\n"
+                f"その他軸: {extra}",
+                fontsize=10, fontweight="bold"
+            )
+
+        fig.tight_layout()
+        buf = io.BytesIO()
+        fig.savefig(buf, format="png", bbox_inches="tight")
+        plt.close(fig)
+        buf.seek(0)
+        img_data = base64.b64encode(buf.read()).decode("ascii")
+
+    if img_data is None:
+        return None
+
+    return f"""
+    <section class="opt-chart-section">
+        <h2>パラメータ空間探索</h2>
+        <div class="chart-container" style="max-width:700px;">
+            <img src="data:image/png;base64,{img_data}" alt="パラメータ空間探索">
+        </div>
+    </section>
+    """
+
+
 # ---------------------------------------------------------------------------
 # HTML セクションビルダー
 # ---------------------------------------------------------------------------
@@ -745,5 +1302,55 @@ td.na   { background: #f5f5f5; color: #999; }
     .report-container { box-shadow: none; padding: 0; }
     .chart-container { break-inside: avoid; }
     section { break-inside: avoid; }
+}
+
+/* ===== Optimization-specific ===== */
+.opt-best-card {
+    border: 2px solid #3498db;
+    border-radius: 6px;
+    overflow: hidden;
+    background: #fff;
+}
+.opt-best-header {
+    background: #2c3e50;
+    color: #fff;
+    padding: 10px 16px;
+    display: flex;
+    align-items: center;
+    gap: 14px;
+}
+.opt-best-obj {
+    font-size: 14px;
+    color: #ecf0f1;
+}
+.opt-best-obj strong {
+    font-size: 17px;
+    color: #f1c40f;
+}
+.opt-best-body {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+    padding: 16px;
+}
+.opt-best-col { min-width: 0; }
+.opt-best-col h3 {
+    font-size: 13px;
+    color: #3498db;
+    border-bottom: 1px solid #e0e6ed;
+    padding-bottom: 4px;
+    margin-bottom: 8px;
+}
+.infeasible-row { background: #fff8f8; }
+.infeasible-row td { color: #999; }
+.opt-ranking-section .badge { font-size: 10px; padding: 1px 6px; }
+.opt-chart-section { margin-bottom: 32px; }
+.opt-chart-section .chart-container { display: inline-block; }
+@media (max-width: 700px) {
+    .opt-best-body { grid-template-columns: 1fr; }
+}
+@media print {
+    .opt-best-card { break-inside: avoid; }
+    .opt-best-body { grid-template-columns: 1fr 1fr; }
 }
 """

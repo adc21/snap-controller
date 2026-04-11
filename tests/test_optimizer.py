@@ -1493,3 +1493,240 @@ class TestSAEarlyStopping:
             assert "改善なし" in result.message
 
 
+# ===========================================================================
+# Phase O-1: 最適化HTMLレポート生成
+# ===========================================================================
+
+class TestOptimizationReport:
+    """generate_optimization_report のテスト。"""
+
+    def _make_result(self):
+        """テスト用の OptimizationResult を構築する。"""
+        config = OptimizationConfig(
+            objective_key="max_drift",
+            objective_label="最大層間変形角",
+            method="grid",
+            parameters=[
+                ParameterRange(key="Cd", label="減衰係数", min_val=100, max_val=500, step=100),
+                ParameterRange(key="alpha", label="速度指数", min_val=0.1, max_val=0.9, step=0.2),
+            ],
+            damper_type="オイルダンパー",
+        )
+        candidates = []
+        for i in range(10):
+            cd = 100 + i * 40
+            alpha = 0.1 + i * 0.08
+            obj = 0.005 - i * 0.0003
+            candidates.append(OptimizationCandidate(
+                params={"Cd": cd, "alpha": alpha},
+                objective_value=max(obj, 0.001),
+                response_values={"max_drift": max(obj, 0.001), "max_acc": 3.0 - i * 0.1},
+                is_feasible=i < 8,
+                iteration=i,
+                constraint_margins={"max_drift": 0.01 - max(obj, 0.001)},
+            ))
+        return OptimizationResult(
+            best=candidates[-1],
+            all_candidates=candidates,
+            config=config,
+            elapsed_sec=12.5,
+            converged=True,
+            message="グリッドサーチ完了: 10 点を評価",
+            evaluation_method="mock",
+        )
+
+    def test_generate_optimization_report_returns_html(self):
+        """レポートが有効なHTMLを返すことを確認。"""
+        from app.services.report_generator import generate_optimization_report
+        result = self._make_result()
+        html = generate_optimization_report(result)
+        assert "<!DOCTYPE html>" in html
+        assert "ダンパー最適化レポート" in html
+
+    def test_report_contains_config_section(self):
+        """設定概要セクションが含まれることを確認。"""
+        from app.services.report_generator import generate_optimization_report
+        result = self._make_result()
+        html = generate_optimization_report(result)
+        assert "設定概要" in html
+        assert "グリッド" in html or "grid" in html
+
+    def test_report_contains_best_solution(self):
+        """最良解セクションが含まれることを確認。"""
+        from app.services.report_generator import generate_optimization_report
+        result = self._make_result()
+        html = generate_optimization_report(result)
+        assert "最良解" in html
+
+    def test_report_contains_ranking(self):
+        """候補ランキングテーブルが含まれることを確認。"""
+        from app.services.report_generator import generate_optimization_report
+        result = self._make_result()
+        html = generate_optimization_report(result)
+        assert "候補ランキング" in html or "ランキング" in html or "result-table" in html
+
+    def test_report_with_no_best(self):
+        """最良解がない場合でもレポート生成が成功すること。"""
+        from app.services.report_generator import generate_optimization_report
+        result = self._make_result()
+        result.best = None
+        html = generate_optimization_report(result)
+        assert "<!DOCTYPE html>" in html
+
+    def test_report_saves_to_file(self, tmp_path):
+        """ファイルに正常に出力されることを確認。"""
+        from app.services.report_generator import generate_optimization_report
+        result = self._make_result()
+        out_path = str(tmp_path / "test_report.html")
+        html = generate_optimization_report(result, output_path=out_path)
+        import os
+        assert os.path.exists(out_path)
+        with open(out_path, encoding="utf-8") as f:
+            content = f.read()
+        assert "<!DOCTYPE html>" in content
+
+    def test_report_without_charts(self):
+        """チャートなしでもレポート生成が成功すること。"""
+        from app.services.report_generator import generate_optimization_report
+        result = self._make_result()
+        html = generate_optimization_report(result, include_charts=False)
+        assert "<!DOCTYPE html>" in html
+        # チャートなしなので base64 PNG は含まれないはず
+        assert "data:image/png" not in html
+
+
+# ===========================================================================
+# Phase O-2: 並列候補評価
+# ===========================================================================
+
+class TestParallelEvaluation:
+    """_evaluate_batch / 並列グリッドサーチ / 並列ランダムサーチのテスト。"""
+
+    def test_n_parallel_field_default(self):
+        """n_parallel のデフォルト値が1であることを確認。"""
+        config = OptimizationConfig()
+        assert config.n_parallel == 1
+
+    def test_n_parallel_serialization(self):
+        """n_parallel が to_dict/from_dict で正しくシリアライズされることを確認。"""
+        config = OptimizationConfig(n_parallel=4)
+        d = config.to_dict()
+        assert d["n_parallel"] == 4
+        config2 = OptimizationConfig.from_dict(d)
+        assert config2.n_parallel == 4
+
+    def test_evaluate_batch_sequential(self):
+        """n_parallel=1 で逐次評価が正しく動作すること。"""
+        call_count = 0
+        def evaluate(params):
+            nonlocal call_count
+            call_count += 1
+            return {"max_drift": params.get("x", 0) * 0.01}
+
+        config = OptimizationConfig(
+            objective_key="max_drift",
+            parameters=[ParameterRange(key="x", min_val=0, max_val=10, step=1)],
+            n_parallel=1,
+        )
+        worker = _OptimizationWorker(config, evaluate)
+        batch = [{"x": 1.0}, {"x": 2.0}, {"x": 3.0}]
+        results = worker._evaluate_batch(batch, config, start_iter=0)
+        assert len(results) == 3
+        assert call_count == 3
+        assert results[0].params["x"] == 1.0
+        assert results[1].params["x"] == 2.0
+        assert results[2].params["x"] == 3.0
+
+    def test_evaluate_batch_parallel(self):
+        """n_parallel>1 で並列評価が正しく動作すること。"""
+        import time
+        eval_times = []
+        def evaluate(params):
+            start = time.time()
+            time.sleep(0.05)  # 50ms のシミュレーション
+            eval_times.append(time.time() - start)
+            return {"max_drift": params.get("x", 0) * 0.01}
+
+        config = OptimizationConfig(
+            objective_key="max_drift",
+            parameters=[ParameterRange(key="x", min_val=0, max_val=10, step=1)],
+            n_parallel=4,
+        )
+        worker = _OptimizationWorker(config, evaluate)
+        batch = [{"x": float(i)} for i in range(4)]
+
+        start = time.time()
+        results = worker._evaluate_batch(batch, config, start_iter=0)
+        elapsed = time.time() - start
+
+        assert len(results) == 4
+        # 並列なので4つの50msタスクが <300msで完了するはず (逐次なら200ms+)
+        assert elapsed < 0.5, f"並列評価が遅すぎます: {elapsed:.3f}s"
+        # 結果の順序が保持されること
+        for i, r in enumerate(results):
+            assert r.params["x"] == float(i)
+
+    def test_grid_search_parallel(self):
+        """並列グリッドサーチが正しく動作すること。"""
+        def evaluate(params):
+            return {"max_drift": abs(params.get("x", 0) - 5.0) * 0.01}
+
+        config = OptimizationConfig(
+            objective_key="max_drift",
+            parameters=[ParameterRange(key="x", min_val=0, max_val=10, step=2)],
+            method="grid",
+            n_parallel=2,
+        )
+        worker = _OptimizationWorker(config, evaluate)
+        result = worker._run_grid_search(config)
+        assert len(result.all_candidates) > 0
+        assert result.best is not None
+        # x=5 付近が最良解
+        assert abs(result.best.params["x"] - 5.0) <= 2.0
+        assert "並列2" in result.message
+
+    def test_random_search_parallel(self):
+        """並列ランダムサーチが正しく動作すること。"""
+        def evaluate(params):
+            return {"max_drift": abs(params.get("x", 0) - 5.0) * 0.01}
+
+        config = OptimizationConfig(
+            objective_key="max_drift",
+            parameters=[ParameterRange(key="x", min_val=0, max_val=10, step=0)],
+            method="random",
+            max_iterations=20,
+            n_parallel=4,
+        )
+        worker = _OptimizationWorker(config, evaluate)
+        result = worker._run_random_search(config)
+        assert len(result.all_candidates) > 0
+        assert result.best is not None
+        assert "並列4" in result.message
+
+    def test_evaluate_batch_error_handling(self):
+        """並列評価中の例外が適切にハンドリングされること。"""
+        call_count = 0
+        def evaluate(params):
+            nonlocal call_count
+            call_count += 1
+            if params.get("x", 0) == 2.0:
+                raise RuntimeError("テストエラー")
+            return {"max_drift": params.get("x", 0) * 0.01}
+
+        config = OptimizationConfig(
+            objective_key="max_drift",
+            parameters=[ParameterRange(key="x", min_val=0, max_val=10, step=1)],
+            n_parallel=3,
+        )
+        worker = _OptimizationWorker(config, evaluate)
+        batch = [{"x": 1.0}, {"x": 2.0}, {"x": 3.0}]
+        results = worker._evaluate_batch(batch, config, start_iter=0)
+        # エラーが発生しても他の候補は正常に評価される
+        assert len(results) == 3
+        # エラー候補の objective_value は inf
+        assert results[1].objective_value == float("inf")
+        # 他は正常
+        assert results[0].objective_value != float("inf")
+        assert results[2].objective_value != float("inf")
+
+

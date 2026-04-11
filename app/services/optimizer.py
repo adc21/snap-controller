@@ -20,6 +20,7 @@ app/services/optimizer.py
 
 from __future__ import annotations
 
+import concurrent.futures
 import itertools
 import json
 import logging
@@ -314,6 +315,10 @@ class OptimizationConfig:
     """制約ペナルティ重み。0の場合は従来のハード制約。正の値でペナルティ法を使用。
     ペナルティ = weight × Σ max(0, -margin_i) で目的関数に加算される。
     構造設計では 10.0〜100.0 程度が有効。"""
+    n_parallel: int = 1
+    """並列評価数。1の場合は逐次評価（デフォルト）。
+    2以上の場合、グリッドサーチ/ランダムサーチで ThreadPoolExecutor を使用して
+    複数候補を同時にSNAP実行する。SNAP解析では4〜8が目安。"""
 
     def compute_objective(self, response: Dict[str, float]) -> float:
         """応答値辞書から目的関数値を計算する。
@@ -342,6 +347,7 @@ class OptimizationConfig:
             "damper_type": self.damper_type,
             "objective_weights": dict(self.objective_weights),
             "constraint_penalty_weight": self.constraint_penalty_weight,
+            "n_parallel": self.n_parallel,
         }
 
     @classmethod
@@ -356,6 +362,7 @@ class OptimizationConfig:
             damper_type=d.get("damper_type", ""),
             objective_weights=d.get("objective_weights", {}),
             constraint_penalty_weight=d.get("constraint_penalty_weight", 0.0),
+            n_parallel=d.get("n_parallel", 1),
         )
 
 
@@ -745,6 +752,74 @@ class _OptimizationWorker(QThread):
         violation = sum(max(0.0, -m) for m in margins.values())
         return obj_val + w * violation
 
+    def _evaluate_batch(
+        self,
+        param_list: List[Dict[str, float]],
+        config: OptimizationConfig,
+        start_iter: int = 0,
+    ) -> List[OptimizationCandidate]:
+        """複数パラメータセットを並列評価する。
+
+        Parameters
+        ----------
+        param_list : list of dict
+            評価するパラメータ辞書のリスト。
+        config : OptimizationConfig
+            最適化設定（n_parallel, 制約チェック用）。
+        start_iter : int
+            候補のiteration番号の開始値。
+
+        Returns
+        -------
+        list of OptimizationCandidate
+            評価結果の候補リスト（入力と同じ順序）。
+        """
+        n_workers = max(1, config.n_parallel)
+
+        def _eval_single(args: Tuple[int, Dict[str, float]]) -> OptimizationCandidate:
+            idx, params = args
+            try:
+                response = self._evaluate_fn(params)
+            except Exception as e:
+                logger.warning("並列評価エラー (iter=%d): %s", start_iter + idx, e)
+                response = {}
+            obj_val = config.compute_objective(response)
+            is_feasible, margins = self._check_constraints(response, config)
+            return OptimizationCandidate(
+                params=params,
+                objective_value=obj_val,
+                response_values=response,
+                is_feasible=is_feasible,
+                iteration=start_iter + idx,
+                constraint_margins=margins,
+            )
+
+        indexed = list(enumerate(param_list))
+
+        if n_workers <= 1 or len(param_list) <= 1:
+            return [_eval_single(item) for item in indexed]
+
+        results: List[Optional[OptimizationCandidate]] = [None] * len(param_list)
+        with concurrent.futures.ThreadPoolExecutor(max_workers=n_workers) as executor:
+            future_to_idx = {
+                executor.submit(_eval_single, item): item[0]
+                for item in indexed
+            }
+            for future in concurrent.futures.as_completed(future_to_idx):
+                idx = future_to_idx[future]
+                try:
+                    results[idx] = future.result()
+                except Exception as e:
+                    logger.warning("並列Future例外 (idx=%d): %s", idx, e)
+                    params = param_list[idx]
+                    results[idx] = OptimizationCandidate(
+                        params=params,
+                        objective_value=float("inf"),
+                        is_feasible=False,
+                        iteration=start_iter + idx,
+                    )
+        return [r for r in results if r is not None]
+
     def _run_grid_search(self, config: OptimizationConfig) -> OptimizationResult:
         """グリッドサーチで最適化を実行します。"""
         if not config.parameters:
@@ -767,44 +842,46 @@ class _OptimizationWorker(QThread):
 
         all_candidates: List[OptimizationCandidate] = []
         best: Optional[OptimizationCandidate] = None
+        n_par = max(1, config.n_parallel)
+        batch_size = max(n_par, 1)
 
-        for i, combo in enumerate(combinations):
+        i = 0
+        while i < total:
             if self._cancelled:
                 break
 
-            params = dict(zip(param_keys, combo))
+            # バッチ生成
+            batch_end = min(i + batch_size, total)
+            batch_params = [
+                dict(zip(param_keys, combinations[j]))
+                for j in range(i, batch_end)
+            ]
 
-            # 評価
-            response = self._evaluate_fn(params)
-            obj_val = config.compute_objective(response)
-            is_feasible, margins = self._check_constraints(response, config)
+            # 並列評価
+            batch_results = self._evaluate_batch(batch_params, config, start_iter=i)
 
-            candidate = OptimizationCandidate(
-                params=params,
-                objective_value=obj_val,
-                response_values=response,
-                is_feasible=is_feasible,
-                iteration=i,
-                constraint_margins=margins,
-            )
-            all_candidates.append(candidate)
-            self.candidate_found.emit(candidate)
+            for cand in batch_results:
+                all_candidates.append(cand)
+                self.candidate_found.emit(cand)
+                if cand.is_feasible and (best is None or cand.objective_value < best.objective_value):
+                    best = cand
 
-            if is_feasible and (best is None or obj_val < best.objective_value):
-                best = candidate
+            i = batch_end
 
-            # 進捗報告（100回に1回 or 最後）
-            if i % max(1, total // 100) == 0 or i == total - 1:
-                msg = f"評価中: {i+1}/{total}"
-                if best:
-                    msg += f" | 暫定最良: {best.objective_value:.6g}"
-                self.progress.emit(i + 1, total, msg)
+            # 進捗報告
+            msg = f"評価中: {i}/{total}"
+            if n_par > 1:
+                msg += f" (並列{n_par})"
+            if best:
+                msg += f" | 暫定最良: {best.objective_value:.6g}"
+            self.progress.emit(i, total, msg)
 
         result = OptimizationResult(
             best=best,
             all_candidates=all_candidates,
             converged=True,
             message=f"グリッドサーチ完了: {len(all_candidates)} 点を評価" +
+                    (f" (並列{n_par})" if n_par > 1 else "") +
                     (f", 制約満足 {len([c for c in all_candidates if c.is_feasible])} 点"
                      if config.constraints or config.criteria else ""),
         )
@@ -819,42 +896,46 @@ class _OptimizationWorker(QThread):
         all_candidates: List[OptimizationCandidate] = []
         best: Optional[OptimizationCandidate] = None
         no_improve_count = 0
+        n_par = max(1, config.n_parallel)
+        batch_size = max(n_par, 1)
 
-        for i in range(total):
+        i = 0
+        while i < total:
             if self._cancelled:
                 break
 
-            # ランダムにパラメータを生成
-            params = {pr.key: pr.random_value() for pr in config.parameters}
+            # バッチ分のランダムパラメータを生成
+            batch_end = min(i + batch_size, total)
+            batch_params = [
+                {pr.key: pr.random_value() for pr in config.parameters}
+                for _ in range(i, batch_end)
+            ]
 
-            # 評価
-            response = self._evaluate_fn(params)
-            obj_val = config.compute_objective(response)
-            is_feasible, margins = self._check_constraints(response, config)
+            # 並列評価
+            batch_results = self._evaluate_batch(batch_params, config, start_iter=i)
 
-            candidate = OptimizationCandidate(
-                params=params,
-                objective_value=obj_val,
-                response_values=response,
-                is_feasible=is_feasible,
-                iteration=i,
-                constraint_margins=margins,
-            )
-            all_candidates.append(candidate)
-            self.candidate_found.emit(candidate)
+            improved_in_batch = False
+            for cand in batch_results:
+                all_candidates.append(cand)
+                self.candidate_found.emit(cand)
+                if cand.is_feasible and (best is None or cand.objective_value < best.objective_value):
+                    best = cand
+                    improved_in_batch = True
 
-            if is_feasible and (best is None or obj_val < best.objective_value):
-                best = candidate
+            if improved_in_batch:
                 no_improve_count = 0
             else:
-                no_improve_count += 1
+                no_improve_count += len(batch_results)
+
+            i = batch_end
 
             # 進捗報告
-            if i % max(1, total // 100) == 0 or i == total - 1:
-                msg = f"探索中: {i+1}/{total}"
-                if best:
-                    msg += f" | 暫定最良: {best.objective_value:.6g}"
-                self.progress.emit(i + 1, total, msg)
+            msg = f"探索中: {i}/{total}"
+            if n_par > 1:
+                msg += f" (並列{n_par})"
+            if best:
+                msg += f" | 暫定最良: {best.objective_value:.6g}"
+            self.progress.emit(i, total, msg)
 
             # 早期終了（一定回数改善なし）
             if no_improve_count > max(50, total // 4):
@@ -866,6 +947,7 @@ class _OptimizationWorker(QThread):
             all_candidates=all_candidates,
             converged=converged,
             message=f"ランダムサーチ完了: {len(all_candidates)} 点を評価" +
+                    (f" (並列{n_par})" if n_par > 1 else "") +
                     (", 収束" if converged else ""),
         )
         return result

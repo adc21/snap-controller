@@ -475,6 +475,22 @@ class OptimizerDialog(QDialog):
         self._penalty_cb.toggled.connect(self._penalty_spin.setEnabled)
         layout.addLayout(penalty_row)
 
+        # ---- 並列評価 ----
+        parallel_row = QHBoxLayout()
+        parallel_row.addWidget(QLabel("並列評価数:"))
+        self._parallel_spin = QSpinBox()
+        self._parallel_spin.setRange(1, 16)
+        self._parallel_spin.setValue(1)
+        self._parallel_spin.setFixedWidth(60)
+        self._parallel_spin.setToolTip(
+            "グリッドサーチ/ランダムサーチで複数候補を同時評価します。\n"
+            "SNAP実行時は4〜8が目安です。モック評価では1で十分です。"
+        )
+        parallel_row.addWidget(self._parallel_spin)
+        parallel_row.addWidget(QLabel("（SNAP解析を並列化。1=逐次）"))
+        parallel_row.addStretch()
+        layout.addLayout(parallel_row)
+
         # ---- 実行ボタン + 進捗 ----
         run_row = QHBoxLayout()
         self._run_btn = QPushButton("最適化を開始")
@@ -629,6 +645,13 @@ class OptimizerDialog(QDialog):
         )
         btn_row.addWidget(self._compare_btn)
 
+        self._report_btn = QPushButton("HTMLレポート")
+        self._report_btn.setEnabled(False)
+        self._report_btn.setToolTip(
+            "最適化結果をHTMLレポートとして出力します（設定・��良解・収束グラフ含む）"
+        )
+        btn_row.addWidget(self._report_btn)
+
         btn_row.addStretch()
 
         close_btn = QPushButton("閉じる")
@@ -648,6 +671,7 @@ class OptimizerDialog(QDialog):
         self._warm_start_cb.toggled.connect(self._warm_start_browse_btn.setEnabled)
         self._warm_start_browse_btn.clicked.connect(self._browse_warm_start)
         self._compare_btn.clicked.connect(self._show_comparison)
+        self._report_btn.clicked.connect(self._export_html_report)
         self._result_table.cellDoubleClicked.connect(self._show_candidate_detail)
         self._optimizer.progress.connect(self._on_progress)
         self._optimizer.candidate_found.connect(self._on_candidate)
@@ -1079,6 +1103,7 @@ class OptimizerDialog(QDialog):
             objective_weights=objective_weights,
             warm_start_candidates=warm,
             constraint_penalty_weight=penalty_weight,
+            n_parallel=self._parallel_spin.value(),
         )
 
     def _start_optimization(self) -> None:
@@ -1155,6 +1180,7 @@ class OptimizerDialog(QDialog):
         self._sensitivity_btn.setEnabled(False)
         self._pareto_btn.setEnabled(False)
         self._save_btn.setEnabled(False)
+        self._report_btn.setEnabled(False)
         self._progress_bar.show()
         self._progress_bar.setValue(0)
 
@@ -1289,6 +1315,7 @@ class OptimizerDialog(QDialog):
             self._export_csv_btn.setEnabled(True)
             self._sensitivity_btn.setEnabled(True)
             self._save_btn.setEnabled(True)
+            self._report_btn.setEnabled(True)
             # Paretoボタンは複合目的関数使用時のみ有効
             if result.config and result.config.objective_weights:
                 self._pareto_btn.setEnabled(True)
@@ -1297,10 +1324,11 @@ class OptimizerDialog(QDialog):
                 "制約を満たす解が見つかりませんでした。"
                 "パラメータ範囲や制約条件を見直してください。"
             )
-            # NG結果でもCSV/JSON出力は許可（デバッグ用）
+            # NG結果でもCSV/JSON/レポート出力は許可（デバッグ用）
             if result.all_candidates:
                 self._export_csv_btn.setEnabled(True)
                 self._save_btn.setEnabled(True)
+                self._report_btn.setEnabled(True)
 
     def _update_best_summary_card(self, result: "OptimizationResult") -> None:
         """
@@ -1722,6 +1750,37 @@ class OptimizerDialog(QDialog):
             )
         except OSError as e:
             QMessageBox.warning(self, "エラー", f"ファイルの書き込みに失敗しました:\n{e}")
+
+    def _export_html_report(self) -> None:
+        """最適化結果をHTMLレポートとして出力します。"""
+        if not self._result or not self._result.all_candidates:
+            QMessageBox.information(self, "情報", "レポート出力する結果がありません。")
+            return
+
+        path, _ = QFileDialog.getSaveFileName(
+            self, "HTMLレポート出力先を選択", "optimization_report.html",
+            "HTML Files (*.html);;All Files (*)",
+        )
+        if not path:
+            return
+
+        try:
+            from app.services.report_generator import generate_optimization_report
+            generate_optimization_report(
+                result=self._result,
+                output_path=path,
+                include_charts=True,
+            )
+            QMessageBox.information(
+                self, "HTMLレポート出力完了",
+                f"最適化レポートを出力しました。\n{path}",
+            )
+        except Exception as e:
+            logger.exception("HTMLレポート出力エラー")
+            QMessageBox.warning(
+                self, "エラー",
+                f"レポートの出力に失敗しました:\n{e}",
+            )
 
     def _run_sensitivity(self) -> None:
         """最適解周りのパラメータ感度解析を実行し、結果ダイアログを表示します。"""
