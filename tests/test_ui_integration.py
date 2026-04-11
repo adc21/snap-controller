@@ -417,3 +417,60 @@ class TestSensitivityDialog:
         dlg = OptimizerDialog()
         assert hasattr(dlg, "_sensitivity_btn")
         assert not dlg._sensitivity_btn.isEnabled()
+
+    def test_validation_rejects_invalid_range(self, qapp):
+        """min_val >= max_val のとき最適化が拒否されることを検証。"""
+        from app.ui.optimizer_dialog import OptimizerDialog
+        from unittest.mock import patch
+
+        dlg = OptimizerDialog()
+        # min > max に設定
+        if dlg._param_widgets:
+            dlg._param_widgets[0]["min"].setValue(1000)
+            dlg._param_widgets[0]["max"].setValue(100)
+            dlg._param_widgets[0]["step"].setValue(10)
+        with patch.object(dlg, "_result_summary"):
+            with patch("app.ui.optimizer_dialog.QMessageBox.warning") as mock_warn:
+                dlg._start_optimization()
+                mock_warn.assert_called_once()
+                args = mock_warn.call_args[0]
+                assert "パラメータ設定エラー" in args[1]
+
+    def test_validation_rejects_zero_step_grid(self, qapp):
+        """グリッドサーチで刻み幅0のとき最適化が拒否されることを検証。"""
+        from app.ui.optimizer_dialog import OptimizerDialog
+        from unittest.mock import patch
+
+        dlg = OptimizerDialog()
+        # グリッドサーチを選択し、step=0に設定
+        dlg._method_combo.setCurrentIndex(0)  # grid
+        if dlg._param_widgets:
+            dlg._param_widgets[0]["min"].setValue(100)
+            dlg._param_widgets[0]["max"].setValue(1000)
+            dlg._param_widgets[0]["step"].setValue(0)
+        with patch.object(dlg, "_result_summary"):
+            with patch("app.ui.optimizer_dialog.QMessageBox.warning") as mock_warn:
+                dlg._start_optimization()
+                mock_warn.assert_called_once()
+                args = mock_warn.call_args[0]
+                assert "パラメータ設定エラー" in args[1]
+
+    def test_validation_accepts_valid_range(self, qapp):
+        """正常なパラメータ設定でバリデーションを通過することを検証。"""
+        from app.ui.optimizer_dialog import OptimizerDialog
+        from unittest.mock import patch, MagicMock
+
+        dlg = OptimizerDialog()
+        if dlg._param_widgets:
+            dlg._param_widgets[0]["min"].setValue(100)
+            dlg._param_widgets[0]["max"].setValue(200)
+            dlg._param_widgets[0]["step"].setValue(100)
+        # _iter_spin を低く設定して時間警告を回避
+        dlg._iter_spin.setValue(5)
+        # optimize と matplotlib描画をモックして安全に通過
+        with patch.object(dlg._optimizer, "optimize") as mock_opt:
+            with patch.object(dlg._conv_canvas, "draw"):
+                with patch("app.ui.optimizer_dialog.QMessageBox.warning") as mock_warn:
+                    dlg._start_optimization()
+                    mock_warn.assert_not_called()
+                    mock_opt.assert_called_once()

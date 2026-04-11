@@ -777,6 +777,39 @@ class OptimizerDialog(QDialog):
             QMessageBox.warning(self, "設定エラー", "探索パラメータが設定されていません。")
             return
 
+        # パラメータ範囲バリデーション
+        errors: list[str] = []
+        for pr in config.parameters:
+            if pr.min_val >= pr.max_val:
+                errors.append(
+                    f"「{pr.label}」: 最小値({pr.min_val})が最大値({pr.max_val})以上です"
+                )
+            if config.method == "grid" and pr.step <= 0:
+                errors.append(
+                    f"「{pr.label}」: グリッドサーチの刻み幅が0以下です"
+                )
+            elif config.method == "grid" and pr.step > (pr.max_val - pr.min_val):
+                errors.append(
+                    f"「{pr.label}」: 刻み幅({pr.step})が探索範囲({pr.max_val - pr.min_val:.4g})より大きいです"
+                )
+        if errors:
+            QMessageBox.warning(
+                self, "パラメータ設定エラー",
+                "以下の問題を修正してください:\n\n" + "\n".join(f"• {e}" for e in errors),
+            )
+            return
+
+        # 複合目的関数の重みバリデーション
+        if config.objective_weights:
+            total_weight = sum(config.objective_weights.values())
+            if total_weight <= 0:
+                QMessageBox.warning(
+                    self, "設定エラー",
+                    "複合目的関数の重みの合計が0です。\n"
+                    "少なくとも1つの目的関数に正の重みを設定してください。",
+                )
+                return
+
         # D-3: 大量試行時の事前警告ダイアログ
         n_runs = (self._estimate_grid_runs()
                   if config.method == "grid"
@@ -840,13 +873,40 @@ class OptimizerDialog(QDialog):
                     "SNAP実行モードで最適化を実行中..."
                 )
             else:
+                # 具体的な原因を特定してログ + UI表示
+                from pathlib import Path
+                reasons: list[str] = []
+                exe = self._snap_exe_path
+                if not exe:
+                    reasons.append("SNAP.exe パスが未設定")
+                elif not Path(exe).exists():
+                    reasons.append(f"SNAP.exe が存在しません: {exe}")
+                model = getattr(self._base_case, "model_path", "")
+                if not model:
+                    reasons.append("モデルファイルが未設定")
+                elif not Path(model).exists():
+                    reasons.append(f"モデルファイルが存在しません: {model}")
+                reason_str = "、".join(reasons) if reasons else "不明なエラー"
+                logger.warning(
+                    "SNAP評価モード不可 → モック評価にフォールバック: %s", reason_str
+                )
                 self._result_summary.setText(
-                    "モック評価モードで最適化を実行中..."
-                    "（SNAP.exe またはモデルファイルが見つかりません）"
+                    f"モック評価モードで実行中（{reason_str}）"
                 )
         else:
+            missing: list[str] = []
+            if not self._base_case:
+                missing.append("解析ケース")
+            if not self._snap_exe_path:
+                missing.append("SNAP.exe パス")
+            if missing:
+                detail = "、".join(missing) + "が未設定"
+            else:
+                detail = ""
+            logger.info("SNAP未設定 → モック評価モード: %s", detail)
             self._result_summary.setText(
-                "モック評価モードで最適化を実行中..."
+                f"モック評価モードで実行中"
+                + (f"（{detail}）" if detail else "")
             )
 
         self._optimizer.optimize(config, evaluate_fn=evaluate_fn)
