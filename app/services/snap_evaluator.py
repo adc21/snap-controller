@@ -383,3 +383,169 @@ def create_snap_evaluator(
         if log_callback:
             log_callback(f"[WARN] {e}。モック評価を使用します。")
         return None
+
+
+def create_minimizer_evaluate_fn(
+    snap_exe_path: str,
+    base_s8i_path: str,
+    damper_def_name: str,
+    criteria: "PerformanceCriteria",
+    position_node_map: Optional[Dict[int, Dict[str, Any]]] = None,
+    timeout: int = 300,
+    log_callback: Optional[Callable[[str], None]] = None,
+) -> Optional[Callable[[List[bool]], "Tuple[Dict[str, float], bool, float]"]]:
+    """
+    ダンパー本数最小化用の evaluate_fn を生成するファクトリ関数。
+
+    EvaluateFn の型: (List[bool]) -> (Dict[str, float], bool, float)
+        - placement: 各位置にダンパーがあるかどうか
+        - 戻り値: (応答値辞書, 基準充足, マージン)
+
+    Parameters
+    ----------
+    snap_exe_path : str
+        SNAP.exe のパス。
+    base_s8i_path : str
+        ベースとなる .s8i ファイルパス。
+    damper_def_name : str
+        ダンパー定義名。
+    criteria : PerformanceCriteria
+        判定に使う性能基準。
+    position_node_map : dict, optional
+        {position_index: {"node_i": ..., "node_j": ..., "quantity": ...}}
+        各位置のダンパー要素ノード情報。None の場合は quantity=0/1 で制御。
+    timeout : int
+        SNAP タイムアウト（秒）。
+    log_callback : callable, optional
+        ログコールバック。
+
+    Returns
+    -------
+    callable or None
+        evaluate_fn。SNAP が利用不可の場合は None。
+    """
+    from typing import Tuple
+
+    if not snap_exe_path or not Path(snap_exe_path).exists():
+        if log_callback:
+            log_callback(f"[WARN] SNAP.exe が見つかりません: {snap_exe_path}")
+        return None
+    if not base_s8i_path or not Path(base_s8i_path).exists():
+        if log_callback:
+            log_callback(f"[WARN] ベース .s8i が見つかりません: {base_s8i_path}")
+        return None
+
+    _eval_count = [0]
+
+    def evaluate_fn(placement: List[bool]) -> Tuple[Dict[str, float], bool, float]:
+        _eval_count[0] += 1
+        count = sum(placement)
+        if log_callback:
+            log_callback(
+                f"  [最小化評価] #{_eval_count[0]} 配置本数={count}/{len(placement)}"
+            )
+
+        try:
+            model = parse_s8i(base_s8i_path)
+
+            # ダンパー要素の数量を placement に基づいて設定
+            if position_node_map:
+                for pos_idx, placed in enumerate(placement):
+                    if pos_idx in position_node_map:
+                        info = position_node_map[pos_idx]
+                        qty = info.get("quantity", 1) if placed else 0
+                        model.update_damper_element(
+                            pos_idx,
+                            quantity=qty,
+                        )
+            else:
+                # position_node_map が無い場合、RD行のインデックスに対応
+                rd_rows = model.get_damper_rows() if hasattr(model, "get_damper_rows") else []
+                for pos_idx, placed in enumerate(placement):
+                    if pos_idx < len(rd_rows):
+                        model.update_damper_element(
+                            pos_idx,
+                            quantity=1 if placed else 0,
+                        )
+
+            # 一時ディレクトリで SNAP 実行
+            with tempfile.TemporaryDirectory(prefix="snap_min_") as tmp_dir:
+                tmp_path = Path(tmp_dir)
+                src = Path(base_s8i_path)
+                tmp_input = tmp_path / src.name
+                model.write(str(tmp_input))
+
+                result = snap_exec(
+                    snap_exe=snap_exe_path,
+                    input_file=str(tmp_input),
+                    timeout=timeout,
+                    stdout_callback=lambda line: None,
+                )
+
+                if result.returncode != 0:
+                    raise RuntimeError(f"SNAP 異常終了 (code={result.returncode})")
+
+                res = Result(str(tmp_path))
+                summary = _extract_minimizer_response(res)
+
+            # 性能基準で判定
+            is_pass = criteria.is_all_pass(summary)
+            is_feasible = is_pass is True
+
+            # マージン計算（最も厳しい項目の余裕度）
+            margin = _compute_margin(summary, criteria)
+
+            return summary, is_feasible, margin
+
+        except Exception as e:
+            if log_callback:
+                log_callback(f"  [ERROR] 最小化評価エラー: {e}")
+            return {}, False, -1.0
+
+    return evaluate_fn
+
+
+def _extract_minimizer_response(res: Result) -> Dict[str, float]:
+    """Result から応答値辞書を生成（SnapEvaluator._extract_response と同等）。"""
+    response: Dict[str, float] = {}
+    if res.max_story_drift:
+        response["max_drift"] = max(res.max_story_drift.values())
+    if res.max_acc:
+        response["max_acc"] = max(res.max_acc.values())
+    if res.max_disp:
+        response["max_disp"] = max(res.max_disp.values())
+    if res.max_vel:
+        response["max_vel"] = max(res.max_vel.values())
+    if res.shear_coeff:
+        response["shear_coeff"] = max(res.shear_coeff.values())
+    if res.max_otm:
+        response["max_otm"] = max(res.max_otm.values())
+    if res.max_story_disp:
+        response["max_story_disp"] = max(res.max_story_disp.values())
+    return response
+
+
+def _compute_margin(
+    summary: Dict[str, float],
+    criteria: "PerformanceCriteria",
+) -> float:
+    """
+    基準に対する最小マージンを計算する。
+
+    margin = min((limit - value) / limit) for each enabled criterion.
+    正の値: 基準内（余裕あり）、負の値: 基準超過。
+    """
+    margins = []
+    for item in criteria.items:
+        if not item.enabled or item.limit_value is None:
+            continue
+        val = summary.get(item.key)
+        if val is None:
+            continue
+        if item.limit_value == 0:
+            margins.append(-abs(val))
+        else:
+            margins.append((item.limit_value - val) / abs(item.limit_value))
+    if not margins:
+        return 0.0
+    return min(margins)

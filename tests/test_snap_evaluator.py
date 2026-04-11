@@ -10,8 +10,15 @@ SnapEvaluator のユーティリティメソッドのみテストします。
 import pytest
 from pathlib import Path
 
-from app.services.snap_evaluator import SnapEvaluator, create_snap_evaluator
+from app.services.snap_evaluator import (
+    SnapEvaluator,
+    create_snap_evaluator,
+    create_minimizer_evaluate_fn,
+    _compute_margin,
+    _extract_minimizer_response,
+)
 from app.models.analysis_case import AnalysisCase
+from app.models.performance_criteria import PerformanceCriteria, CriterionItem
 
 
 class TestSnapEvaluatorCacheKey:
@@ -131,3 +138,114 @@ class TestCreateSnapEvaluator:
         text = evaluator.get_stats_text()
         assert "SNAP評価" in text
         assert "合計 0 回" in text
+
+
+class TestComputeMargin:
+    """_compute_margin のテスト。"""
+
+    def _make_criteria(self, items):
+        return PerformanceCriteria(name="test", items=items)
+
+    def test_all_within_limits(self):
+        criteria = self._make_criteria([
+            CriterionItem(key="max_drift", label="層間変形角", unit="rad",
+                          enabled=True, limit_value=0.01),
+            CriterionItem(key="max_acc", label="最大加速度", unit="m/s²",
+                          enabled=True, limit_value=5.0),
+        ])
+        summary = {"max_drift": 0.005, "max_acc": 3.0}
+        margin = _compute_margin(summary, criteria)
+        # max_drift: (0.01 - 0.005) / 0.01 = 0.5
+        # max_acc: (5.0 - 3.0) / 5.0 = 0.4
+        assert abs(margin - 0.4) < 1e-10  # min(0.5, 0.4) = 0.4
+
+    def test_one_exceeds_limit(self):
+        criteria = self._make_criteria([
+            CriterionItem(key="max_drift", label="層間変形角", unit="rad",
+                          enabled=True, limit_value=0.01),
+        ])
+        summary = {"max_drift": 0.012}
+        margin = _compute_margin(summary, criteria)
+        # (0.01 - 0.012) / 0.01 = -0.2
+        assert margin < 0
+
+    def test_no_enabled_criteria(self):
+        criteria = self._make_criteria([
+            CriterionItem(key="max_drift", label="層間変形角", unit="rad",
+                          enabled=False, limit_value=0.01),
+        ])
+        summary = {"max_drift": 0.005}
+        margin = _compute_margin(summary, criteria)
+        assert margin == 0.0
+
+    def test_missing_key_in_summary(self):
+        criteria = self._make_criteria([
+            CriterionItem(key="max_drift", label="層間変形角", unit="rad",
+                          enabled=True, limit_value=0.01),
+        ])
+        summary = {}  # key missing
+        margin = _compute_margin(summary, criteria)
+        assert margin == 0.0
+
+
+class TestCreateMinimizerEvaluateFn:
+    """create_minimizer_evaluate_fn のテスト。"""
+
+    def test_returns_none_without_exe(self):
+        criteria = PerformanceCriteria(name="test")
+        result = create_minimizer_evaluate_fn(
+            snap_exe_path="",
+            base_s8i_path="/tmp/model.s8i",
+            damper_def_name="D1",
+            criteria=criteria,
+        )
+        assert result is None
+
+    def test_returns_none_with_nonexistent_exe(self):
+        criteria = PerformanceCriteria(name="test")
+        result = create_minimizer_evaluate_fn(
+            snap_exe_path="/nonexistent/SNAP.exe",
+            base_s8i_path="/tmp/model.s8i",
+            damper_def_name="D1",
+            criteria=criteria,
+        )
+        assert result is None
+
+    def test_returns_none_with_nonexistent_s8i(self, tmp_path):
+        exe = tmp_path / "SNAP.exe"
+        exe.touch()
+        criteria = PerformanceCriteria(name="test")
+        result = create_minimizer_evaluate_fn(
+            snap_exe_path=str(exe),
+            base_s8i_path=str(tmp_path / "nonexistent.s8i"),
+            damper_def_name="D1",
+            criteria=criteria,
+        )
+        assert result is None
+
+    def test_returns_callable_with_valid_paths(self, tmp_path):
+        exe = tmp_path / "SNAP.exe"
+        exe.touch()
+        s8i = tmp_path / "model.s8i"
+        s8i.write_text("TTL / test\n", encoding="shift_jis")
+        criteria = PerformanceCriteria(name="test")
+
+        result = create_minimizer_evaluate_fn(
+            snap_exe_path=str(exe),
+            base_s8i_path=str(s8i),
+            damper_def_name="D1",
+            criteria=criteria,
+        )
+        assert callable(result)
+
+    def test_log_callback_on_missing_exe(self):
+        criteria = PerformanceCriteria(name="test")
+        logs = []
+        create_minimizer_evaluate_fn(
+            snap_exe_path="/nonexistent/SNAP.exe",
+            base_s8i_path="/tmp/model.s8i",
+            damper_def_name="D1",
+            criteria=criteria,
+            log_callback=logs.append,
+        )
+        assert any("SNAP.exe" in msg for msg in logs)

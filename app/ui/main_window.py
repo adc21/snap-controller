@@ -2580,10 +2580,37 @@ class MainWindow(QMainWindow):
                 n_positions = model.num_floors
                 position_labels = [f"{i+1}F" for i in range(n_positions)]
 
+        # SnapEvaluator ベースの evaluate_fn を構築
+        evaluate_fn = None
+        base_case = None
+        case_id = self._case_table.selected_case_id()
+        if case_id:
+            base_case = self._project.get_case(case_id)
+
+        if base_case and self._project.snap_exe_path and self._project.criteria:
+            from app.services.snap_evaluator import create_minimizer_evaluate_fn
+
+            model_path = base_case.model_path or ""
+            damper_def = ""
+            if base_case.damper_params:
+                damper_def = next(iter(base_case.damper_params), "")
+
+            evaluate_fn = create_minimizer_evaluate_fn(
+                snap_exe_path=self._project.snap_exe_path,
+                base_s8i_path=model_path,
+                damper_def_name=damper_def,
+                criteria=self._project.criteria,
+                log_callback=lambda msg: self._log.append_line(msg),
+            )
+            if evaluate_fn:
+                self._log.append_line(
+                    "[INFO] SNAP実評価関数でダンパー本数最小化を実行します。"
+                )
+
         dlg = MinimizerDialog(
             n_positions=n_positions,
             position_labels=position_labels,
-            evaluate_fn=None,  # 実評価関数は SnapEvaluator 接続時に設定
+            evaluate_fn=evaluate_fn,
             parent=self,
         )
         dlg.minimizationCompleted.connect(self._on_minimizer_completed)
@@ -2591,10 +2618,10 @@ class MainWindow(QMainWindow):
 
     def _on_minimizer_completed(self, result) -> None:
         """ダンパー本数最小化結果を受け取ります。"""
-        placed = sum(1 for p in result.placement if p)
+        placed = sum(1 for p in result.final_placement if p)
         self._log.append_line(
-            f"=== ダンパー最小化完了: {placed}/{len(result.placement)}本配置, "
-            f"マージン={result.margin:.4f} ==="
+            f"=== ダンパー最小化完了: {placed}/{len(result.final_placement)}本配置, "
+            f"マージン={result.final_margin:.4f} ==="
         )
         self.statusBar().showMessage(
             f"ダンパー最小化完了 — {placed}本配置",
