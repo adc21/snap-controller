@@ -47,6 +47,7 @@ from PySide6.QtWidgets import (
     QAbstractItemView,
     QComboBox,
     QDialog,
+    QFrame,
     QGroupBox,
     QHBoxLayout,
     QHeaderView,

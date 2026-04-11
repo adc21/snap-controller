@@ -295,10 +295,7 @@ class SweepDialog(QDialog):
         sweep_group = QGroupBox("スイープパラメータ（複数パラメータのグリッドサーチ対応）")
         self._sweep_layout = QVBoxLayout(sweep_group)
 
-        # 最初のパラメータ行を追加
-        self._add_param_row()
-
-        # パラメータ追加ボタン
+        # パラメータ追加ボタン（_add_param_row より先に作成する）
         add_btn_row = QHBoxLayout()
         self._add_param_btn = QPushButton("＋ パラメータを追加（グリッドサーチ）")
         self._add_param_btn.setToolTip(
@@ -309,6 +306,9 @@ class SweepDialog(QDialog):
         add_btn_row.addWidget(self._add_param_btn)
         add_btn_row.addStretch()
         self._sweep_layout.addLayout(add_btn_row)
+
+        # 最初のパラメータ行を追加（_add_param_btn 作成後に呼ぶ）
+        self._add_param_row()
 
         layout.addWidget(sweep_group)
 
