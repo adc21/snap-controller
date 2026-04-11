@@ -370,3 +370,50 @@ class TestMainWindowIntegration:
         assert hasattr(main_window, "_transfer_function_widget")
         assert hasattr(main_window, "_mode_shape_widget")
         assert hasattr(main_window, "_hysteresis_widget")
+
+
+@pytest.mark.skipif(not _qt_available(), reason="PySide6 unavailable")
+class TestSensitivityDialog:
+    """SensitivityDialog のインスタンス化・描画テスト。"""
+
+    def test_instantiate(self, qapp):
+        from app.ui.optimizer_dialog import SensitivityDialog
+        from app.services.optimizer import SensitivityResult, SensitivityEntry
+        result = SensitivityResult(
+            entries=[
+                SensitivityEntry(
+                    key="Cd", label="減衰係数", base_value=500.0,
+                    variations=[-0.2, -0.1, 0.0, 0.1, 0.2],
+                    objective_values=[0.006, 0.0055, 0.005, 0.0047, 0.0044],
+                    sensitivity_index=0.32,
+                ),
+                SensitivityEntry(
+                    key="alpha", label="速度指数", base_value=0.4,
+                    variations=[-0.2, -0.1, 0.0, 0.1, 0.2],
+                    objective_values=[0.0051, 0.0050, 0.005, 0.0050, 0.0051],
+                    sensitivity_index=0.02,
+                ),
+            ],
+            base_objective=0.005,
+            objective_key="max_drift",
+            objective_label="最大層間変形角",
+        )
+        dlg = SensitivityDialog(result)
+        assert dlg is not None
+        assert dlg.windowTitle() == "パラメータ感度解析"
+
+    def test_empty_entries(self, qapp):
+        from app.ui.optimizer_dialog import SensitivityDialog
+        from app.services.optimizer import SensitivityResult
+        result = SensitivityResult(
+            entries=[], base_objective=0.005,
+            objective_key="max_drift",
+        )
+        dlg = SensitivityDialog(result)
+        assert dlg is not None
+
+    def test_sensitivity_button_exists(self, qapp):
+        from app.ui.optimizer_dialog import OptimizerDialog
+        dlg = OptimizerDialog()
+        assert hasattr(dlg, "_sensitivity_btn")
+        assert not dlg._sensitivity_btn.isEnabled()

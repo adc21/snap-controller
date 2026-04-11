@@ -1228,3 +1228,122 @@ class DamperOptimizer(QObject):
 
     def _on_finished(self, result: OptimizationResult) -> None:
         self.optimization_finished.emit(result)
+
+
+# ---------------------------------------------------------------------------
+# パラメータ感度解析
+# ---------------------------------------------------------------------------
+
+@dataclass
+class SensitivityEntry:
+    """1パラメータの感度解析結果。"""
+    key: str
+    label: str
+    base_value: float
+    variations: List[float]  # 変動割合 (-0.2, -0.1, 0, 0.1, 0.2 etc.)
+    objective_values: List[float]  # 対応する目的関数値
+    sensitivity_index: float = 0.0  # |Δobj / Δparam| の正規化指標
+
+
+@dataclass
+class SensitivityResult:
+    """感度解析の全体結果。"""
+    entries: List[SensitivityEntry]
+    base_objective: float
+    objective_key: str
+    objective_label: str = ""
+
+    @property
+    def ranked_entries(self) -> List[SensitivityEntry]:
+        """感度指標が高い順にソート。"""
+        return sorted(self.entries, key=lambda e: e.sensitivity_index, reverse=True)
+
+
+def compute_sensitivity(
+    evaluate_fn: Callable[[Dict[str, float]], Dict[str, float]],
+    best_params: Dict[str, float],
+    parameters: List[ParameterRange],
+    objective_key: str,
+    variation_pcts: Optional[List[float]] = None,
+) -> SensitivityResult:
+    """
+    最適解周りのパラメータ感度を計算します。
+
+    各パラメータを1つずつ変動させ（OAT: One-At-a-Time）、
+    目的関数の変化量を測定します。
+
+    Parameters
+    ----------
+    evaluate_fn : callable
+        パラメータ辞書 → 応答値辞書 の評価関数。
+    best_params : dict
+        最適解のパラメータ値。
+    parameters : list of ParameterRange
+        探索パラメータ定義。
+    objective_key : str
+        目的関数のキー。
+    variation_pcts : list of float, optional
+        変動割合リスト（デフォルト: [-0.20, -0.10, -0.05, 0, 0.05, 0.10, 0.20]）。
+
+    Returns
+    -------
+    SensitivityResult
+        感度解析結果。
+    """
+    if variation_pcts is None:
+        variation_pcts = [-0.20, -0.10, -0.05, 0.0, 0.05, 0.10, 0.20]
+
+    # ベース評価
+    base_response = evaluate_fn(best_params)
+    base_obj = base_response.get(objective_key, float("inf"))
+
+    entries: List[SensitivityEntry] = []
+
+    for pr in parameters:
+        key = pr.key
+        base_val = best_params.get(key, 0.0)
+        if base_val == 0.0:
+            continue
+
+        obj_values: List[float] = []
+        valid_variations: List[float] = []
+
+        for pct in variation_pcts:
+            varied_val = base_val * (1.0 + pct)
+            # パラメータ範囲内にクランプ
+            varied_val = max(pr.min_val, min(pr.max_val, varied_val))
+            if pr.is_integer:
+                varied_val = round(varied_val)
+
+            trial_params = dict(best_params)
+            trial_params[key] = varied_val
+
+            try:
+                resp = evaluate_fn(trial_params)
+                obj_val = resp.get(objective_key, float("inf"))
+                if not (math.isnan(obj_val) or math.isinf(obj_val)):
+                    obj_values.append(obj_val)
+                    valid_variations.append(pct)
+            except Exception:
+                logger.debug("感度解析: %s=%.4g で評価失敗", key, varied_val)
+
+        # 感度指標: 目的関数の変動幅 / ベース値（正規化）
+        si = 0.0
+        if obj_values and base_obj != 0:
+            obj_range = max(obj_values) - min(obj_values)
+            si = obj_range / abs(base_obj)
+
+        entries.append(SensitivityEntry(
+            key=key,
+            label=pr.label or key,
+            base_value=base_val,
+            variations=valid_variations,
+            objective_values=obj_values,
+            sensitivity_index=si,
+        ))
+
+    return SensitivityResult(
+        entries=entries,
+        base_objective=base_obj,
+        objective_key=objective_key,
+    )

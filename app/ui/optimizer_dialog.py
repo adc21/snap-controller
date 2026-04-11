@@ -105,6 +105,8 @@ from app.services.optimizer import (
     OptimizationConfig,
     OptimizationResult,
     ParameterRange,
+    SensitivityResult,
+    compute_sensitivity,
 )
 from app.services.snap_evaluator import create_snap_evaluator
 from .theme import ThemeManager, MPL_STYLES
@@ -486,6 +488,13 @@ class OptimizerDialog(QDialog):
         self._export_csv_btn.setToolTip("探索結果をCSVファイルに出力します")
         btn_row.addWidget(self._export_csv_btn)
 
+        self._sensitivity_btn = QPushButton("感度解析")
+        self._sensitivity_btn.setEnabled(False)
+        self._sensitivity_btn.setToolTip(
+            "最適解周りのパラメータ感度を解析します（各パラメータを±20%変動）"
+        )
+        btn_row.addWidget(self._sensitivity_btn)
+
         btn_row.addStretch()
 
         close_btn = QPushButton("閉じる")
@@ -498,6 +507,7 @@ class OptimizerDialog(QDialog):
         self._cancel_btn.clicked.connect(self._cancel_optimization)
         self._apply_btn.clicked.connect(self._apply_best)
         self._export_csv_btn.clicked.connect(self._export_csv)
+        self._sensitivity_btn.clicked.connect(self._run_sensitivity)
         self._optimizer.progress.connect(self._on_progress)
         self._optimizer.candidate_found.connect(self._on_candidate)
         self._optimizer.optimization_finished.connect(self._on_finished)
@@ -778,6 +788,7 @@ class OptimizerDialog(QDialog):
         self._cancel_btn.setEnabled(True)
         self._apply_btn.setEnabled(False)
         self._export_csv_btn.setEnabled(False)
+        self._sensitivity_btn.setEnabled(False)
         self._progress_bar.show()
         self._progress_bar.setValue(0)
 
@@ -864,6 +875,7 @@ class OptimizerDialog(QDialog):
             )
             self._apply_btn.setEnabled(True)
             self._export_csv_btn.setEnabled(True)
+            self._sensitivity_btn.setEnabled(True)
         else:
             self._result_summary.setText(
                 "制約を満たす解が見つかりませんでした。"
@@ -1232,3 +1244,192 @@ class OptimizerDialog(QDialog):
             )
         except OSError as e:
             QMessageBox.warning(self, "エラー", f"ファイルの書き込みに失敗しました:\n{e}")
+
+    def _run_sensitivity(self) -> None:
+        """最適解周りのパラメータ感度解析を実行し、結果ダイアログを表示します。"""
+        if not self._result or not self._result.best or not self._result.config:
+            return
+
+        config = self._result.config
+        best_params = self._result.best.params
+
+        # 評価関数を取得（SNAP or モック）
+        evaluate_fn = None
+        if self._base_case and self._snap_exe_path:
+            evaluate_fn = create_snap_evaluator(
+                snap_exe_path=self._snap_exe_path,
+                base_case=self._base_case,
+                param_ranges=config.parameters,
+                snap_work_dir=self._snap_work_dir,
+            )
+        if evaluate_fn is None:
+            from app.services.optimizer import _mock_evaluate
+            base = {}
+            if config.base_case and config.base_case.result_summary:
+                base = config.base_case.result_summary
+            evaluate_fn = lambda params: _mock_evaluate(
+                params, base, config.objective_key
+            )
+
+        try:
+            sensitivity = compute_sensitivity(
+                evaluate_fn=evaluate_fn,
+                best_params=best_params,
+                parameters=config.parameters,
+                objective_key=config.objective_key,
+            )
+            sensitivity.objective_label = config.objective_label
+        except Exception as exc:
+            logger.warning("感度解析に失敗しました: %s", exc, exc_info=True)
+            QMessageBox.warning(
+                self, "感度解析エラー",
+                f"感度解析の実行中にエラーが発生しました:\n{exc}",
+            )
+            return
+
+        dlg = SensitivityDialog(sensitivity, parent=self)
+        dlg.exec()
+
+
+class SensitivityDialog(QDialog):
+    """パラメータ感度解析結果を表示するダイアログ。
+
+    - トルネードチャート: パラメータ別の感度指標ランキング
+    - 感度曲線: 各パラメータの変動に対する目的関数の変化
+    """
+
+    def __init__(
+        self,
+        result: SensitivityResult,
+        parent: Optional[QWidget] = None,
+    ) -> None:
+        super().__init__(parent)
+        self._result = result
+        self.setWindowTitle("パラメータ感度解析")
+        self.setMinimumSize(700, 500)
+        self._build_ui()
+
+    def _build_ui(self) -> None:
+        layout = QVBoxLayout(self)
+
+        # ヘッダ
+        header = QLabel(
+            f"目的関数: {self._result.objective_label or self._result.objective_key}  |  "
+            f"基準値: {self._result.base_objective:.6g}"
+        )
+        header.setStyleSheet("font-weight: bold; font-size: 13px; padding: 4px;")
+        layout.addWidget(header)
+
+        # 上下分割: トルネードチャート + 感度曲線
+        splitter = QSplitter(Qt.Vertical)
+
+        # トルネードチャート
+        _apply_mpl_theme()
+        theme = "dark" if ThemeManager.is_dark() else "light"
+        facecolor = MPL_STYLES[theme]["figure.facecolor"]
+        ax_face = MPL_STYLES[theme]["axes.facecolor"]
+
+        self._tornado_fig = Figure(figsize=(6, 3), tight_layout=True, facecolor=facecolor)
+        self._tornado_ax = self._tornado_fig.add_subplot(111)
+        self._tornado_ax.set_facecolor(ax_face)
+        tornado_canvas = FigureCanvas(self._tornado_fig)
+        splitter.addWidget(tornado_canvas)
+
+        # 感度曲線
+        self._curve_fig = Figure(figsize=(6, 3), tight_layout=True, facecolor=facecolor)
+        self._curve_ax = self._curve_fig.add_subplot(111)
+        self._curve_ax.set_facecolor(ax_face)
+        curve_canvas = FigureCanvas(self._curve_fig)
+        splitter.addWidget(curve_canvas)
+
+        layout.addWidget(splitter, stretch=1)
+
+        # ボタン
+        btn_row = QHBoxLayout()
+        btn_row.addStretch()
+        close_btn = QPushButton("閉じる")
+        close_btn.clicked.connect(self.accept)
+        btn_row.addWidget(close_btn)
+        layout.addLayout(btn_row)
+
+        self._draw_tornado()
+        self._draw_curves()
+
+    def _draw_tornado(self) -> None:
+        """トルネードチャート（感度指標の水平棒グラフ）を描画します。"""
+        ax = self._tornado_ax
+        ax.clear()
+
+        ranked = self._result.ranked_entries
+        if not ranked:
+            ax.text(0.5, 0.5, "感度データなし", ha="center", va="center",
+                    transform=ax.transAxes, fontsize=11, color="gray")
+            return
+
+        labels = [e.label for e in ranked]
+        values = [e.sensitivity_index * 100 for e in ranked]  # %表示
+
+        y_pos = np.arange(len(labels))
+        colors = []
+        for v in values:
+            if v >= 10:
+                colors.append("#e74c3c")  # 高感度: 赤
+            elif v >= 5:
+                colors.append("#f39c12")  # 中感度: 橙
+            else:
+                colors.append("#3498db")  # 低感度: 青
+
+        bars = ax.barh(y_pos, values, color=colors, height=0.6, edgecolor="none")
+        ax.set_yticks(y_pos)
+        ax.set_yticklabels(labels)
+        ax.set_xlabel("感度指標 [%]")
+        ax.set_title("パラメータ感度ランキング", fontsize=11)
+        ax.invert_yaxis()
+
+        # 値ラベル
+        for bar, val in zip(bars, values):
+            ax.text(
+                bar.get_width() + 0.3, bar.get_y() + bar.get_height() / 2,
+                f"{val:.1f}%", va="center", fontsize=9,
+            )
+
+        self._tornado_fig.tight_layout()
+
+    def _draw_curves(self) -> None:
+        """各パラメータの感度曲線（変動率 vs 目的関数値）を描画します。"""
+        ax = self._curve_ax
+        ax.clear()
+
+        entries = self._result.ranked_entries
+        if not entries:
+            ax.text(0.5, 0.5, "感度データなし", ha="center", va="center",
+                    transform=ax.transAxes, fontsize=11, color="gray")
+            return
+
+        colors_cycle = ["#e74c3c", "#3498db", "#2ecc71", "#f39c12", "#9b59b6",
+                        "#1abc9c", "#e67e22", "#34495e"]
+        base_obj = self._result.base_objective
+
+        for i, entry in enumerate(entries):
+            if not entry.variations or not entry.objective_values:
+                continue
+            color = colors_cycle[i % len(colors_cycle)]
+            pct_vals = [v * 100 for v in entry.variations]
+
+            # 正規化: ベース値からの変化率
+            if base_obj != 0:
+                norm_obj = [(o / base_obj - 1.0) * 100 for o in entry.objective_values]
+            else:
+                norm_obj = entry.objective_values
+
+            ax.plot(pct_vals, norm_obj, "o-", color=color, label=entry.label,
+                    markersize=4, linewidth=1.5)
+
+        ax.axhline(0, color="gray", linestyle="--", linewidth=0.8, alpha=0.5)
+        ax.axvline(0, color="gray", linestyle="--", linewidth=0.8, alpha=0.5)
+        ax.set_xlabel("パラメータ変動率 [%]")
+        ax.set_ylabel("目的関数変化率 [%]")
+        ax.set_title("パラメータ感度曲線", fontsize=11)
+        ax.legend(fontsize=8, loc="best")
+
+        self._curve_fig.tight_layout()

@@ -594,3 +594,87 @@ class TestMethodDispatch:
         )
         worker = _OptimizationWorker(config, evaluate)
         worker.run()
+
+
+# ---------------------------------------------------------------------------
+# 感度解析テスト
+# ---------------------------------------------------------------------------
+
+class TestComputeSensitivity:
+    """compute_sensitivity のユニットテスト。"""
+
+    def _simple_evaluate(self, params):
+        """Cd に強く依存、alpha にあまり依存しないモック評価関数。"""
+        cd = params.get("Cd", 300)
+        alpha = params.get("alpha", 0.4)
+        return {
+            "max_drift": 0.005 / (1 + 0.001 * cd) * (1 + 0.1 * alpha),
+            "max_acc": 3.0 * (1 - 0.0005 * cd),
+        }
+
+    def test_basic(self):
+        from app.services.optimizer import compute_sensitivity, SensitivityResult
+        params = [
+            ParameterRange(key="Cd", label="減衰係数", min_val=100, max_val=1000, step=0),
+            ParameterRange(key="alpha", label="速度指数", min_val=0.1, max_val=1.0, step=0),
+        ]
+        best = {"Cd": 500.0, "alpha": 0.4}
+        result = compute_sensitivity(
+            self._simple_evaluate, best, params, "max_drift",
+        )
+        assert isinstance(result, SensitivityResult)
+        assert len(result.entries) == 2
+        assert result.base_objective > 0
+        # Cd should be more sensitive than alpha
+        ranked = result.ranked_entries
+        assert ranked[0].key == "Cd"
+        assert ranked[0].sensitivity_index > ranked[1].sensitivity_index
+
+    def test_empty_params(self):
+        from app.services.optimizer import compute_sensitivity
+        result = compute_sensitivity(
+            lambda p: {"obj": 1.0}, {}, [], "obj",
+        )
+        assert len(result.entries) == 0
+
+    def test_custom_variations(self):
+        from app.services.optimizer import compute_sensitivity
+        params = [
+            ParameterRange(key="Cd", label="Cd", min_val=100, max_val=1000, step=0),
+        ]
+        best = {"Cd": 500.0}
+        result = compute_sensitivity(
+            self._simple_evaluate, best, params, "max_drift",
+            variation_pcts=[-0.1, 0.0, 0.1],
+        )
+        entry = result.entries[0]
+        assert len(entry.variations) == 3
+        assert len(entry.objective_values) == 3
+
+    def test_evaluate_failure_handled(self):
+        """評価関数が例外を投げても感度解析が止まらないことを確認。"""
+        from app.services.optimizer import compute_sensitivity
+        call_count = [0]
+        def flaky_eval(params):
+            call_count[0] += 1
+            if call_count[0] % 3 == 0:
+                raise RuntimeError("SNAP crash")
+            return {"obj": params.get("x", 1.0) ** 2}
+
+        params = [ParameterRange(key="x", label="x", min_val=0.1, max_val=10, step=0)]
+        result = compute_sensitivity(flaky_eval, {"x": 5.0}, params, "obj")
+        assert len(result.entries) == 1
+        assert len(result.entries[0].objective_values) > 0
+
+    def test_integer_parameter(self):
+        from app.services.optimizer import compute_sensitivity
+        params = [
+            ParameterRange(key="n", label="本数", min_val=1, max_val=10, step=1, is_integer=True),
+        ]
+        best = {"n": 5.0}
+        result = compute_sensitivity(
+            lambda p: {"obj": 10.0 / p["n"]}, best, params, "obj",
+        )
+        assert len(result.entries) == 1
+        entry = result.entries[0]
+        assert entry.sensitivity_index > 0
