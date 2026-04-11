@@ -1150,7 +1150,9 @@ class _OptimizationWorker(QThread):
             return OptimizationResult(message="探索パラメータが設定されていません。")
 
         n_params = len(config.parameters)
-        pop_size = max(20, min(100, config.max_iterations // 5))
+        # 次元数に応じた適応的集団サイズ: 高次元ほど大きな集団が必要
+        base_pop = max(20, min(100, config.max_iterations // 5))
+        pop_size = max(base_pop, min(100, 10 * n_params))
         n_generations = max(1, config.max_iterations // pop_size)
         n_elite = max(1, pop_size // 10)
         crossover_rate = 0.8
@@ -1162,6 +1164,8 @@ class _OptimizationWorker(QThread):
         all_candidates: List[OptimizationCandidate] = []
         best: Optional[OptimizationCandidate] = None
         total = pop_size * n_generations
+        stagnation_limit = max(3, n_generations // 4)  # 世代数の1/4（最低3世代）
+        no_improve_gens = 0
 
         def _decode(chromosome: np.ndarray) -> Dict[str, float]:
             params = {}
@@ -1233,6 +1237,7 @@ class _OptimizationWorker(QThread):
         self.progress.emit(pop_size, total, f"GA: 初期集団評価完了 ({pop_size}個体{warm_msg})")
 
         # 世代ループ
+        best_before_gen = best
         for gen in range(1, n_generations):
             if self._cancelled:
                 break
@@ -1294,16 +1299,31 @@ class _OptimizationWorker(QThread):
             population = new_population
             pop_candidates = new_candidates
 
+            # 停滞検出
+            if best is not None and best_before_gen is not None and best.objective_value < best_before_gen.objective_value:
+                no_improve_gens = 0
+            else:
+                no_improve_gens += 1
+            best_before_gen = best
+
             msg = f"GA: 世代 {gen+1}/{n_generations}"
             if best:
                 msg += f" | 最良: {best.objective_value:.6g}"
             self.progress.emit(min((gen + 1) * pop_size, total), total, msg)
 
+            # 早期終了（一定世代数改善なし）
+            if no_improve_gens >= stagnation_limit:
+                logger.info("GA: %d世代連続で改善なし — 早期終了", no_improve_gens)
+                break
+
+        actual_gens = gen + 1 if n_generations > 1 else 1
+        early_stopped = no_improve_gens >= stagnation_limit
         return OptimizationResult(
             best=best,
             all_candidates=all_candidates,
-            converged=True,
-            message=f"遺伝的アルゴリズム完了: {n_generations}世代×{pop_size}個体 = {len(all_candidates)}点評価" +
+            converged=early_stopped,
+            message=f"遺伝的アルゴリズム完了: {actual_gens}世代×{pop_size}個体 = {len(all_candidates)}点評価" +
+                    (f" (早期収束: {no_improve_gens}世代改善なし)" if early_stopped else "") +
                     (f", 制約満足 {len([c for c in all_candidates if c.is_feasible])}点"
                      if config.constraints or config.criteria else ""),
         )
@@ -1327,7 +1347,10 @@ class _OptimizationWorker(QThread):
         T_init = 1.0
         T_min = 1e-6
         cooling_rate = (T_min / T_init) ** (1.0 / max(1, total - 1))
-        step_size = 0.3  # 正規化空間での初期ステップサイズ
+        # 適応的ステップサイズ: パラメータ数に応じて調整
+        # 高次元では小さめのステップで探索効率を維持
+        step_size = min(0.3, 1.0 / max(1, n_params ** 0.5))
+        stagnation_limit = max(50, total // 4)  # 改善なし許容回数
 
         all_candidates: List[OptimizationCandidate] = []
         best: Optional[OptimizationCandidate] = None
@@ -1389,12 +1412,29 @@ class _OptimizationWorker(QThread):
 
         T = T_init
         n_accept = 0
+        no_improve_count = 0
+        # 適応ステップサイズ用: 直近の受容率をトラッキング
+        adapt_window = max(20, total // 20)
+        recent_accepts = 0
+        recent_trials = 0
 
         for i in range(1, total):
             if self._cancelled:
                 break
 
-            # 近傍生成
+            # 適応的ステップサイズ: 受容率に基づく調整
+            # 受容率が低すぎる→ステップを縮小、高すぎる→拡大
+            if recent_trials >= adapt_window:
+                ratio = recent_accepts / recent_trials
+                if ratio < 0.2:
+                    step_size *= 0.8  # ステップ縮小
+                elif ratio > 0.5:
+                    step_size *= 1.2  # ステップ拡大
+                step_size = max(0.01, min(0.5, step_size))
+                recent_accepts = 0
+                recent_trials = 0
+
+            # 近傍生成（温度比例 + 適応ステップ）
             perturbation = np.random.randn(n_params) * step_size * (T / T_init) ** 0.5
             new_x = np.clip(current_x + perturbation, 0.0, 1.0)
 
@@ -1415,15 +1455,20 @@ class _OptimizationWorker(QThread):
             delta = new_cost - current_cost
 
             # メトロポリス基準
+            recent_trials += 1
             if delta < 0 or (T > 0 and random.random() < math.exp(-delta / max(T, 1e-15))):
                 current_x = new_x
                 current_cost = new_cost
                 current_cand = cand
                 n_accept += 1
+                recent_accepts += 1
 
             if new_cost < best_cost and is_feasible:
                 best = cand
                 best_cost = new_cost
+                no_improve_count = 0
+            else:
+                no_improve_count += 1
 
             # 冷却
             T *= cooling_rate
@@ -1435,12 +1480,19 @@ class _OptimizationWorker(QThread):
                     msg += f" | 最良: {best.objective_value:.6g}"
                 self.progress.emit(i + 1, total, msg)
 
+            # 早期終了（一定回数改善なし）
+            if no_improve_count >= stagnation_limit:
+                logger.info("SA: %d回連続で改善なし — 早期終了", no_improve_count)
+                break
+
         accept_ratio = n_accept / max(1, len(all_candidates) - 1)
+        early_stopped = no_improve_count >= stagnation_limit
         return OptimizationResult(
             best=best,
             all_candidates=all_candidates,
-            converged=True,
+            converged=early_stopped,
             message=f"焼きなまし法完了: {len(all_candidates)}点評価, 受容率 {accept_ratio:.1%}" +
+                    (f" (早期収束: {no_improve_count}回改善なし)" if early_stopped else "") +
                     (f", 制約満足 {len([c for c in all_candidates if c.is_feasible])}点"
                      if config.constraints or config.criteria else ""),
         )

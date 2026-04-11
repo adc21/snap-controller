@@ -1330,3 +1330,166 @@ class TestConstraintPenalty:
         assert "15.0" in text
 
 
+# ===================================================================
+# GA/SA early stopping & adaptive behavior
+# ===================================================================
+
+
+class TestGAEarlyStopping:
+    """GA の早期収束検出テスト。"""
+
+    def test_ga_early_stop_on_flat_landscape(self):
+        """目的関数が定数の場合、改善がないため早期終了する。"""
+        call_count = 0
+
+        def evaluate(params):
+            nonlocal call_count
+            call_count += 1
+            return {"max_drift": 1.0}  # 常に同じ値
+
+        config = OptimizationConfig(
+            objective_key="max_drift",
+            parameters=[ParameterRange(key="x", min_val=0, max_val=1, step=0)],
+            method="ga",
+            max_iterations=500,  # 多めに設定
+        )
+        worker = _OptimizationWorker(config, evaluate)
+        result = worker._run_ga_search(config)
+
+        # 早期終了で全探索より少ない評価数になるはず
+        assert len(result.all_candidates) < 500
+        assert result.converged is True
+        assert "早期収束" in result.message
+
+    def test_ga_no_early_stop_on_improving_landscape(self):
+        """改善が続く場合は早期終了しない。"""
+        iter_count = [0]
+
+        def evaluate(params):
+            iter_count[0] += 1
+            # 最適解 x=0.5 に向かって常に改善の余地がある
+            return {"max_drift": (params["x"] - 0.5) ** 2}
+
+        config = OptimizationConfig(
+            objective_key="max_drift",
+            parameters=[ParameterRange(key="x", min_val=0, max_val=1, step=0)],
+            method="ga",
+            max_iterations=100,
+        )
+        worker = _OptimizationWorker(config, evaluate)
+        result = worker._run_ga_search(config)
+
+        assert result.best is not None
+        assert result.best.objective_value < 0.05
+
+    def test_ga_adaptive_population_size(self):
+        """高次元問題では集団サイズが大きくなる。"""
+        # 1パラメータ
+        config1 = OptimizationConfig(
+            objective_key="max_drift",
+            parameters=[ParameterRange(key="x", min_val=0, max_val=1, step=0)],
+            method="ga",
+            max_iterations=200,
+        )
+        # 5パラメータ
+        config5 = OptimizationConfig(
+            objective_key="max_drift",
+            parameters=[
+                ParameterRange(key=f"x{i}", min_val=0, max_val=1, step=0)
+                for i in range(5)
+            ],
+            method="ga",
+            max_iterations=200,
+        )
+        # n_params=5 → min(100, 10*5)=50 vs n_params=1 → min(100, 10)=10 (but base_pop=max(20,...))
+        # 5パラメータの方が集団サイズが大きくなるはず
+        def evaluate(params):
+            return {"max_drift": sum(v ** 2 for v in params.values())}
+
+        worker1 = _OptimizationWorker(config1, evaluate)
+        worker5 = _OptimizationWorker(config5, evaluate)
+
+        result1 = worker1._run_ga_search(config1)
+        result5 = worker5._run_ga_search(config5)
+
+        # 5パラメータの方が個体評価数が多い（集団が大きい）
+        assert len(result5.all_candidates) >= len(result1.all_candidates)
+
+
+class TestSAEarlyStopping:
+    """SA の早期収束・適応ステップサイズテスト。"""
+
+    def test_sa_early_stop_on_flat_landscape(self):
+        """目的関数が定数の場合、改善がないため早期終了する。"""
+        def evaluate(params):
+            return {"max_drift": 1.0}
+
+        config = OptimizationConfig(
+            objective_key="max_drift",
+            parameters=[ParameterRange(key="x", min_val=0, max_val=1, step=0)],
+            method="sa",
+            max_iterations=500,
+        )
+        worker = _OptimizationWorker(config, evaluate)
+        result = worker._run_sa_search(config)
+
+        assert len(result.all_candidates) < 500
+        assert result.converged is True
+        assert "早期収束" in result.message
+
+    def test_sa_adaptive_step_reduces_for_high_dim(self):
+        """高次元ではステップサイズが小さくなる（収束がより安定）。"""
+        # 内部実装では step_size = min(0.3, 1/sqrt(n_params))
+        # n_params=1 → step=0.3 (capped), n_params=16 → step=0.25
+        # テストは間接的: 高次元でも最小値に近づくか
+        def evaluate(params):
+            return {"max_drift": sum((v - 0.5) ** 2 for v in params.values())}
+
+        config = OptimizationConfig(
+            objective_key="max_drift",
+            parameters=[
+                ParameterRange(key=f"x{i}", min_val=0, max_val=1, step=0)
+                for i in range(4)
+            ],
+            method="sa",
+            max_iterations=300,
+        )
+        worker = _OptimizationWorker(config, evaluate)
+        result = worker._run_sa_search(config)
+
+        assert result.best is not None
+        assert result.best.objective_value < 0.2  # 合理的な範囲に収束
+
+    def test_sa_acceptance_ratio_still_reported(self):
+        """適応ステップ追加後も受容率がメッセージに含まれる。"""
+        def evaluate(params):
+            return {"max_drift": params["x"] ** 2}
+
+        config = OptimizationConfig(
+            objective_key="max_drift",
+            parameters=[ParameterRange(key="x", min_val=0, max_val=1, step=0)],
+            method="sa",
+            max_iterations=100,
+        )
+        worker = _OptimizationWorker(config, evaluate)
+        result = worker._run_sa_search(config)
+        assert "受容率" in result.message
+
+    def test_sa_early_stop_message_includes_count(self):
+        """早期終了メッセージに改善なし回数が含まれる。"""
+        def evaluate(params):
+            return {"max_drift": 5.0}
+
+        config = OptimizationConfig(
+            objective_key="max_drift",
+            parameters=[ParameterRange(key="x", min_val=0, max_val=1, step=0)],
+            method="sa",
+            max_iterations=500,
+        )
+        worker = _OptimizationWorker(config, evaluate)
+        result = worker._run_sa_search(config)
+
+        if result.converged:
+            assert "改善なし" in result.message
+
+
