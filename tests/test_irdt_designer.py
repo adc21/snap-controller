@@ -14,8 +14,12 @@ from app.services.irdt_designer import (
     compute_irdt_performance,
     design_irdt_placement,
     design_irdt_sdof,
+    design_irdt_sdof_extended,
     fixed_point_optimal,
+    tvmd_optimal_damped,
     response_reduction_ratio,
+    sensitivity_analysis,
+    mdof_multimode_check,
 )
 
 
@@ -247,3 +251,152 @@ class TestComputeIrdtPerformance:
         assert perf["reduction_pct"] > 0
         assert perf["eta"] < 1.0
         assert perf["peak_tvmd"] < perf["peak_bare"]
+
+
+class TestTvmdOptimalDamped:
+    def test_zero_damping_equals_den_hartog(self):
+        """ζ_s=0 のとき Den Hartog と一致。"""
+        for mu in [0.02, 0.05, 0.10]:
+            f_dh, z_dh = fixed_point_optimal(mu)
+            f_ext, z_ext = tvmd_optimal_damped(mu, 0.0)
+            assert f_ext == pytest.approx(f_dh, rel=1e-10)
+            assert z_ext == pytest.approx(z_dh, rel=1e-10)
+
+    def test_damped_shifts_frequency_lower(self):
+        """主構造に減衰があると f_opt が低下する。"""
+        f_dh, _ = fixed_point_optimal(0.05)
+        f_ext, _ = tvmd_optimal_damped(0.05, 0.03)
+        assert f_ext < f_dh
+
+    def test_damped_increases_damping_ratio(self):
+        """主構造に減衰があると ζ_opt が増加する。"""
+        _, z_dh = fixed_point_optimal(0.05)
+        _, z_ext = tvmd_optimal_damped(0.05, 0.03)
+        assert z_ext > z_dh
+
+    def test_negative_mass_ratio_raises(self):
+        with pytest.raises(ValueError):
+            tvmd_optimal_damped(-0.1, 0.02)
+
+    def test_negative_damping_raises(self):
+        with pytest.raises(ValueError):
+            tvmd_optimal_damped(0.05, -0.01)
+
+
+class TestDesignIrdtSdofExtended:
+    def test_undamped_matches_basic(self):
+        """ζ_s=0 のとき基本設計と一致。"""
+        p_basic = design_irdt_sdof(1e6, 1.0, 0.05)
+        p_ext = design_irdt_sdof_extended(1e6, 1.0, 0.05, 0.0)
+        assert p_ext.frequency_ratio == pytest.approx(p_basic.frequency_ratio)
+        assert p_ext.damping_ratio == pytest.approx(p_basic.damping_ratio)
+        assert p_ext.inertance == pytest.approx(p_basic.inertance)
+
+    def test_damped_different_from_basic(self):
+        """ζ_s>0 のとき基本設計と異なる。"""
+        p_basic = design_irdt_sdof(1e6, 1.0, 0.05)
+        p_ext = design_irdt_sdof_extended(1e6, 1.0, 0.05, 0.03)
+        assert p_ext.frequency_ratio != pytest.approx(p_basic.frequency_ratio)
+        assert p_ext.damping_ratio != pytest.approx(p_basic.damping_ratio)
+
+    def test_damped_still_reduces_response(self):
+        """拡張理論でも制振効果がある。"""
+        p = design_irdt_sdof_extended(1e6, 1.0, 0.05, 0.03)
+        perf = compute_irdt_performance(p, damping_ratio_primary=0.03)
+        assert perf["eta"] < 1.0
+        assert perf["reduction_pct"] > 0
+
+
+class TestSensitivityAnalysis:
+    def test_returns_expected_keys(self):
+        result = sensitivity_analysis(1e6, 1.0, 0.05, 0.02)
+        assert "mu_values" in result
+        assert "eta_values" in result
+        assert "reduction_pct_values" in result
+        assert "base_index" in result
+
+    def test_correct_number_of_points(self):
+        result = sensitivity_analysis(1e6, 1.0, 0.05, 0.02, n_steps=5)
+        assert len(result["mu_values"]) == 11  # 2*5+1
+
+    def test_base_index_is_center(self):
+        result = sensitivity_analysis(1e6, 1.0, 0.05, 0.02, n_steps=5)
+        assert result["base_index"] == 5
+
+    def test_mu_range_correct(self):
+        result = sensitivity_analysis(1e6, 1.0, 0.05, 0.02, variation_pct=20.0)
+        assert result["mu_values"][0] == pytest.approx(0.04, rel=1e-6)
+        assert result["mu_values"][-1] == pytest.approx(0.06, rel=1e-6)
+
+    def test_all_eta_less_than_one(self):
+        result = sensitivity_analysis(1e6, 1.0, 0.05, 0.02)
+        for eta in result["eta_values"]:
+            assert 0 < eta < 1.0
+
+
+class TestMdofMultimodeCheck:
+    def test_three_modes(self):
+        masses = [1e6, 1e6, 1e6]
+        mode_shapes = {
+            1: [0.33, 0.66, 1.00],
+            2: [0.66, 0.66, -0.66],
+            3: [1.00, -0.66, 0.33],
+        }
+        periods = {1: 1.0, 2: 0.4, 3: 0.25}
+
+        results = mdof_multimode_check(
+            masses=masses,
+            mode_shapes=mode_shapes,
+            periods=periods,
+            target_mode=1,
+            total_mass_ratio=0.05,
+        )
+        assert len(results) == 3
+
+    def test_target_mode_has_best_eta(self):
+        """対象モードが最も低い η を持つ。"""
+        masses = [1e6, 1e6, 1e6]
+        mode_shapes = {
+            1: [0.33, 0.66, 1.00],
+            2: [0.66, 0.66, -0.66],
+        }
+        periods = {1: 1.0, 2: 0.4}
+
+        results = mdof_multimode_check(
+            masses=masses,
+            mode_shapes=mode_shapes,
+            periods=periods,
+            target_mode=1,
+            total_mass_ratio=0.05,
+        )
+        target_result = [r for r in results if r.is_target][0]
+        non_target = [r for r in results if not r.is_target]
+
+        assert target_result.eta < 1.0
+        for r in non_target:
+            assert target_result.eta <= r.eta
+
+    def test_is_target_flag(self):
+        masses = [1e6, 1e6]
+        mode_shapes = {1: [0.5, 1.0], 2: [1.0, -0.5]}
+        periods = {1: 0.8, 2: 0.3}
+
+        results = mdof_multimode_check(
+            masses=masses,
+            mode_shapes=mode_shapes,
+            periods=periods,
+            target_mode=1,
+            total_mass_ratio=0.03,
+        )
+        target_flags = [r.is_target for r in results]
+        assert sum(target_flags) == 1
+
+    def test_invalid_target_mode_raises(self):
+        with pytest.raises(ValueError):
+            mdof_multimode_check(
+                masses=[1e6],
+                mode_shapes={1: [1.0]},
+                periods={1: 1.0},
+                target_mode=99,
+                total_mass_ratio=0.05,
+            )

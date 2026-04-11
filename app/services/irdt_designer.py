@@ -172,6 +172,77 @@ def fixed_point_optimal(mass_ratio: float) -> tuple[float, float]:
     return f_opt, zeta_opt
 
 
+def tvmd_optimal_damped(
+    mass_ratio: float,
+    damping_ratio_primary: float = 0.0,
+) -> tuple[float, float]:
+    """
+    減衰を有する主構造に対する TVMD 最適同調パラメータ（拡張定点理論）。
+
+    Den Hartog の定点理論は無減衰主構造を仮定するが、実構造には固有減衰がある。
+    Asami & Nishihara (2002) および Ikago et al. (2012) の知見に基づき、
+    主構造減衰比 ζ_s を考慮した補正式を適用する。
+
+    補正式（近似）:
+        f_opt  ≈ f_DH × (1 − ζ_s × √(μ / (1 + μ)))
+        ζ_opt  ≈ ζ_DH + ζ_s / (2√(1 + μ))
+
+    ここで f_DH, ζ_DH は Den Hartog の無減衰最適値。
+
+    Parameters
+    ----------
+    mass_ratio : float
+        μ = m_d / M_s (> 0)
+    damping_ratio_primary : float
+        ζ_s = C / (2Mω_s)  主構造の減衰比（0 のとき Den Hartog と一致）
+
+    Returns
+    -------
+    (f_opt, zeta_opt)
+
+    References
+    ----------
+    Asami T, Nishihara O (2002) "Closed-form exact solution to H∞
+    optimization of dynamic vibration absorbers", JSME Int J, Ser C.
+    Ikago K, Saito K, Inoue N (2012) "Seismic control of SDOF structure
+    using tuned viscous mass damper", EESD, 41(3): 453-474.
+    """
+    if mass_ratio <= 0:
+        raise ValueError(f"mass_ratio must be positive, got {mass_ratio}")
+    if damping_ratio_primary < 0:
+        raise ValueError("damping_ratio_primary must be non-negative")
+
+    f_dh, z_dh = fixed_point_optimal(mass_ratio)
+
+    if damping_ratio_primary == 0.0:
+        return f_dh, z_dh
+
+    zs = damping_ratio_primary
+    mu = mass_ratio
+
+    # 周波数比の補正: 主構造に減衰があると最適同調は若干低周波側にシフト
+    f_opt = f_dh * (1.0 - zs * math.sqrt(mu / (1.0 + mu)))
+
+    # 減衰比の補正: 主構造減衰が加わる分、TVMD に必要な減衰比が増加
+    z_opt = z_dh + zs / (2.0 * math.sqrt(1.0 + mu))
+
+    return f_opt, z_opt
+
+
+@dataclass
+class MdofModePerformance:
+    """多モード性能チェック結果。"""
+
+    mode: int
+    period: float
+    modal_mass: float
+    effective_mass_ratio: float
+    eta: float  # 応答低減率
+    peak_bare: float
+    peak_controlled: float
+    is_target: bool = False
+
+
 def design_irdt_sdof(
     primary_mass: float,
     primary_period: float,
@@ -598,16 +669,277 @@ def compute_irdt_performance(
     }
 
 
+# ---------------------------------------------------------------------------
+# 拡張定点理論による設計 (減衰主構造対応)
+# ---------------------------------------------------------------------------
+
+
+def design_irdt_sdof_extended(
+    primary_mass: float,
+    primary_period: float,
+    mass_ratio: float,
+    damping_ratio_primary: float = 0.0,
+    note: str = "",
+) -> IrdtParameters:
+    """
+    減衰を有する主構造に対する iRDT 最適パラメータを算出します。
+
+    damping_ratio_primary > 0 の場合、tvmd_optimal_damped() による
+    補正式を適用します。damping_ratio_primary = 0 のとき
+    design_irdt_sdof() と同じ結果を返します。
+
+    Parameters
+    ----------
+    primary_mass : float
+        主構造の等価質量 M_s [kg]
+    primary_period : float
+        主構造の固有周期 T_s [s]
+    mass_ratio : float
+        質量比 μ = m_d / M_s
+    damping_ratio_primary : float
+        主構造の減衰比 ζ_s
+    note : str
+        備考
+    """
+    if primary_mass <= 0:
+        raise ValueError("primary_mass must be positive")
+    if primary_period <= 0:
+        raise ValueError("primary_period must be positive")
+
+    omega_s = 2.0 * math.pi / primary_period
+
+    if damping_ratio_primary > 0:
+        f_opt, zeta_opt = tvmd_optimal_damped(mass_ratio, damping_ratio_primary)
+    else:
+        f_opt, zeta_opt = fixed_point_optimal(mass_ratio)
+
+    m_d = mass_ratio * primary_mass
+    omega_d = f_opt * omega_s
+    k_b = m_d * omega_d ** 2
+    c_d = 2.0 * zeta_opt * m_d * omega_d
+
+    return IrdtParameters(
+        mass_ratio=mass_ratio,
+        inertance=m_d,
+        damping=c_d,
+        support_stiffness=k_b,
+        frequency_ratio=f_opt,
+        damping_ratio=zeta_opt,
+        target_omega=omega_s,
+        target_mass=primary_mass,
+        target_period=primary_period,
+        note=note,
+    )
+
+
+# ---------------------------------------------------------------------------
+# 感度解析 (sensitivity analysis)
+# ---------------------------------------------------------------------------
+
+
+def sensitivity_analysis(
+    primary_mass: float,
+    primary_period: float,
+    base_mass_ratio: float,
+    damping_ratio_primary: float = 0.02,
+    variation_pct: float = 20.0,
+    n_steps: int = 5,
+) -> Dict[str, List]:
+    """
+    質量比 μ を ±variation_pct% 変動させたときの応答低減率の変化を計算する。
+
+    Parameters
+    ----------
+    primary_mass : float
+        主構造の等価質量 M_s [kg]
+    primary_period : float
+        主構造の固有周期 T_s [s]
+    base_mass_ratio : float
+        基準質量比 μ
+    damping_ratio_primary : float
+        主構造の減衰比 ζ_s
+    variation_pct : float
+        変動幅 [%]（デフォルト ±20%）
+    n_steps : int
+        片側ステップ数（全 2*n_steps+1 点）
+
+    Returns
+    -------
+    dict with keys:
+        - mu_values: List[float] — 質量比の値
+        - eta_values: List[float] — 応答低減率
+        - peak_bare_values: List[float] — 制振なしピーク
+        - peak_tvmd_values: List[float] — 制振ありピーク
+        - reduction_pct_values: List[float] — 応答低減率 [%]
+        - base_index: int — 基準値のインデックス
+    """
+    factor_lo = 1.0 - variation_pct / 100.0
+    factor_hi = 1.0 + variation_pct / 100.0
+
+    mu_values = []
+    eta_values = []
+    peak_bare_values = []
+    peak_tvmd_values = []
+    reduction_pct_values = []
+
+    mu_range = np.linspace(
+        base_mass_ratio * factor_lo,
+        base_mass_ratio * factor_hi,
+        2 * n_steps + 1,
+    )
+
+    for mu in mu_range:
+        if mu <= 0:
+            continue
+        params = design_irdt_sdof_extended(
+            primary_mass=primary_mass,
+            primary_period=primary_period,
+            mass_ratio=float(mu),
+            damping_ratio_primary=damping_ratio_primary,
+        )
+        perf = compute_irdt_performance(params, damping_ratio_primary)
+        mu_values.append(float(mu))
+        eta_values.append(perf["eta"])
+        peak_bare_values.append(perf["peak_bare"])
+        peak_tvmd_values.append(perf["peak_tvmd"])
+        reduction_pct_values.append(perf["reduction_pct"])
+
+    base_index = n_steps  # 中央が基準値
+
+    return {
+        "mu_values": mu_values,
+        "eta_values": eta_values,
+        "peak_bare_values": peak_bare_values,
+        "peak_tvmd_values": peak_tvmd_values,
+        "reduction_pct_values": reduction_pct_values,
+        "base_index": base_index,
+    }
+
+
+# ---------------------------------------------------------------------------
+# MDOF 多モード性能チェック
+# ---------------------------------------------------------------------------
+
+
+def mdof_multimode_check(
+    masses: Sequence[float],
+    mode_shapes: Dict[int, Sequence[float]],
+    periods: Dict[int, float],
+    target_mode: int,
+    total_mass_ratio: float,
+    damping_ratio_primary: float = 0.02,
+    distribution: str = "interstory",
+) -> List[MdofModePerformance]:
+    """
+    TVMD を配置した際の多モード性能チェック。
+
+    対象モード（target_mode）に対して最適設計された TVMD が、
+    他のモードに対してどの程度の効果を持つかを評価する。
+
+    Parameters
+    ----------
+    masses : Sequence[float]
+        各層の質量 [kg]
+    mode_shapes : Dict[int, Sequence[float]]
+        各モードのモード形 {mode_no: [φ_1, φ_2, ...]}
+    periods : Dict[int, float]
+        各モードの固有周期 {mode_no: T}
+    target_mode : int
+        設計対象モード番号
+    total_mass_ratio : float
+        総質量比 μ_tot
+    damping_ratio_primary : float
+        主構造の減衰比 ζ_s
+    distribution : str
+        配分戦略
+
+    Returns
+    -------
+    List[MdofModePerformance]
+        各モードの性能チェック結果（target_mode を含む）
+    """
+    if target_mode not in mode_shapes or target_mode not in periods:
+        raise ValueError(f"target_mode {target_mode} not found in mode data")
+
+    total_mass = sum(masses)
+    total_inertance = total_mass_ratio * total_mass
+
+    # 対象モードで TVMD を最適設計
+    target_shape = _normalize_mode_shape(mode_shapes[target_mode])
+    target_modal_mass = _modal_mass(masses, target_shape)
+    target_period = periods[target_mode]
+    mu_modal_target = total_inertance / target_modal_mass if target_modal_mass > 0 else total_mass_ratio
+    f_opt, z_opt = tvmd_optimal_damped(mu_modal_target, damping_ratio_primary)
+
+    results: List[MdofModePerformance] = []
+
+    for mode_no in sorted(mode_shapes.keys()):
+        if mode_no not in periods:
+            continue
+
+        shape = _normalize_mode_shape(mode_shapes[mode_no])
+        modal_mass = _modal_mass(masses, shape)
+        period = periods[mode_no]
+
+        # このモードに対する有効質量比
+        # TVMD の同調は target_mode で設計されているが、
+        # 各モードに対する等価的な効果を FRF で評価
+        mu_eff = total_inertance / modal_mass if modal_mass > 0 else 0.0
+
+        # 対象モードで最適化された f_opt, z_opt をそのまま使い、
+        # 各モードの応答を評価（非対象モードでは同調が外れるため効果が低い）
+        omega_j = 2.0 * math.pi / period
+        omega_target = 2.0 * math.pi / target_period
+
+        # 周波数比を対象モード基準から各モード基準に変換
+        # f_opt は ω_d / ω_target で設計されているので、
+        # モード j に対する実効的な周波数比は f_eff = (f_opt * ω_target) / ω_j
+        f_eff = f_opt * omega_target / omega_j
+
+        _, H_bare = compute_frf_sdof(
+            damping_ratio=damping_ratio_primary, n_points=2000,
+        )
+        _, H_ctrl = compute_frf_sdof_tvmd(
+            mass_ratio=mu_eff,
+            freq_ratio=f_eff,
+            damping_ratio_tvmd=z_opt,
+            damping_ratio_primary=damping_ratio_primary,
+            n_points=2000,
+        )
+
+        peak_bare = float(np.max(H_bare))
+        peak_ctrl = float(np.max(H_ctrl))
+        eta = peak_ctrl / peak_bare if peak_bare > 0 else 1.0
+
+        results.append(MdofModePerformance(
+            mode=mode_no,
+            period=period,
+            modal_mass=modal_mass,
+            effective_mass_ratio=mu_eff,
+            eta=eta,
+            peak_bare=peak_bare,
+            peak_controlled=peak_ctrl,
+            is_target=(mode_no == target_mode),
+        ))
+
+    return results
+
+
 __all__ = [
     "IrdtParameters",
     "IrdtFloorAssignment",
     "IrdtPlacementPlan",
+    "MdofModePerformance",
     "fixed_point_optimal",
+    "tvmd_optimal_damped",
     "design_irdt_sdof",
+    "design_irdt_sdof_extended",
     "design_irdt_placement",
     "design_from_period_reader",
     "compute_frf_sdof_tvmd",
     "compute_frf_sdof",
     "response_reduction_ratio",
     "compute_irdt_performance",
+    "sensitivity_analysis",
+    "mdof_multimode_check",
 ]

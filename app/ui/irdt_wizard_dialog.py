@@ -40,10 +40,13 @@ from matplotlib.figure import Figure
 from app.services.irdt_designer import (
     IrdtPlacementPlan,
     fixed_point_optimal,
+    tvmd_optimal_damped,
     design_irdt_placement,
+    design_irdt_sdof_extended,
     compute_frf_sdof,
     compute_frf_sdof_tvmd,
     compute_irdt_performance,
+    sensitivity_analysis,
 )
 from app.services.damper_injector import DamperInjector, DamperInsertSpec
 from controller.binary.period_xbn_reader import PeriodXbnReader
@@ -200,8 +203,47 @@ class IrdtWizardDialog(QDialog):
         row.addWidget(self._mu_spin)
         layout.addLayout(row)
 
+        # 設計理論の選択
+        theory_group = QGroupBox("設計理論")
+        theory_layout = QVBoxLayout(theory_group)
+        self._theory_group = QButtonGroup(page)
+
+        self._rb_den_hartog = QRadioButton(
+            "Den Hartog 定点理論（古典、無減衰主構造仮定）"
+        )
+        self._rb_den_hartog.setChecked(True)
+        self._theory_group.addButton(self._rb_den_hartog, 0)
+        theory_layout.addWidget(self._rb_den_hartog)
+
+        self._rb_extended = QRadioButton(
+            "拡張定点理論（減衰主構造補正: Asami-Nishihara / Ikago）"
+        )
+        self._theory_group.addButton(self._rb_extended, 1)
+        theory_layout.addWidget(self._rb_extended)
+
+        # 主構造減衰比入力（拡張理論用）
+        zs_row = QHBoxLayout()
+        zs_row.addWidget(QLabel("  主構造減衰比 ζ_s:"))
+        self._design_zs_spin = QDoubleSpinBox()
+        self._design_zs_spin.setRange(0.001, 0.200)
+        self._design_zs_spin.setSingleStep(0.005)
+        self._design_zs_spin.setDecimals(3)
+        self._design_zs_spin.setValue(0.020)
+        self._design_zs_spin.setToolTip(
+            "RC造: 0.02〜0.05, S造: 0.01〜0.02"
+        )
+        self._design_zs_spin.valueChanged.connect(self._update_optimal_display)
+        zs_row.addWidget(self._design_zs_spin)
+        zs_row.addStretch()
+        theory_layout.addLayout(zs_row)
+
+        self._theory_group.buttonClicked.connect(
+            lambda _: self._update_optimal_display()
+        )
+        layout.addWidget(theory_group)
+
         # 最適値表示
-        opt_group = QGroupBox("Den Hartog 定点理論 — 最適値")
+        opt_group = QGroupBox("最適同調パラメータ")
         opt_layout = QVBoxLayout(opt_group)
         self._opt_label = QLabel()
         self._opt_label.setStyleSheet("font-family: monospace; font-size: 12px;")
@@ -304,6 +346,18 @@ class IrdtWizardDialog(QDialog):
         self._summary_text.setMaximumHeight(120)
         self._summary_text.setStyleSheet("font-family: monospace; font-size: 11px;")
         layout.addWidget(self._summary_text)
+
+        # --- 感度解析 (Tornado Chart) ---
+        self._sensitivity_group = QGroupBox(
+            "感度解析 — 質量比 μ を ±20% 変動"
+        )
+        sens_layout = QVBoxLayout(self._sensitivity_group)
+        self._tornado_figure = Figure(figsize=(6, 2.0))
+        self._tornado_canvas = FigureCanvas(self._tornado_figure)
+        self._tornado_canvas.setMinimumHeight(140)
+        self._tornado_canvas.setMaximumHeight(180)
+        sens_layout.addWidget(self._tornado_canvas)
+        layout.addWidget(self._sensitivity_group)
 
         self._btn_apply = QPushButton("設計を確定して適用")
         self._btn_apply.setStyleSheet(
@@ -562,14 +616,35 @@ class IrdtWizardDialog(QDialog):
         self._mu_slider.blockSignals(False)
         self._update_optimal_display()
 
+    def _use_extended_theory(self) -> bool:
+        return self._theory_group.checkedId() == 1
+
+    def _design_damping_ratio(self) -> float:
+        if self._use_extended_theory():
+            return self._design_zs_spin.value()
+        return 0.0
+
     def _update_optimal_display(self) -> None:
         mu = self._mu_spin.value()
-        f_opt, zeta_opt = fixed_point_optimal(mu)
-        self._opt_label.setText(
-            f"質量比     μ     = {mu:.4f}\n"
-            f"最適周波数比 f_opt = {f_opt:.6f}\n"
-            f"最適減衰比   ζ_opt = {zeta_opt:.6f}"
-        )
+        f_dh, z_dh = fixed_point_optimal(mu)
+
+        if self._use_extended_theory():
+            zs = self._design_zs_spin.value()
+            f_ext, z_ext = tvmd_optimal_damped(mu, zs)
+            self._opt_label.setText(
+                f"質量比     μ     = {mu:.4f}\n"
+                f"主構造減衰比 ζ_s  = {zs:.3f}\n"
+                f"─── 拡張定点理論（減衰補正） ───\n"
+                f"最適周波数比 f_opt = {f_ext:.6f}  (古典: {f_dh:.6f})\n"
+                f"最適減衰比   ζ_opt = {z_ext:.6f}  (古典: {z_dh:.6f})"
+            )
+        else:
+            self._opt_label.setText(
+                f"質量比     μ     = {mu:.4f}\n"
+                f"─── Den Hartog 定点理論 ───\n"
+                f"最適周波数比 f_opt = {f_dh:.6f}\n"
+                f"最適減衰比   ζ_opt = {z_dh:.6f}"
+            )
 
     # -- Selected mode / input helpers --
 
@@ -630,6 +705,21 @@ class IrdtWizardDialog(QDialog):
             target_mode=mode_no,
             distribution=distribution,
         )
+
+        # 拡張理論が選択されている場合、基準パラメータを補正値で置換
+        if self._use_extended_theory() and self._placement_plan.base_parameters is not None:
+            modal_mass = self._placement_plan.modal_mass
+            zs = self._design_damping_ratio()
+            mu_modal = self._placement_plan.base_parameters.mass_ratio
+            extended_params = design_irdt_sdof_extended(
+                primary_mass=modal_mass,
+                primary_period=period,
+                mass_ratio=mu_modal,
+                damping_ratio_primary=zs,
+                note="拡張定点理論（減衰補正）による基準値",
+            )
+            self._placement_plan.base_parameters = extended_params
+
         self._populate_result()
 
     def _populate_result(self) -> None:
@@ -695,6 +785,70 @@ class IrdtWizardDialog(QDialog):
         )
 
         self._update_frf_chart(zs)
+        self._update_tornado_chart(zs)
+
+    def _update_tornado_chart(self, damping_ratio_primary: float = 0.02) -> None:
+        """感度解析トルネードチャートを更新する。"""
+        plan = self._placement_plan
+        if plan is None or plan.base_parameters is None:
+            return
+
+        params = plan.base_parameters
+        mu = params.mass_ratio
+
+        try:
+            result = sensitivity_analysis(
+                primary_mass=params.target_mass,
+                primary_period=params.target_period,
+                base_mass_ratio=mu,
+                damping_ratio_primary=damping_ratio_primary,
+                variation_pct=20.0,
+                n_steps=5,
+            )
+        except Exception:
+            return
+
+        fig = self._tornado_figure
+        fig.clear()
+        ax = fig.add_subplot(111)
+
+        mu_vals = result["mu_values"]
+        red_vals = result["reduction_pct_values"]
+        base_idx = result["base_index"]
+
+        if not mu_vals:
+            return
+
+        base_red = red_vals[base_idx] if base_idx < len(red_vals) else red_vals[len(red_vals) // 2]
+
+        colors = []
+        for i, r in enumerate(red_vals):
+            if i == base_idx:
+                colors.append("#1565c0")
+            elif r >= base_red:
+                colors.append("#2e7d32")
+            else:
+                colors.append("#c62828")
+
+        bars = ax.barh(
+            range(len(mu_vals)),
+            red_vals,
+            color=colors,
+            height=0.7,
+            edgecolor="none",
+        )
+
+        ax.set_yticks(range(len(mu_vals)))
+        ax.set_yticklabels([f"{m:.4f}" for m in mu_vals], fontsize=7)
+        ax.set_xlabel("応答低減率 [%]", fontsize=8)
+        ax.set_ylabel("質量比 μ", fontsize=8)
+        ax.set_title("感度解析: μ ±20% 変動時の応答低減率", fontsize=9)
+        ax.axvline(base_red, color="#1565c0", linestyle="--", linewidth=0.8, alpha=0.6)
+        ax.tick_params(labelsize=7)
+        ax.grid(True, axis="x", alpha=0.3)
+
+        fig.tight_layout()
+        self._tornado_canvas.draw()
 
     def _update_frf_chart(self, damping_ratio_primary: float = 0.02) -> None:
         """FRF チャートを更新する。"""
