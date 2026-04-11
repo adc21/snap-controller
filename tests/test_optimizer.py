@@ -678,3 +678,195 @@ class TestComputeSensitivity:
         assert len(result.entries) == 1
         entry = result.entries[0]
         assert entry.sensitivity_index > 0
+
+
+# ===========================================================================
+# JSON serialization tests (F-3)
+# ===========================================================================
+
+class TestParameterRangeSerialization:
+    """ParameterRange の to_dict / from_dict テスト。"""
+
+    def test_round_trip(self):
+        pr = ParameterRange(
+            key="Cd", label="減衰係数", min_val=100, max_val=2000, step=100,
+        )
+        d = pr.to_dict()
+        restored = ParameterRange.from_dict(d)
+        assert restored.key == "Cd"
+        assert restored.label == "減衰係数"
+        assert restored.min_val == 100
+        assert restored.max_val == 2000
+        assert restored.step == 100
+        assert restored.is_integer is False
+
+    def test_integer_param(self):
+        pr = ParameterRange(key="n", label="本数", min_val=1, max_val=10, step=1, is_integer=True)
+        d = pr.to_dict()
+        restored = ParameterRange.from_dict(d)
+        assert restored.is_integer is True
+
+
+class TestOptimizationConfigSerialization:
+    """OptimizationConfig の to_dict / from_dict テスト。"""
+
+    def test_round_trip(self):
+        config = OptimizationConfig(
+            objective_key="max_drift",
+            objective_label="最大層間変形角",
+            parameters=[
+                ParameterRange(key="Cd", label="減衰係数", min_val=100, max_val=1000, step=100),
+            ],
+            constraints={"max_acc": 5.0},
+            method="bayesian",
+            max_iterations=50,
+            damper_type="オイルダンパー",
+            objective_weights={"max_drift": 0.7, "max_acc": 0.3},
+        )
+        d = config.to_dict()
+        restored = OptimizationConfig.from_dict(d)
+        assert restored.objective_key == "max_drift"
+        assert restored.method == "bayesian"
+        assert restored.max_iterations == 50
+        assert len(restored.parameters) == 1
+        assert restored.parameters[0].key == "Cd"
+        assert restored.objective_weights == {"max_drift": 0.7, "max_acc": 0.3}
+        assert restored.constraints == {"max_acc": 5.0}
+
+
+class TestOptimizationCandidateSerialization:
+    """OptimizationCandidate の to_dict / from_dict テスト。"""
+
+    def test_round_trip(self):
+        cand = OptimizationCandidate(
+            params={"Cd": 500, "alpha": 0.4},
+            objective_value=0.00321,
+            response_values={"max_drift": 0.00321, "max_acc": 3.2},
+            is_feasible=True,
+            iteration=5,
+        )
+        d = cand.to_dict()
+        restored = OptimizationCandidate.from_dict(d)
+        assert restored.params == {"Cd": 500, "alpha": 0.4}
+        assert abs(restored.objective_value - 0.00321) < 1e-10
+        assert restored.response_values == {"max_drift": 0.00321, "max_acc": 3.2}
+        assert restored.is_feasible is True
+        assert restored.iteration == 5
+
+    def test_infeasible(self):
+        cand = OptimizationCandidate(is_feasible=False, objective_value=float("inf"))
+        d = cand.to_dict()
+        restored = OptimizationCandidate.from_dict(d)
+        assert restored.is_feasible is False
+
+
+class TestOptimizationResultSerialization:
+    """OptimizationResult の to_dict / from_dict / save_json / load_json テスト。"""
+
+    def _make_result(self):
+        config = OptimizationConfig(
+            objective_key="max_drift",
+            objective_label="最大層間変形角",
+            parameters=[
+                ParameterRange(key="Cd", label="減衰係数", min_val=100, max_val=1000, step=100),
+            ],
+            method="grid",
+            objective_weights={"max_drift": 0.6, "max_acc": 0.4},
+        )
+        c1 = OptimizationCandidate(
+            params={"Cd": 500}, objective_value=0.003,
+            response_values={"max_drift": 0.003, "max_acc": 2.5},
+            is_feasible=True, iteration=1,
+        )
+        c2 = OptimizationCandidate(
+            params={"Cd": 200}, objective_value=0.008,
+            response_values={"max_drift": 0.008, "max_acc": 1.8},
+            is_feasible=True, iteration=2,
+        )
+        c3 = OptimizationCandidate(
+            params={"Cd": 100}, objective_value=0.015,
+            response_values={"max_drift": 0.015, "max_acc": 6.0},
+            is_feasible=False, iteration=3,
+        )
+        return OptimizationResult(
+            best=c1,
+            all_candidates=[c1, c2, c3],
+            config=config,
+            elapsed_sec=12.5,
+            converged=True,
+            message="完了",
+        )
+
+    def test_round_trip_dict(self):
+        result = self._make_result()
+        d = result.to_dict()
+        restored = OptimizationResult.from_dict(d)
+        assert len(restored.all_candidates) == 3
+        assert restored.best is not None
+        assert abs(restored.best.objective_value - 0.003) < 1e-10
+        assert restored.config.method == "grid"
+        assert restored.elapsed_sec == 12.5
+        assert restored.converged is True
+        assert restored.message == "完了"
+        assert len(restored.feasible_candidates) == 2
+
+    def test_save_load_json(self, tmp_path):
+        result = self._make_result()
+        path = str(tmp_path / "test_result.json")
+        result.save_json(path)
+
+        loaded = OptimizationResult.load_json(path)
+        assert len(loaded.all_candidates) == 3
+        assert loaded.best is not None
+        assert loaded.config.objective_weights == {"max_drift": 0.6, "max_acc": 0.4}
+
+    def test_empty_result_round_trip(self):
+        result = OptimizationResult(message="空の結果")
+        d = result.to_dict()
+        restored = OptimizationResult.from_dict(d)
+        assert restored.best is None
+        assert len(restored.all_candidates) == 0
+        assert restored.message == "空の結果"
+
+
+# ===========================================================================
+# Pareto front extraction test (F-2)
+# ===========================================================================
+
+class TestParetoFrontExtraction:
+    """ParetoDialog._extract_pareto_front のテスト。"""
+
+    def test_simple_pareto(self):
+        """3点中、(1,3)と(3,1)がPareto front、(2,2)は支配される"""
+        # (1,3) is not dominated by any
+        # (3,1) is not dominated by any
+        # (2,2) is dominated by neither individually, but let's check...
+        # Actually (2,2) is NOT dominated by (1,3) or (3,1) since neither
+        # has both coords <=. So all 3 are on the front.
+        # Let's use a clearer case:
+        xs = [1.0, 2.0, 3.0, 1.5]
+        ys = [4.0, 2.0, 3.0, 1.0]
+        # (1, 4): not dominated
+        # (2, 2): dominated by (1.5, 1)? 1.5<=2 and 1<=2 yes, so dominated
+        # (3, 3): dominated by (2,2)
+        # (1.5, 1): not dominated
+        from app.ui.optimizer_dialog import ParetoDialog
+        px, py = ParetoDialog._extract_pareto_front(xs, ys)
+        assert len(px) == 2
+        # Should contain (1,4) and (1.5,1)
+        points = set(zip([round(x, 1) for x in px], [round(y, 1) for y in py]))
+        assert (1.0, 4.0) in points
+        assert (1.5, 1.0) in points
+
+    def test_empty_input(self):
+        from app.ui.optimizer_dialog import ParetoDialog
+        px, py = ParetoDialog._extract_pareto_front([], [])
+        assert px == []
+        assert py == []
+
+    def test_single_point(self):
+        from app.ui.optimizer_dialog import ParetoDialog
+        px, py = ParetoDialog._extract_pareto_front([1.0], [2.0])
+        assert len(px) == 1
+        assert px[0] == 1.0
+        assert py[0] == 2.0

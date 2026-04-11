@@ -21,6 +21,7 @@ app/services/optimizer.py
 from __future__ import annotations
 
 import itertools
+import json
 import logging
 import math
 import random
@@ -255,6 +256,21 @@ class ParameterRange:
             val = round(val / self.step) * self.step
         return val
 
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "key": self.key, "label": self.label,
+            "min_val": self.min_val, "max_val": self.max_val,
+            "step": self.step, "is_integer": self.is_integer,
+        }
+
+    @classmethod
+    def from_dict(cls, d: Dict[str, Any]) -> "ParameterRange":
+        return cls(
+            key=d["key"], label=d.get("label", d["key"]),
+            min_val=d["min_val"], max_val=d["max_val"],
+            step=d.get("step", 0.0), is_integer=d.get("is_integer", False),
+        )
+
 
 @dataclass
 class OptimizationConfig:
@@ -309,6 +325,31 @@ class OptimizationConfig:
             return total
         return response.get(self.objective_key, float("inf"))
 
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "objective_key": self.objective_key,
+            "objective_label": self.objective_label,
+            "parameters": [p.to_dict() for p in self.parameters],
+            "constraints": dict(self.constraints),
+            "method": self.method,
+            "max_iterations": self.max_iterations,
+            "damper_type": self.damper_type,
+            "objective_weights": dict(self.objective_weights),
+        }
+
+    @classmethod
+    def from_dict(cls, d: Dict[str, Any]) -> "OptimizationConfig":
+        return cls(
+            objective_key=d.get("objective_key", "max_drift"),
+            objective_label=d.get("objective_label", ""),
+            parameters=[ParameterRange.from_dict(p) for p in d.get("parameters", [])],
+            constraints=d.get("constraints", {}),
+            method=d.get("method", "grid"),
+            max_iterations=d.get("max_iterations", 100),
+            damper_type=d.get("damper_type", ""),
+            objective_weights=d.get("objective_weights", {}),
+        )
+
 
 # ---------------------------------------------------------------------------
 # 最適化結果
@@ -322,6 +363,25 @@ class OptimizationCandidate:
     response_values: Dict[str, float] = field(default_factory=dict)
     is_feasible: bool = True  # 制約を満たすか
     iteration: int = 0
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "params": dict(self.params),
+            "objective_value": self.objective_value,
+            "response_values": dict(self.response_values),
+            "is_feasible": self.is_feasible,
+            "iteration": self.iteration,
+        }
+
+    @classmethod
+    def from_dict(cls, d: Dict[str, Any]) -> "OptimizationCandidate":
+        return cls(
+            params=d.get("params", {}),
+            objective_value=d.get("objective_value", float("inf")),
+            response_values=d.get("response_values", {}),
+            is_feasible=d.get("is_feasible", True),
+            iteration=d.get("iteration", 0),
+        )
 
 
 @dataclass
@@ -393,6 +453,44 @@ class OptimizationResult:
 
         lines.append(f"\nメッセージ: {self.message}")
         return "\n".join(lines)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "best": self.best.to_dict() if self.best else None,
+            "all_candidates": [c.to_dict() for c in self.all_candidates],
+            "config": self.config.to_dict() if self.config else None,
+            "elapsed_sec": self.elapsed_sec,
+            "converged": self.converged,
+            "message": self.message,
+        }
+
+    @classmethod
+    def from_dict(cls, d: Dict[str, Any]) -> "OptimizationResult":
+        best_d = d.get("best")
+        config_d = d.get("config")
+        return cls(
+            best=OptimizationCandidate.from_dict(best_d) if best_d else None,
+            all_candidates=[
+                OptimizationCandidate.from_dict(c)
+                for c in d.get("all_candidates", [])
+            ],
+            config=OptimizationConfig.from_dict(config_d) if config_d else None,
+            elapsed_sec=d.get("elapsed_sec", 0.0),
+            converged=d.get("converged", False),
+            message=d.get("message", ""),
+        )
+
+    def save_json(self, path: str) -> None:
+        """最適化結果をJSONファイルに保存します。"""
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(self.to_dict(), f, ensure_ascii=False, indent=2)
+
+    @classmethod
+    def load_json(cls, path: str) -> "OptimizationResult":
+        """JSONファイルから最適化結果を読み込みます。"""
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return cls.from_dict(data)
 
 
 # ---------------------------------------------------------------------------
