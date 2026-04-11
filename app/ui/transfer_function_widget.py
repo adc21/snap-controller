@@ -118,6 +118,7 @@ class TransferFunctionWidget(QWidget):
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
         self._entries: List[Tuple[str, SnapResultLoader]] = []
+        self._reference_data: Optional[dict] = None  # {name, freqs, amplitude}
         self._setup_ui()
 
     # ------------------------------------------------------------------
@@ -188,6 +189,22 @@ class TransferFunctionWidget(QWidget):
         )
         self._btn_snap_tf.clicked.connect(self._compute_snap_transfer_function)
         ctrl.addWidget(self._btn_snap_tf)
+
+        self._btn_set_ref = QPushButton("基準に設定")
+        self._btn_set_ref.setFixedWidth(80)
+        self._btn_set_ref.setToolTip(
+            "現在表示中のFFTスペクトルを基準（リファレンス）として保存します。\n"
+            "制振前の応答を基準にして、制振後との比較に使えます。"
+        )
+        self._btn_set_ref.clicked.connect(self._set_reference)
+        ctrl.addWidget(self._btn_set_ref)
+
+        self._btn_clear_ref = QPushButton("基準クリア")
+        self._btn_clear_ref.setFixedWidth(80)
+        self._btn_clear_ref.setToolTip("保存した基準データをクリアします")
+        self._btn_clear_ref.clicked.connect(self._clear_reference)
+        self._btn_clear_ref.setEnabled(False)
+        ctrl.addWidget(self._btn_clear_ref)
 
         root.addLayout(ctrl)
 
@@ -296,6 +313,74 @@ class TransferFunctionWidget(QWidget):
         self._refresh()
 
     # ------------------------------------------------------------------
+    # 基準（リファレンス）データ管理
+    # ------------------------------------------------------------------
+
+    def _set_reference(self) -> None:
+        """現在の先頭ケースのFFTデータを基準として保存する。"""
+        if not self._entries:
+            self._status_label.setText("基準に設定するケースがありません")
+            return
+
+        cat = self._cat_combo.currentText()
+        rec_idx = self._rec_combo.currentData()
+        field_idx = self._field_combo.currentData()
+
+        if not cat or rec_idx is None or field_idx is None:
+            return
+
+        # 最初のケースのデータを基準として保存
+        case_name, loader = self._entries[0]
+        bc = loader.get(cat)
+        if not bc or not bc.hst or not bc.hst.header:
+            self._status_label.setText("基準データを取得できません")
+            return
+
+        hst = bc.hst
+        h = hst.header
+        if rec_idx >= h.num_records or field_idx >= h.fields_per_record:
+            return
+
+        try:
+            hst.ensure_loaded()
+            y = hst.time_series(rec_idx, field_idx)
+        except Exception:
+            self._status_label.setText("時刻歴データの読込に失敗しました")
+            return
+
+        if len(y) < 2:
+            return
+
+        n = len(y)
+        dt = hst.dt
+        Y = rfft(y)
+        freqs = rfftfreq(n, d=dt)
+        amplitude = np.abs(Y) * (2.0 / n)
+        freqs = freqs[1:]
+        amplitude = amplitude[1:]
+
+        rec_name = self._rec_combo.currentText()
+        field_name = self._field_combo.currentText()
+        self._reference_data = {
+            "name": f"基準: {case_name}",
+            "freqs": freqs,
+            "amplitude": amplitude,
+            "label": f"{cat}/{rec_name}/{field_name}",
+        }
+        self._btn_clear_ref.setEnabled(True)
+        self._status_label.setText(
+            f"基準データを保存しました: {case_name} ({cat}/{rec_name}/{field_name})"
+        )
+        self._refresh()
+
+    def _clear_reference(self) -> None:
+        """基準データをクリアする。"""
+        self._reference_data = None
+        self._btn_clear_ref.setEnabled(False)
+        self._status_label.setText("基準データをクリアしました")
+        self._refresh()
+
+    # ------------------------------------------------------------------
     # SNAP 伝達関数計算
     # ------------------------------------------------------------------
 
@@ -360,6 +445,15 @@ class TransferFunctionWidget(QWidget):
             self._peak_label.setText("")
             self._status_label.setText("伝達関数計算失敗")
             return
+
+        # 基準データのオーバーレイ（SNAP伝達関数モードでも表示）
+        if self._reference_data is not None:
+            ref = self._reference_data
+            ax.plot(
+                ref["freqs"], ref["amplitude"],
+                color="gray", linewidth=1.2, linestyle="--",
+                label=ref["name"], alpha=0.6,
+            )
 
         if use_log:
             ax.set_yscale("log")
@@ -471,6 +565,16 @@ class TransferFunctionWidget(QWidget):
             self._status_label.setText(f"{cat}.hst データなし")
             return
 
+        # 基準データのオーバーレイ
+        if self._reference_data is not None:
+            ref = self._reference_data
+            ax.plot(
+                ref["freqs"], ref["amplitude"],
+                color="gray", linewidth=1.2, linestyle="--",
+                label=ref["name"], alpha=0.6,
+            )
+            plotted += 1
+
         # 軸設定
         if use_log:
             ax.set_yscale("log")
@@ -482,10 +586,7 @@ class TransferFunctionWidget(QWidget):
         ax.set_title(f"周波数応答 — {cat} / {rec_name} / {field_name}")
         ax.grid(True, linestyle=":", alpha=0.5)
         ax.set_xlim(left=0)
-        if plotted > 1:
-            ax.legend(fontsize=8)
-        elif plotted == 1:
-            ax.legend(fontsize=8)
+        ax.legend(fontsize=8)
         self._canvas.fig.tight_layout()
         self._canvas.draw()
 

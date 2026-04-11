@@ -319,6 +319,11 @@ class OptimizationConfig:
     """並列評価数。1の場合は逐次評価（デフォルト）。
     2以上の場合、グリッドサーチ/ランダムサーチで ThreadPoolExecutor を使用して
     複数候補を同時にSNAP実行する。SNAP解析では4〜8が目安。"""
+    checkpoint_interval: int = 10
+    """チェックポイント保存間隔（評価回数）。この回数ごとに中間結果を自動保存する。
+    0の場合はチェックポイントを無効化。デフォルト10。"""
+    checkpoint_path: str = ""
+    """チェックポイントファイルパス。空の場合はチェックポイントを保存しない。"""
 
     def compute_objective(self, response: Dict[str, float]) -> float:
         """応答値辞書から目的関数値を計算する。
@@ -348,6 +353,7 @@ class OptimizationConfig:
             "objective_weights": dict(self.objective_weights),
             "constraint_penalty_weight": self.constraint_penalty_weight,
             "n_parallel": self.n_parallel,
+            "checkpoint_interval": self.checkpoint_interval,
         }
 
     @classmethod
@@ -363,6 +369,7 @@ class OptimizationConfig:
             objective_weights=d.get("objective_weights", {}),
             constraint_penalty_weight=d.get("constraint_penalty_weight", 0.0),
             n_parallel=d.get("n_parallel", 1),
+            checkpoint_interval=d.get("checkpoint_interval", 10),
         )
 
 
@@ -646,6 +653,7 @@ class _OptimizationWorker(QThread):
     progress = Signal(int, int, str)  # (current, total, message)
     candidate_found = Signal(object)  # OptimizationCandidate
     finished_signal = Signal(object)  # OptimizationResult
+    checkpoint_signal = Signal(object)  # OptimizationResult (intermediate)
 
     def __init__(
         self,
@@ -702,6 +710,38 @@ class _OptimizationWorker(QThread):
         if self._config.base_case and self._config.base_case.result_summary:
             base = self._config.base_case.result_summary
         return _mock_evaluate(params, base, self._config.objective_key)
+
+    def _maybe_checkpoint(
+        self,
+        all_candidates: List[OptimizationCandidate],
+        best: Optional[OptimizationCandidate],
+        config: OptimizationConfig,
+        message: str = "",
+    ) -> None:
+        """チェックポイント間隔に達した場合に中間結果を保存シグナルで通知する。
+
+        Parameters
+        ----------
+        all_candidates : list
+            これまでの全候補。
+        best : OptimizationCandidate or None
+            現時点の最良解。
+        config : OptimizationConfig
+            最適化設定。
+        message : str
+            中間メッセージ。
+        """
+        interval = config.checkpoint_interval
+        if interval <= 0 or len(all_candidates) % interval != 0:
+            return
+        intermediate = OptimizationResult(
+            best=best,
+            all_candidates=list(all_candidates),
+            config=config,
+            message=message or f"チェックポイント: {len(all_candidates)} 点評価済み",
+            evaluation_method="snap" if self._is_snap else "mock",
+        )
+        self.checkpoint_signal.emit(intermediate)
 
     def _check_constraints(
         self,
@@ -926,6 +966,9 @@ class _OptimizationWorker(QThread):
                 msg += f" | 暫定最良: {best.objective_value:.6g}"
             self.progress.emit(i, total, msg)
 
+            # チェックポイント
+            self._maybe_checkpoint(all_candidates, best, config)
+
         result = OptimizationResult(
             best=best,
             all_candidates=all_candidates,
@@ -986,6 +1029,9 @@ class _OptimizationWorker(QThread):
             if best:
                 msg += f" | 暫定最良: {best.objective_value:.6g}"
             self.progress.emit(i, total, msg)
+
+            # チェックポイント
+            self._maybe_checkpoint(all_candidates, best, config)
 
             # 早期終了（一定回数改善なし）
             if no_improve_count > max(50, total // 4):
@@ -1222,6 +1268,9 @@ class _OptimizationWorker(QThread):
                             msg += f" | 暫定最良: {best.objective_value:.6g}"
                         self.progress.emit(n_init + i + 1, total, msg)
 
+                    # チェックポイント
+                    self._maybe_checkpoint(all_candidates, best, config)
+
             except Exception as e:
                 # ベイズ最適化に失敗した場合、残りはランダムサーチでフォールバック
                 logger.warning("Bayesian optimization failed (%s), falling back to random search", e)
@@ -1253,6 +1302,9 @@ class _OptimizationWorker(QThread):
                         if best:
                             msg += f" | 暫定最良: {best.objective_value:.6g}"
                         self.progress.emit(n_init + i + 1, total, msg)
+
+                    # チェックポイント
+                    self._maybe_checkpoint(all_candidates, best, config)
 
         result = OptimizationResult(
             best=best,
@@ -1443,6 +1495,9 @@ class _OptimizationWorker(QThread):
                 msg += f" | 最良: {best.objective_value:.6g}"
             self.progress.emit(min((gen + 1) * pop_size, total), total, msg)
 
+            # チェックポイント
+            self._maybe_checkpoint(all_candidates, best, config)
+
             # 早期終了（一定世代数改善なし）
             if no_improve_gens >= stagnation_limit:
                 logger.info("GA: %d世代連続で改善なし — 早期終了", no_improve_gens)
@@ -1612,6 +1667,9 @@ class _OptimizationWorker(QThread):
                     msg += f" | 最良: {best.objective_value:.6g}"
                 self.progress.emit(i + 1, total, msg)
 
+            # チェックポイント
+            self._maybe_checkpoint(all_candidates, best, config)
+
             # 早期終了（一定回数改善なし）
             if no_improve_count >= stagnation_limit:
                 logger.info("SA: %d回連続で改善なし — 早期終了", no_improve_count)
@@ -1651,6 +1709,7 @@ class DamperOptimizer(QObject):
     progress = Signal(int, int, str)
     candidate_found = Signal(object)
     optimization_finished = Signal(object)
+    checkpoint = Signal(object)  # OptimizationResult (intermediate)
 
     def __init__(self, parent: Optional[QObject] = None) -> None:
         super().__init__(parent)
@@ -1680,6 +1739,7 @@ class DamperOptimizer(QObject):
         self._worker.progress.connect(self.progress)
         self._worker.candidate_found.connect(self.candidate_found)
         self._worker.finished_signal.connect(self._on_finished)
+        self._worker.checkpoint_signal.connect(self.checkpoint)
         self._worker.start()
 
     def cancel(self) -> None:

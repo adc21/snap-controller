@@ -1845,3 +1845,79 @@ class TestLeastInfeasible:
         assert least.is_feasible is False
 
 
+# =====================================================================
+# Q-1: チェックポイント自動保存テスト
+# =====================================================================
+
+class TestCheckpointConfig:
+    """OptimizationConfig のチェックポイント設定テスト。"""
+
+    def test_checkpoint_interval_default(self):
+        """デフォルトはチェックポイント間隔10。"""
+        config = OptimizationConfig()
+        assert config.checkpoint_interval == 10
+        assert config.checkpoint_path == ""
+
+    def test_checkpoint_interval_serialization(self):
+        """checkpoint_interval が to_dict / from_dict でラウンドトリップする。"""
+        config = OptimizationConfig(checkpoint_interval=25)
+        d = config.to_dict()
+        assert d["checkpoint_interval"] == 25
+        restored = OptimizationConfig.from_dict(d)
+        assert restored.checkpoint_interval == 25
+
+    def test_checkpoint_interval_zero_disables(self):
+        """checkpoint_interval=0 はチェックポイント無効化。"""
+        config = OptimizationConfig(checkpoint_interval=0)
+        assert config.checkpoint_interval == 0
+
+
+@pytest.mark.skipif(not _HAS_QT, reason="PySide6 required")
+class TestCheckpointSignal:
+    """_OptimizationWorker のチェックポイントシグナルテスト。"""
+
+    def test_maybe_checkpoint_emits_at_interval(self):
+        """_maybe_checkpoint がinterval到達時にシグナルを発火する。"""
+        config = OptimizationConfig(
+            objective_key="max_drift",
+            parameters=[ParameterRange(key="Cd", min_val=100, max_val=1000, step=100)],
+            checkpoint_interval=5,
+        )
+        worker = _OptimizationWorker(config)
+        emitted = []
+        worker.checkpoint_signal.connect(lambda r: emitted.append(r))
+
+        candidates = [
+            OptimizationCandidate(params={"Cd": 100 * i}, objective_value=0.01 * i)
+            for i in range(1, 6)
+        ]
+        best = candidates[0]
+
+        # 4点では発火しない
+        worker._maybe_checkpoint(candidates[:4], best, config)
+        assert len(emitted) == 0
+
+        # 5点で発火する
+        worker._maybe_checkpoint(candidates, best, config)
+        assert len(emitted) == 1
+        assert len(emitted[0].all_candidates) == 5
+
+    def test_maybe_checkpoint_disabled_when_zero(self):
+        """checkpoint_interval=0 のとき _maybe_checkpoint は何もしない。"""
+        config = OptimizationConfig(
+            objective_key="max_drift",
+            parameters=[ParameterRange(key="Cd", min_val=100, max_val=1000, step=100)],
+            checkpoint_interval=0,
+        )
+        worker = _OptimizationWorker(config)
+        emitted = []
+        worker.checkpoint_signal.connect(lambda r: emitted.append(r))
+
+        candidates = [
+            OptimizationCandidate(params={"Cd": 100 * i}, objective_value=0.01 * i)
+            for i in range(1, 11)
+        ]
+        worker._maybe_checkpoint(candidates, candidates[0], config)
+        assert len(emitted) == 0
+
+

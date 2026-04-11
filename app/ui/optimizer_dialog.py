@@ -491,6 +491,25 @@ class OptimizerDialog(QDialog):
         parallel_row.addStretch()
         layout.addLayout(parallel_row)
 
+        # ---- チェックポイント自動保存 ----
+        checkpoint_row = QHBoxLayout()
+        self._checkpoint_check = QCheckBox("チェックポイント自動保存")
+        self._checkpoint_check.setChecked(False)
+        self._checkpoint_check.setToolTip(
+            "最適化中に一定間隔で中間結果をJSONファイルに自動保存します。\n"
+            "アプリクラッシュ時のデータ損失を防ぎます。"
+        )
+        checkpoint_row.addWidget(self._checkpoint_check)
+        checkpoint_row.addWidget(QLabel("間隔:"))
+        self._checkpoint_interval_spin = QSpinBox()
+        self._checkpoint_interval_spin.setRange(5, 1000)
+        self._checkpoint_interval_spin.setValue(10)
+        self._checkpoint_interval_spin.setFixedWidth(60)
+        self._checkpoint_interval_spin.setSuffix(" 回")
+        checkpoint_row.addWidget(self._checkpoint_interval_spin)
+        checkpoint_row.addStretch()
+        layout.addLayout(checkpoint_row)
+
         # ---- 実行ボタン + 進捗 ----
         run_row = QHBoxLayout()
         self._run_btn = QPushButton("最適化を開始")
@@ -676,6 +695,7 @@ class OptimizerDialog(QDialog):
         self._optimizer.progress.connect(self._on_progress)
         self._optimizer.candidate_found.connect(self._on_candidate)
         self._optimizer.optimization_finished.connect(self._on_finished)
+        self._optimizer.checkpoint.connect(self._on_checkpoint)
         # UX改善（新②）: パラメータ/手法変更時に推定試行数を更新
         self._method_combo.currentIndexChanged.connect(self._update_est_run_label)
         self._iter_spin.valueChanged.connect(self._update_est_run_label)
@@ -1104,6 +1124,11 @@ class OptimizerDialog(QDialog):
             warm_start_candidates=warm,
             constraint_penalty_weight=penalty_weight,
             n_parallel=self._parallel_spin.value(),
+            checkpoint_interval=(
+                self._checkpoint_interval_spin.value()
+                if self._checkpoint_check.isChecked()
+                else 0
+            ),
         )
 
     def _start_optimization(self) -> None:
@@ -1329,6 +1354,22 @@ class OptimizerDialog(QDialog):
                 self._export_csv_btn.setEnabled(True)
                 self._save_btn.setEnabled(True)
                 self._report_btn.setEnabled(True)
+
+    def _on_checkpoint(self, intermediate: "OptimizationResult") -> None:
+        """チェックポイントシグナルを受けて中間結果を自動保存する。"""
+        if not self._checkpoint_check.isChecked():
+            return
+        try:
+            import tempfile
+            import os
+            checkpoint_dir = os.path.join(tempfile.gettempdir(), "snap_optimizer_checkpoints")
+            os.makedirs(checkpoint_dir, exist_ok=True)
+            path = os.path.join(checkpoint_dir, "checkpoint_latest.json")
+            intermediate.save_json(path)
+            n = len(intermediate.all_candidates)
+            logger.info("チェックポイント保存: %d点評価済み → %s", n, path)
+        except Exception as e:
+            logger.warning("チェックポイント保存失敗: %s", e)
 
     def _update_best_summary_card(self, result: "OptimizationResult") -> None:
         """

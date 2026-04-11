@@ -356,3 +356,72 @@ class TestTransferFunctionWidgetInstantiation:
         ])
         # 3 ケースがプロットされている
         assert "3 ケース" in w._status_label.text()
+
+
+# =====================================================================
+# Q-2: 基準データオーバーレイテスト
+# =====================================================================
+
+@pytest.mark.skipif(not _qt_available(), reason="PySide6 required")
+class TestReferenceOverlay:
+    """TransferFunctionWidget の基準データ保存・オーバーレイテスト。"""
+
+    def test_initial_state(self):
+        """初期状態では基準データは None。"""
+        from app.ui.transfer_function_widget import TransferFunctionWidget
+        w = TransferFunctionWidget()
+        assert w._reference_data is None
+        assert w._btn_clear_ref.isEnabled() is False
+
+    def test_set_reference_with_data(self):
+        """ケースデータがある場合、基準データを保存できる。"""
+        from unittest.mock import MagicMock
+        from app.ui.transfer_function_widget import TransferFunctionWidget
+
+        dt = 0.01
+        n = 1024
+        t = np.arange(n) * dt
+        y = np.sin(2 * np.pi * 5.0 * t)
+
+        mock_header = MagicMock()
+        mock_header.num_records = 2
+        mock_header.fields_per_record = 1
+        mock_hst = MagicMock()
+        mock_hst.header = mock_header
+        mock_hst.dt = dt
+        mock_hst.field_labels.return_value = ["X"]
+        mock_hst.ensure_loaded.return_value = None
+        mock_hst.time_series.return_value = y
+        mock_bc = MagicMock()
+        mock_bc.hst = mock_hst
+        mock_bc.record_name.side_effect = lambda i: f"Rec-{i}"
+        loader = MagicMock()
+        loader.get.side_effect = lambda cat: mock_bc if cat == "Floor" else None
+
+        w = TransferFunctionWidget()
+        w.set_entries([("TestCase", loader)])
+
+        # 基準に設定
+        w._set_reference()
+        assert w._reference_data is not None
+        assert "基準: TestCase" in w._reference_data["name"]
+        assert len(w._reference_data["freqs"]) > 0
+        assert w._btn_clear_ref.isEnabled() is True
+
+    def test_clear_reference(self):
+        """基準データをクリアできる。"""
+        from app.ui.transfer_function_widget import TransferFunctionWidget
+        w = TransferFunctionWidget()
+        w._reference_data = {"name": "test", "freqs": np.array([1.0]), "amplitude": np.array([1.0])}
+        w._btn_clear_ref.setEnabled(True)
+
+        w._clear_reference()
+        assert w._reference_data is None
+        assert w._btn_clear_ref.isEnabled() is False
+
+    def test_set_reference_no_entries(self):
+        """ケースがない場合、基準設定はスキップされる。"""
+        from app.ui.transfer_function_widget import TransferFunctionWidget
+        w = TransferFunctionWidget()
+        w._set_reference()
+        assert w._reference_data is None
