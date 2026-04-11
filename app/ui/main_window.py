@@ -2484,6 +2484,7 @@ class MainWindow(QMainWindow):
             base_case=base_case,
             criteria=self._project.criteria,
             snap_exe_path=self._project.snap_exe_path,
+            snap_work_dir=self._project.snap_work_dir,
             parent=self,
         )
         if dlg.exec():
@@ -2601,6 +2602,7 @@ class MainWindow(QMainWindow):
                 damper_def_name=damper_def,
                 criteria=self._project.criteria,
                 log_callback=lambda msg: self._log.append_line(msg),
+                snap_work_dir=self._project.snap_work_dir,
             )
             if evaluate_fn:
                 self._log.append_line(

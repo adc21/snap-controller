@@ -65,6 +65,7 @@ from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor, QFont
 from PySide6.QtWidgets import (
     QAbstractItemView,
+    QCheckBox,
     QComboBox,
     QDialog,
     QDialogButtonBox,
@@ -192,12 +193,14 @@ class OptimizerDialog(QDialog):
         base_case: Optional[AnalysisCase] = None,
         criteria: Optional[PerformanceCriteria] = None,
         snap_exe_path: str = "",
+        snap_work_dir: str = "",
         parent: Optional[QWidget] = None,
     ) -> None:
         super().__init__(parent)
         self._base_case = base_case
         self._criteria = criteria
         self._snap_exe_path = snap_exe_path
+        self._snap_work_dir = snap_work_dir
         self._optimizer = DamperOptimizer()
         self._result: Optional[OptimizationResult] = None
         self._param_widgets: List[dict] = []
@@ -293,6 +296,37 @@ class OptimizerDialog(QDialog):
 
         row1.addStretch()
         settings_layout.addLayout(row1)
+
+        # 複合目的関数パネル
+        self._composite_check = QCheckBox("複合目的関数（重み付き和）")
+        self._composite_check.toggled.connect(self._on_composite_toggled)
+        settings_layout.addWidget(self._composite_check)
+
+        self._composite_panel = QFrame()
+        self._composite_panel.setFrameShape(QFrame.Shape.StyledPanel)
+        self._composite_panel.setVisible(False)
+        composite_layout = QVBoxLayout(self._composite_panel)
+        composite_layout.setContentsMargins(8, 4, 8, 4)
+        composite_layout.addWidget(QLabel(
+            "各応答値の重みを設定してください（0 = 不使用）。"
+            "目的関数 = Σ(重み × 応答値) を最小化します。"
+        ))
+        self._weight_spins: list[dict] = []
+        weight_grid = QHBoxLayout()
+        for key, label, unit in _OBJECTIVE_ITEMS[:4]:  # 主要4項目
+            col = QVBoxLayout()
+            col.addWidget(QLabel(f"{label}"))
+            spin = QDoubleSpinBox()
+            spin.setRange(0.0, 100.0)
+            spin.setValue(0.0)
+            spin.setSingleStep(0.1)
+            spin.setDecimals(2)
+            spin.setPrefix("w=")
+            col.addWidget(spin)
+            weight_grid.addLayout(col)
+            self._weight_spins.append({"key": key, "label": label, "spin": spin})
+        composite_layout.addLayout(weight_grid)
+        settings_layout.addWidget(self._composite_panel)
 
         # 行2: ダンパー種類
         row2 = QHBoxLayout()
@@ -618,6 +652,17 @@ class OptimizerDialog(QDialog):
         # 初回ラベル更新
         self._update_est_run_label()
 
+    def _on_composite_toggled(self, checked: bool) -> None:
+        """複合目的関数チェックボックスのトグル処理。"""
+        self._composite_panel.setVisible(checked)
+        self._obj_combo.setEnabled(not checked)
+        if checked and all(w["spin"].value() == 0 for w in self._weight_spins):
+            # デフォルト: 現在選択中の目的関数に重み1.0を設定
+            obj_idx = self._obj_combo.currentIndex()
+            obj_key = _OBJECTIVE_ITEMS[obj_idx][0]
+            for w in self._weight_spins:
+                w["spin"].setValue(1.0 if w["key"] == obj_key else 0.0)
+
     def _on_method_changed(self, index: int) -> None:
         method = self._method_combo.currentData()
         self._iter_spin.setEnabled(method in ("random", "bayesian", "ga", "sa"))
@@ -642,6 +687,17 @@ class OptimizerDialog(QDialog):
             )
             params.append(pr)
 
+        # 複合目的関数の重み
+        objective_weights: dict = {}
+        if self._composite_check.isChecked():
+            for w in self._weight_spins:
+                val = w["spin"].value()
+                if val > 0:
+                    objective_weights[w["key"]] = val
+            if objective_weights:
+                labels = [w["label"] for w in self._weight_spins if w["spin"].value() > 0]
+                obj_label = "複合: " + " + ".join(labels)
+
         return OptimizationConfig(
             objective_key=obj_key,
             objective_label=obj_label,
@@ -651,6 +707,7 @@ class OptimizerDialog(QDialog):
             criteria=self._criteria,
             damper_type=self._damper_combo.currentText(),
             base_case=self._base_case,
+            objective_weights=objective_weights,
         )
 
     def _start_optimization(self) -> None:
@@ -687,6 +744,7 @@ class OptimizerDialog(QDialog):
                 base_case=self._base_case,
                 param_ranges=config.parameters,
                 log_callback=lambda msg: self._result_summary.setText(msg),
+                snap_work_dir=self._snap_work_dir,
             )
             if snap_evaluator:
                 evaluate_fn = snap_evaluator

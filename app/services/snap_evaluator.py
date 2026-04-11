@@ -331,6 +331,7 @@ def create_snap_evaluator(
     base_case: "AnalysisCase",
     param_ranges: List["ParameterRange"],
     log_callback: Optional[Callable[[str], None]] = None,
+    snap_work_dir: str = "",
 ) -> Optional[SnapEvaluator]:
     """
     AnalysisCase と ParameterRange リストから SnapEvaluator を構築するヘルパー。
@@ -416,6 +417,7 @@ def create_snap_evaluator(
             param_field_map=param_field_map,
             rd_overrides=rd_overrides,
             log_callback=log_callback,
+            snap_work_dir=snap_work_dir,
         )
         if log_callback:
             log_callback(

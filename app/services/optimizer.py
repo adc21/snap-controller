@@ -287,6 +287,23 @@ class OptimizationConfig:
     criteria: Optional[PerformanceCriteria] = None
     damper_type: str = ""
     base_case: Optional[AnalysisCase] = None
+    objective_weights: Dict[str, float] = field(default_factory=dict)
+
+    def compute_objective(self, response: Dict[str, float]) -> float:
+        """応答値辞書から目的関数値を計算する。
+
+        objective_weights が空の場合は単一目的（objective_key）、
+        設定されている場合は重み付き和を返す。
+        """
+        if self.objective_weights:
+            total = 0.0
+            for key, weight in self.objective_weights.items():
+                val = response.get(key, float("inf"))
+                if val == float("inf"):
+                    return float("inf")
+                total += weight * val
+            return total
+        return response.get(self.objective_key, float("inf"))
 
 
 # ---------------------------------------------------------------------------
@@ -555,7 +572,7 @@ class _OptimizationWorker(QThread):
 
             # 評価
             response = self._evaluate_fn(params)
-            obj_val = response.get(config.objective_key, float("inf"))
+            obj_val = config.compute_objective(response)
             is_feasible = self._check_constraints(response, config)
 
             candidate = OptimizationCandidate(
@@ -607,7 +624,7 @@ class _OptimizationWorker(QThread):
 
             # 評価
             response = self._evaluate_fn(params)
-            obj_val = response.get(config.objective_key, float("inf"))
+            obj_val = config.compute_objective(response)
             is_feasible = self._check_constraints(response, config)
 
             candidate = OptimizationCandidate(
@@ -732,7 +749,7 @@ class _OptimizationWorker(QThread):
 
             # 評価
             response = self._evaluate_fn(params)
-            obj_val = response.get(config.objective_key, float("inf"))
+            obj_val = config.compute_objective(response)
             is_feasible = self._check_constraints(response, config)
             y_init.append(obj_val)
 
@@ -808,7 +825,7 @@ class _OptimizationWorker(QThread):
 
                     # 評価
                     response = self._evaluate_fn(params)
-                    obj_val = response.get(config.objective_key, float("inf"))
+                    obj_val = config.compute_objective(response)
                     is_feasible = self._check_constraints(response, config)
 
                     candidate = OptimizationCandidate(
@@ -844,7 +861,7 @@ class _OptimizationWorker(QThread):
 
                     params = {pr.key: pr.random_value() for pr in config.parameters}
                     response = self._evaluate_fn(params)
-                    obj_val = response.get(config.objective_key, float("inf"))
+                    obj_val = config.compute_objective(response)
                     is_feasible = self._check_constraints(response, config)
 
                     candidate = OptimizationCandidate(
@@ -922,7 +939,7 @@ class _OptimizationWorker(QThread):
         def _evaluate_individual(chromosome: np.ndarray, iteration: int) -> OptimizationCandidate:
             params = _decode(chromosome)
             response = self._evaluate_fn(params)
-            obj_val = response.get(config.objective_key, float("inf"))
+            obj_val = config.compute_objective(response)
             is_feasible = self._check_constraints(response, config)
             return OptimizationCandidate(
                 params=params,
@@ -1073,7 +1090,7 @@ class _OptimizationWorker(QThread):
         current_x = np.random.rand(n_params)
         params = _decode(current_x)
         response = self._evaluate_fn(params)
-        obj_val = response.get(config.objective_key, float("inf"))
+        obj_val = config.compute_objective(response)
         is_feasible = self._check_constraints(response, config)
         current_cand = OptimizationCandidate(
             params=params, objective_value=obj_val,
@@ -1098,7 +1115,7 @@ class _OptimizationWorker(QThread):
 
             params = _decode(new_x)
             response = self._evaluate_fn(params)
-            obj_val = response.get(config.objective_key, float("inf"))
+            obj_val = config.compute_objective(response)
             is_feasible = self._check_constraints(response, config)
 
             cand = OptimizationCandidate(
