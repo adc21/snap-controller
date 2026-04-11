@@ -474,3 +474,53 @@ class TestSensitivityDialog:
                     dlg._start_optimization()
                     mock_warn.assert_not_called()
                     mock_opt.assert_called_once()
+
+
+class TestCandidateDetailDialog:
+    """候補詳細ダイアログのインスタンス化テスト。"""
+
+    def test_instantiate_feasible(self, qapp):
+        from app.ui.optimizer_dialog import _CandidateDetailDialog
+        from app.services.optimizer import OptimizationCandidate, OptimizationConfig
+
+        cand = OptimizationCandidate(
+            params={"Cd": 500, "alpha": 0.3},
+            objective_value=0.003,
+            response_values={"max_drift": 0.003, "max_acc": 2.5, "shear_coeff": 0.15},
+            is_feasible=True,
+            constraint_margins={"max_drift": 0.002},
+        )
+        config = OptimizationConfig(
+            objective_key="max_drift",
+            parameters=[],
+        )
+        dlg = _CandidateDetailDialog(cand, config)
+        assert dlg.windowTitle().startswith("候補詳細")
+        dlg.close()
+
+    def test_instantiate_infeasible(self, qapp):
+        from app.ui.optimizer_dialog import _CandidateDetailDialog
+        from app.services.optimizer import OptimizationCandidate
+
+        cand = OptimizationCandidate(
+            params={"Cd": 100},
+            objective_value=0.01,
+            response_values={"max_drift": 0.01},
+            is_feasible=False,
+            constraint_margins={"max_drift": -0.005},
+        )
+        dlg = _CandidateDetailDialog(cand, None)
+        assert dlg.windowTitle().startswith("候補詳細")
+        dlg.close()
+
+    def test_instantiate_no_margins(self, qapp):
+        from app.ui.optimizer_dialog import _CandidateDetailDialog
+        from app.services.optimizer import OptimizationCandidate
+
+        cand = OptimizationCandidate(
+            params={"x": 1.0},
+            objective_value=0.5,
+            response_values={"max_drift": 0.5},
+        )
+        dlg = _CandidateDetailDialog(cand, None)
+        dlg.close()

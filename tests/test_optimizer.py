@@ -907,3 +907,84 @@ class TestParetoFrontExtraction:
         assert len(px) == 1
         assert px[0] == 1.0
         assert py[0] == 2.0
+
+
+# ---------------------------------------------------------------------------
+# Phase I: constraint_margins + CandidateDetailDialog tests
+# ---------------------------------------------------------------------------
+
+class TestConstraintMargins:
+    """_check_constraints が制約マージンを正しく返すことを検証。"""
+
+    def test_margins_feasible(self):
+        """全制約を満たす場合、マージンは全て正。"""
+        def evaluate(params):
+            return {"max_drift": 0.003, "max_acc": 2.0}
+
+        config = OptimizationConfig(
+            objective_key="max_drift",
+            parameters=[ParameterRange(key="x", min_val=0, max_val=1, step=0.1)],
+            method="grid",
+            constraints={"max_drift": 0.005, "max_acc": 5.0},
+        )
+        worker = _OptimizationWorker(config, evaluate)
+        is_feasible, margins = worker._check_constraints(
+            {"max_drift": 0.003, "max_acc": 2.0}, config
+        )
+        assert is_feasible is True
+        assert margins["max_drift"] == pytest.approx(0.002)
+        assert margins["max_acc"] == pytest.approx(3.0)
+
+    def test_margins_infeasible(self):
+        """制約を超過する場合、対応マージンが負。"""
+        def evaluate(params):
+            return {"max_drift": 0.008}
+
+        config = OptimizationConfig(
+            objective_key="max_drift",
+            parameters=[ParameterRange(key="x", min_val=0, max_val=1, step=0.1)],
+            method="grid",
+            constraints={"max_drift": 0.005},
+        )
+        worker = _OptimizationWorker(config, evaluate)
+        is_feasible, margins = worker._check_constraints(
+            {"max_drift": 0.008}, config
+        )
+        assert is_feasible is False
+        assert margins["max_drift"] == pytest.approx(-0.003)
+
+    def test_candidate_carries_margins(self):
+        """OptimizationCandidate にマージンが保存され、JSON往復で保持される。"""
+        cand = OptimizationCandidate(
+            params={"x": 0.5},
+            objective_value=0.003,
+            response_values={"max_drift": 0.003},
+            is_feasible=True,
+            iteration=0,
+            constraint_margins={"max_drift": 0.002},
+        )
+        d = cand.to_dict()
+        assert d["constraint_margins"] == {"max_drift": 0.002}
+        restored = OptimizationCandidate.from_dict(d)
+        assert restored.constraint_margins == {"max_drift": 0.002}
+
+    def test_grid_search_populates_margins(self):
+        """グリッドサーチの結果にマージンが含まれること。"""
+        call_count = 0
+        def evaluate(params):
+            nonlocal call_count
+            call_count += 1
+            return {"max_drift": params["x"] * 0.01}
+
+        config = OptimizationConfig(
+            objective_key="max_drift",
+            parameters=[ParameterRange(key="x", min_val=0.1, max_val=0.3, step=0.1)],
+            method="grid",
+            constraints={"max_drift": 0.005},
+        )
+        worker = _OptimizationWorker(config, evaluate)
+        result = worker._run_grid_search(config)
+        for cand in result.all_candidates:
+            assert "max_drift" in cand.constraint_margins
+
+

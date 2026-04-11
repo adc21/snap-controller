@@ -363,6 +363,8 @@ class OptimizationCandidate:
     response_values: Dict[str, float] = field(default_factory=dict)
     is_feasible: bool = True  # 制約を満たすか
     iteration: int = 0
+    constraint_margins: Dict[str, float] = field(default_factory=dict)
+    """各制約のマージン（負=違反量, 正=余裕量）。例: {"max_drift": -0.002} は制約超過を示す。"""
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -371,6 +373,7 @@ class OptimizationCandidate:
             "response_values": dict(self.response_values),
             "is_feasible": self.is_feasible,
             "iteration": self.iteration,
+            "constraint_margins": dict(self.constraint_margins),
         }
 
     @classmethod
@@ -381,6 +384,7 @@ class OptimizationCandidate:
             response_values=d.get("response_values", {}),
             is_feasible=d.get("is_feasible", True),
             iteration=d.get("iteration", 0),
+            constraint_margins=d.get("constraint_margins", {}),
         )
 
 
@@ -636,19 +640,32 @@ class _OptimizationWorker(QThread):
         self,
         response: Dict[str, float],
         config: OptimizationConfig,
-    ) -> bool:
-        """制約条件を満たすかチェックします。"""
+    ) -> tuple:
+        """制約条件を満たすかチェックし、各制約のマージンを返します。
+
+        Returns
+        -------
+        (is_feasible, margins) : tuple[bool, Dict[str, float]]
+            margins は各制約のマージン（正=余裕, 負=違反量）。
+        """
+        is_feasible = True
+        margins: Dict[str, float] = {}
         # 明示的な制約
         for key, limit in config.constraints.items():
-            if key in response and response[key] > limit:
-                return False
+            if key in response:
+                margins[key] = limit - response[key]
+                if response[key] > limit:
+                    is_feasible = False
         # 性能基準による制約
         if config.criteria:
             verdicts = config.criteria.evaluate(response)
-            for v in verdicts.values():
+            for k, v in verdicts.items():
                 if v is False:
-                    return False
-        return True
+                    is_feasible = False
+                    margins[f"criteria:{k}"] = -1.0
+                elif v is True:
+                    margins[f"criteria:{k}"] = 1.0
+        return is_feasible, margins
 
     def _run_grid_search(self, config: OptimizationConfig) -> OptimizationResult:
         """グリッドサーチで最適化を実行します。"""
@@ -682,7 +699,7 @@ class _OptimizationWorker(QThread):
             # 評価
             response = self._evaluate_fn(params)
             obj_val = config.compute_objective(response)
-            is_feasible = self._check_constraints(response, config)
+            is_feasible, margins = self._check_constraints(response, config)
 
             candidate = OptimizationCandidate(
                 params=params,
@@ -690,6 +707,7 @@ class _OptimizationWorker(QThread):
                 response_values=response,
                 is_feasible=is_feasible,
                 iteration=i,
+                constraint_margins=margins,
             )
             all_candidates.append(candidate)
             self.candidate_found.emit(candidate)
@@ -734,7 +752,7 @@ class _OptimizationWorker(QThread):
             # 評価
             response = self._evaluate_fn(params)
             obj_val = config.compute_objective(response)
-            is_feasible = self._check_constraints(response, config)
+            is_feasible, margins = self._check_constraints(response, config)
 
             candidate = OptimizationCandidate(
                 params=params,
@@ -742,6 +760,7 @@ class _OptimizationWorker(QThread):
                 response_values=response,
                 is_feasible=is_feasible,
                 iteration=i,
+                constraint_margins=margins,
             )
             all_candidates.append(candidate)
             self.candidate_found.emit(candidate)
@@ -859,7 +878,7 @@ class _OptimizationWorker(QThread):
             # 評価
             response = self._evaluate_fn(params)
             obj_val = config.compute_objective(response)
-            is_feasible = self._check_constraints(response, config)
+            is_feasible, margins = self._check_constraints(response, config)
             y_init.append(obj_val)
 
             candidate = OptimizationCandidate(
@@ -868,6 +887,7 @@ class _OptimizationWorker(QThread):
                 response_values=response,
                 is_feasible=is_feasible,
                 iteration=i,
+                constraint_margins=margins,
             )
             all_candidates.append(candidate)
             self.candidate_found.emit(candidate)
@@ -935,7 +955,7 @@ class _OptimizationWorker(QThread):
                     # 評価
                     response = self._evaluate_fn(params)
                     obj_val = config.compute_objective(response)
-                    is_feasible = self._check_constraints(response, config)
+                    is_feasible, margins = self._check_constraints(response, config)
 
                     candidate = OptimizationCandidate(
                         params=params,
@@ -943,6 +963,7 @@ class _OptimizationWorker(QThread):
                         response_values=response,
                         is_feasible=is_feasible,
                         iteration=n_init + i,
+                        constraint_margins=margins,
                     )
                     all_candidates.append(candidate)
                     self.candidate_found.emit(candidate)
@@ -972,7 +993,7 @@ class _OptimizationWorker(QThread):
                     params = {pr.key: pr.random_value() for pr in config.parameters}
                     response = self._evaluate_fn(params)
                     obj_val = config.compute_objective(response)
-                    is_feasible = self._check_constraints(response, config)
+                    is_feasible, margins = self._check_constraints(response, config)
 
                     candidate = OptimizationCandidate(
                         params=params,
@@ -980,6 +1001,7 @@ class _OptimizationWorker(QThread):
                         response_values=response,
                         is_feasible=is_feasible,
                         iteration=n_init + i,
+                        constraint_margins=margins,
                     )
                     all_candidates.append(candidate)
                     self.candidate_found.emit(candidate)
@@ -1050,13 +1072,14 @@ class _OptimizationWorker(QThread):
             params = _decode(chromosome)
             response = self._evaluate_fn(params)
             obj_val = config.compute_objective(response)
-            is_feasible = self._check_constraints(response, config)
+            is_feasible, margins = self._check_constraints(response, config)
             return OptimizationCandidate(
                 params=params,
                 objective_value=obj_val,
                 response_values=response,
                 is_feasible=is_feasible,
                 iteration=iteration,
+                constraint_margins=margins,
             )
 
         def _fitness(c: OptimizationCandidate) -> float:
@@ -1201,10 +1224,11 @@ class _OptimizationWorker(QThread):
         params = _decode(current_x)
         response = self._evaluate_fn(params)
         obj_val = config.compute_objective(response)
-        is_feasible = self._check_constraints(response, config)
+        is_feasible, margins = self._check_constraints(response, config)
         current_cand = OptimizationCandidate(
             params=params, objective_value=obj_val,
             response_values=response, is_feasible=is_feasible, iteration=0,
+            constraint_margins=margins,
         )
         all_candidates.append(current_cand)
         self.candidate_found.emit(current_cand)
@@ -1226,11 +1250,12 @@ class _OptimizationWorker(QThread):
             params = _decode(new_x)
             response = self._evaluate_fn(params)
             obj_val = config.compute_objective(response)
-            is_feasible = self._check_constraints(response, config)
+            is_feasible, margins = self._check_constraints(response, config)
 
             cand = OptimizationCandidate(
                 params=params, objective_value=obj_val,
                 response_values=response, is_feasible=is_feasible, iteration=i,
+                constraint_margins=margins,
             )
             all_candidates.append(cand)
             self.candidate_found.emit(cand)

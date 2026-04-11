@@ -174,6 +174,71 @@ def _apply_mpl_theme() -> None:
         plt.rcParams[key] = val
 
 
+class _CandidateDetailDialog(QDialog):
+    """探索候補の全詳細を表示するダイアログ。"""
+
+    def __init__(
+        self,
+        cand: OptimizationCandidate,
+        config: Optional[OptimizationConfig],
+        parent: Optional[QWidget] = None,
+    ) -> None:
+        super().__init__(parent)
+        self.setWindowTitle(f"候補詳細 — 反復 #{cand.iteration}")
+        self.setMinimumWidth(420)
+        layout = QVBoxLayout(self)
+
+        # パラメータ
+        param_group = QGroupBox("パラメータ")
+        param_layout = QFormLayout(param_group)
+        for k, v in cand.params.items():
+            param_layout.addRow(f"{k}:", QLabel(f"{v:.6g}"))
+        layout.addWidget(param_group)
+
+        # 目的関数
+        obj_group = QGroupBox("目的関数")
+        obj_layout = QFormLayout(obj_group)
+        obj_key = config.objective_key if config else ""
+        obj_layout.addRow("目的関数キー:", QLabel(obj_key or "—"))
+        obj_layout.addRow("目的関数値:", QLabel(f"{cand.objective_value:.6g}"))
+        verdict_label = QLabel("OK" if cand.is_feasible else "NG (制約違反)")
+        verdict_label.setStyleSheet(
+            f"color: {'#2ca02c' if cand.is_feasible else '#d62728'}; font-weight: bold;"
+        )
+        obj_layout.addRow("判定:", verdict_label)
+        layout.addWidget(obj_group)
+
+        # 全応答値
+        resp_group = QGroupBox("応答値一覧")
+        resp_layout = QFormLayout(resp_group)
+        for k, v in cand.response_values.items():
+            label = QLabel(f"{v:.6g}")
+            if k == obj_key:
+                label.setStyleSheet("font-weight: bold;")
+            resp_layout.addRow(f"{k}:", label)
+        if not cand.response_values:
+            resp_layout.addRow(QLabel("（応答値なし）"))
+        layout.addWidget(resp_group)
+
+        # 制約マージン
+        if cand.constraint_margins:
+            margin_group = QGroupBox("制約マージン（正=余裕, 負=違反）")
+            margin_layout = QFormLayout(margin_group)
+            for k, v in cand.constraint_margins.items():
+                margin_label = QLabel(f"{v:+.6g}")
+                if v < 0:
+                    margin_label.setStyleSheet("color: #d62728; font-weight: bold;")
+                else:
+                    margin_label.setStyleSheet("color: #2ca02c;")
+                margin_layout.addRow(f"{k}:", margin_label)
+            layout.addWidget(margin_group)
+
+        # 閉じるボタン
+        close_btn = QPushButton("閉じる")
+        close_btn.clicked.connect(self.accept)
+        layout.addWidget(close_btn, alignment=Qt.AlignRight)
+
+
 class _ConvergenceCanvas(FigureCanvas):
     """収束グラフ用の matplotlib キャンバス（2段サブプロット対応）。"""
 
@@ -528,6 +593,7 @@ class OptimizerDialog(QDialog):
         self._pareto_btn.clicked.connect(self._show_pareto)
         self._save_btn.clicked.connect(self._save_result_json)
         self._load_btn.clicked.connect(self._load_result_json)
+        self._result_table.cellDoubleClicked.connect(self._show_candidate_detail)
         self._optimizer.progress.connect(self._on_progress)
         self._optimizer.candidate_found.connect(self._on_candidate)
         self._optimizer.optimization_finished.connect(self._on_finished)
@@ -1096,14 +1162,27 @@ class OptimizerDialog(QDialog):
             )
             self._result_table.setItem(row, 3, verdict_item)
 
-            # 詳細（他の応答値）
+            # 詳細（他の応答値）— ダブルクリックで全詳細表示
             details = []
             for k, v in cand.response_values.items():
                 if k != obj_key:
                     details.append(f"{k}={v:.4g}")
+            summary = ", ".join(details[:3])
+            if len(details) > 3:
+                summary += f" (+{len(details) - 3})"
             self._result_table.setItem(
-                row, 4, QTableWidgetItem(", ".join(details[:3]))
+                row, 4, QTableWidgetItem(summary)
             )
+
+    def _show_candidate_detail(self, row: int, _col: int) -> None:
+        """結果テーブルの行をダブルクリック → 候補の全詳細を表示。"""
+        if not self._result:
+            return
+        ranked = self._result.ranked_candidates[:20]
+        if row < 0 or row >= len(ranked):
+            return
+        cand = ranked[row]
+        _CandidateDetailDialog(cand, self._result.config, parent=self).exec()
 
     def _draw_convergence(self, result: OptimizationResult) -> None:
         """収束グラフ（上段: 収束履歴、下段: パラメータ空間探索）を描画します。"""
@@ -1302,17 +1381,23 @@ class OptimizerDialog(QDialog):
         ranked = self._result.ranked_candidates or self._result.all_candidates
         obj_key = self._result.config.objective_key if self._result.config else ""
 
-        # ヘッダ構築: パラメータ名 + 目的関数 + 判定 + 応答値
+        # ヘッダ構築: パラメータ名 + 目的関数 + 判定 + 応答値 + 制約マージン
         if ranked:
             param_keys = list(ranked[0].params.keys())
             response_keys = sorted({
                 k for c in ranked for k in c.response_values.keys()
             })
+            margin_keys = sorted({
+                k for c in ranked for k in c.constraint_margins.keys()
+            })
         else:
             param_keys = []
             response_keys = []
+            margin_keys = []
 
         header = ["順位"] + param_keys + ["目的関数値", "判定"] + response_keys
+        if margin_keys:
+            header += [f"マージン:{k}" for k in margin_keys]
 
         try:
             eval_label = "SNAP実解析" if self._result.evaluation_method == "snap" else "モック評価（デモ用）"
@@ -1326,6 +1411,8 @@ class OptimizerDialog(QDialog):
                     row.append(cand.objective_value)
                     row.append("OK" if cand.is_feasible else "NG")
                     row += [cand.response_values.get(k, "") for k in response_keys]
+                    if margin_keys:
+                        row += [cand.constraint_margins.get(k, "") for k in margin_keys]
                     writer.writerow(row)
 
             QMessageBox.information(
