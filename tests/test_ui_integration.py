@@ -524,3 +524,143 @@ class TestCandidateDetailDialog:
         )
         dlg = _CandidateDetailDialog(cand, None)
         dlg.close()
+
+
+class TestMethodRecommendation:
+    """手法推奨ロジックのテスト。"""
+
+    def test_recommend_grid_for_small_space(self, qapp):
+        """パラメータ空間が小さい場合グリッドサーチを推奨。"""
+        from app.ui.optimizer_dialog import OptimizerDialog
+
+        dlg = OptimizerDialog()
+        # デフォルトのオイルダンパー: Cd(100-2000,step100)=20, alpha(0.1-1.0,step0.1)=10 → 200通り
+        # 200 > 50 なのでベイズが推奨される。小さい空間にするため調整
+        if dlg._param_widgets:
+            dlg._param_widgets[0]["min"].setValue(100)
+            dlg._param_widgets[0]["max"].setValue(300)
+            dlg._param_widgets[0]["step"].setValue(100)
+            dlg._param_widgets[1]["min"].setValue(0.3)
+            dlg._param_widgets[1]["max"].setValue(0.5)
+            dlg._param_widgets[1]["step"].setValue(0.1)
+        rec_method, reason, _ = dlg._recommend_method()
+        assert rec_method == "grid"
+        assert "グリッドサーチ" in reason
+        dlg.close()
+
+    def test_recommend_bayesian_for_medium_space(self, qapp):
+        """中規模空間ではベイズ最適化を推奨。"""
+        from app.ui.optimizer_dialog import OptimizerDialog
+
+        dlg = OptimizerDialog()
+        # Cd: 100-2000, step=100 → 20通り, alpha: 0.1-1.0, step=0.1 → 10通り → 200通り
+        rec_method, reason, iter_hint = dlg._recommend_method()
+        assert rec_method == "bayesian"
+        assert "ベイズ" in reason
+        assert "推奨反復数" in iter_hint
+        dlg.close()
+
+    def test_recommend_button_exists(self, qapp):
+        """おすすめボタンが存在する。"""
+        from app.ui.optimizer_dialog import OptimizerDialog
+
+        dlg = OptimizerDialog()
+        assert hasattr(dlg, "_method_rec_btn")
+        assert dlg._method_rec_btn.text() == "💡 おすすめ"
+        dlg.close()
+
+    def test_recommendation_hint_in_est_label(self, qapp):
+        """推奨手法が異なる場合、推定ラベルにヒントが表示される。"""
+        from app.ui.optimizer_dialog import OptimizerDialog
+
+        dlg = OptimizerDialog()
+        # デフォルトはグリッドサーチ選択、200通り → ベイズ推奨
+        dlg._method_combo.setCurrentIndex(0)  # グリッドサーチ
+        dlg._update_est_run_label()
+        label_text = dlg._est_run_label.text()
+        assert "💡" in label_text or "推奨" in label_text
+        dlg.close()
+
+
+class TestStagnationDetection:
+    """収束停滞検出のテスト。"""
+
+    def test_no_stagnation_with_improving_data(self, qapp):
+        """改善が続くデータでは停滞を検出しない。"""
+        from app.ui.optimizer_dialog import OptimizerDialog
+        from app.services.optimizer import OptimizationCandidate
+
+        candidates = [
+            OptimizationCandidate(
+                params={"x": float(i)},
+                objective_value=100.0 - i,
+                response_values={"max_drift": 0.01 - i * 0.0001},
+                is_feasible=True,
+            )
+            for i in range(50)
+        ]
+        result = OptimizerDialog._detect_stagnation(candidates)
+        assert result is None
+
+    def test_detect_stagnation_with_flat_data(self, qapp):
+        """後半がフラットなデータで停滞を検出する。"""
+        from app.ui.optimizer_dialog import OptimizerDialog
+        from app.services.optimizer import OptimizationCandidate
+
+        # 前半: 改善あり、後半: フラット
+        candidates = []
+        for i in range(100):
+            if i < 30:
+                val = 10.0 - i * 0.1  # 改善
+            else:
+                val = 7.0 + (i % 3) * 0.001  # ほぼフラット（最良は7.0）
+            candidates.append(
+                OptimizationCandidate(
+                    params={"x": float(i)},
+                    objective_value=val,
+                    response_values={"max_drift": val * 0.001},
+                    is_feasible=True,
+                )
+            )
+        result = OptimizerDialog._detect_stagnation(candidates)
+        assert result is not None
+        assert result["stagnation_length"] > 10
+        assert result["total_evals"] == 100
+
+    def test_no_stagnation_with_few_data(self, qapp):
+        """データが少ない場合は停滞検出しない。"""
+        from app.ui.optimizer_dialog import OptimizerDialog
+        from app.services.optimizer import OptimizationCandidate
+
+        candidates = [
+            OptimizationCandidate(
+                params={"x": 1.0},
+                objective_value=5.0,
+                response_values={"max_drift": 0.005},
+                is_feasible=True,
+            )
+            for _ in range(5)
+        ]
+        result = OptimizerDialog._detect_stagnation(candidates)
+        assert result is None
+
+    def test_stagnation_with_infeasible_mixed(self, qapp):
+        """infeasibleが混在してもfeasibleのみで判定する。"""
+        from app.ui.optimizer_dialog import OptimizerDialog
+        from app.services.optimizer import OptimizationCandidate
+
+        candidates = []
+        for i in range(80):
+            is_f = i % 2 == 0  # 半分がfeasible
+            val = 5.0 if is_f else float("inf")
+            candidates.append(
+                OptimizationCandidate(
+                    params={"x": float(i)},
+                    objective_value=val,
+                    response_values={"max_drift": 0.005},
+                    is_feasible=is_f,
+                )
+            )
+        result = OptimizerDialog._detect_stagnation(candidates)
+        # 全feasibleが同値(5.0) → 停滞検出
+        assert result is not None

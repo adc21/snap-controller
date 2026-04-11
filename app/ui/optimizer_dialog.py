@@ -364,6 +364,12 @@ class OptimizerDialog(QDialog):
         self._method_combo.currentIndexChanged.connect(self._on_method_changed)
         row1.addWidget(self._method_combo)
 
+        self._method_rec_btn = QPushButton("💡 おすすめ")
+        self._method_rec_btn.setToolTip("パラメータ空間のサイズに基づいて最適な探索手法を推薦します")
+        self._method_rec_btn.setFixedWidth(90)
+        self._method_rec_btn.clicked.connect(self._show_method_recommendation)
+        row1.addWidget(self._method_rec_btn)
+
         row1.addWidget(QLabel("反復数:"))
         self._iter_spin = QSpinBox()
         self._iter_spin.setRange(10, 10000)
@@ -671,8 +677,19 @@ class OptimizerDialog(QDialog):
             color = "#b71c1c"
             icon = "🔴"
 
+        # 推奨手法ヒント
+        rec_method, _, _ = self._recommend_method()
+        current_method = self._method_combo.currentData() if hasattr(self, "_method_combo") else "grid"
+        rec_hint = ""
+        if current_method != rec_method:
+            for i in range(self._method_combo.count()):
+                if self._method_combo.itemData(i) == rec_method:
+                    rec_hint = f"  💡 推奨: {self._method_combo.itemText(i)}"
+                    break
+
         self._est_run_label.setText(
-            f"{icon} 推定 <b>{n_runs}</b> 回の解析を実行します（{method_label} | 所要時間目安: {time_str}）"
+            f"{icon} 推定 <b>{n_runs}</b> 回の解析を実行します"
+            f"（{method_label} | 所要時間目安: {time_str}）{rec_hint}"
         )
         self._est_run_label.setStyleSheet(
             f"font-size: 11px; color: {color}; padding: 2px 4px;"
@@ -792,6 +809,169 @@ class OptimizerDialog(QDialog):
     def _on_method_changed(self, index: int) -> None:
         method = self._method_combo.currentData()
         self._iter_spin.setEnabled(method in ("random", "bayesian", "ga", "sa"))
+
+    def _recommend_method(self) -> tuple[str, str, str]:
+        """パラメータ空間に基づいて推奨手法を決定します。
+
+        Returns
+        -------
+        tuple[str, str, str]
+            (推奨手法data値, 推奨理由テキスト, 推奨反復数テキスト)
+        """
+        n_params = len(self._param_widgets)
+        grid_runs = self._estimate_grid_runs()
+
+        if n_params == 0:
+            return "grid", "パラメータが未設定です。", ""
+
+        if grid_runs <= 50:
+            return (
+                "grid",
+                f"パラメータ空間が小さい（{grid_runs}通り）ため、"
+                "全探索のグリッドサーチが最適です。最適解の見落としがありません。",
+                "",
+            )
+        elif grid_runs <= 500:
+            return (
+                "bayesian",
+                f"パラメータ空間が中規模（グリッド{grid_runs}通り）です。"
+                "ベイズ最適化は少ない試行数で有望な領域を集中探索でき、効率的です。",
+                f"推奨反復数: {min(grid_runs // 2, 200)}回",
+            )
+        elif n_params <= 3:
+            return (
+                "bayesian",
+                f"パラメータ空間が大きい（グリッド{grid_runs}通り）ですが、"
+                f"パラメータ数が{n_params}個と少ないため、"
+                "ベイズ最適化のガウス過程モデルが効果的に機能します。",
+                f"推奨反復数: {min(grid_runs // 3, 300)}回",
+            )
+        else:
+            return (
+                "ga",
+                f"パラメータ数が多く（{n_params}個）、"
+                f"探索空間が非常に大きい（グリッド{grid_runs}通り）ため、"
+                "遺伝的アルゴリズム(GA)が適しています。"
+                "集団ベースの探索で広い空間を効率的にカバーします。",
+                f"推奨反復数: {min(max(n_params * 50, 200), 500)}回",
+            )
+
+    def _show_method_recommendation(self) -> None:
+        """パラメータ空間に基づく手法推奨をダイアログで表示し、適用を提案します。"""
+        rec_method, reason, iter_hint = self._recommend_method()
+
+        # 現在選択中の手法名
+        current_method = self._method_combo.currentData()
+        current_label = self._method_combo.currentText()
+
+        # 推奨手法名を取得
+        rec_label = ""
+        rec_index = 0
+        for i in range(self._method_combo.count()):
+            if self._method_combo.itemData(i) == rec_method:
+                rec_label = self._method_combo.itemText(i)
+                rec_index = i
+                break
+
+        msg = f"<b>推奨手法: {rec_label}</b><br><br>{reason}"
+        if iter_hint:
+            msg += f"<br><br>{iter_hint}"
+
+        if current_method == rec_method:
+            msg += "<br><br>✅ 現在の選択は推奨手法と一致しています。"
+            QMessageBox.information(self, "手法推奨", msg)
+        else:
+            msg += f"<br><br>現在の選択「{current_label}」から変更しますか？"
+            reply = QMessageBox.question(
+                self, "手法推奨", msg,
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            )
+            if reply == QMessageBox.StandardButton.Yes:
+                self._method_combo.setCurrentIndex(rec_index)
+                # 推奨反復数も適用
+                if iter_hint and rec_method != "grid":
+                    import re
+                    m = re.search(r"(\d+)回", iter_hint)
+                    if m:
+                        self._iter_spin.setValue(int(m.group(1)))
+
+    # ------------------------------------------------------------------
+    # Convergence stagnation detection
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _detect_stagnation(
+        candidates: list,
+        window_ratio: float = 0.15,
+        min_window: int = 10,
+    ) -> dict | None:
+        """収束履歴から停滞区間を検出します。
+
+        Parameters
+        ----------
+        candidates : list[OptimizationCandidate]
+            全候補リスト（評価順）。
+        window_ratio : float
+            停滞判定ウィンドウ（全体の割合）。
+        min_window : int
+            最小ウィンドウサイズ。
+
+        Returns
+        -------
+        dict | None
+            停滞が検出された場合は情報辞書、なければ None。
+            keys: stagnation_start, stagnation_length, best_at_stagnation,
+                  total_evals, improvement_pct
+        """
+        feasible_vals = [
+            c.objective_value for c in candidates
+            if c.is_feasible and c.objective_value != float("inf")
+        ]
+        if len(feasible_vals) < min_window * 2:
+            return None
+
+        # 累積最小値を計算
+        best_so_far = []
+        current_best = float("inf")
+        for v in feasible_vals:
+            current_best = min(current_best, v)
+            best_so_far.append(current_best)
+
+        window = max(min_window, int(len(feasible_vals) * window_ratio))
+        total = len(feasible_vals)
+
+        # 末尾window区間で改善がなかったか
+        if total <= window:
+            return None
+
+        tail_start = total - window
+        tail_best = best_so_far[-1]
+        pre_tail_best = best_so_far[tail_start]
+
+        # 改善率
+        if pre_tail_best == 0:
+            return None
+        improvement = abs(pre_tail_best - tail_best) / abs(pre_tail_best)
+
+        if improvement < 1e-4:  # 0.01%未満の改善 = 停滞
+            # 停滞開始点を遡って特定
+            stag_start = tail_start
+            for i in range(tail_start, 0, -1):
+                if abs(best_so_far[i] - tail_best) / max(abs(tail_best), 1e-12) > 1e-4:
+                    stag_start = i + 1
+                    break
+            else:
+                stag_start = 0
+
+            return {
+                "stagnation_start": stag_start,
+                "stagnation_length": total - stag_start,
+                "best_at_stagnation": tail_best,
+                "total_evals": total,
+                "improvement_pct": improvement * 100,
+            }
+
+        return None
 
     # ------------------------------------------------------------------
     # Optimization execution
@@ -1014,14 +1194,24 @@ class OptimizerDialog(QDialog):
         # UX改善（第9回④）: ベストソリューションサマリーカードを更新
         self._update_best_summary_card(result)
 
+        # 停滞検出
+        stagnation = self._detect_stagnation(result.all_candidates)
+
         # サマリー
         if result.best:
             obj_label = result.config.objective_label if result.config else "目的関数"
             eval_tag = "[SNAP]" if result.evaluation_method == "snap" else "[モック]"
-            self._result_summary.setText(
+            summary_text = (
                 f"{eval_tag} 最良解: {obj_label} = {result.best.objective_value:.6g}  |  "
                 f"制約満足: {len(result.feasible_candidates)} / {len(result.all_candidates)} 点"
             )
+            if stagnation:
+                stag_pct = stagnation["stagnation_length"] / stagnation["total_evals"] * 100
+                summary_text += (
+                    f"  |  ⚠ 停滞検出: 最後の{stagnation['stagnation_length']}回"
+                    f"（{stag_pct:.0f}%）で改善なし"
+                )
+            self._result_summary.setText(summary_text)
             self._apply_btn.setEnabled(True)
             self._export_csv_btn.setEnabled(True)
             self._sensitivity_btn.setEnabled(True)
@@ -1243,6 +1433,20 @@ class OptimizerDialog(QDialog):
                 best_so_far.append(current_best)
             ax.plot(feasible_iters, best_so_far,
                     color="#ff7f0e", linewidth=2, label="累積最良値")
+
+        # 停滞区間のハイライト
+        stagnation = self._detect_stagnation(result.all_candidates)
+        if stagnation and feasible_iters:
+            stag_start_idx = stagnation["stagnation_start"]
+            # feasible_iters上のインデックスに対応する評価回数
+            if stag_start_idx < len(feasible_iters):
+                stag_x_start = feasible_iters[stag_start_idx]
+                stag_x_end = feasible_iters[-1]
+                ax.axvspan(
+                    stag_x_start, stag_x_end,
+                    alpha=0.08, color="#ff9800",
+                    label=f"停滞区間 ({stagnation['stagnation_length']}回)",
+                )
 
         obj_label = result.config.objective_label if result.config else "目的関数"
         ax.set_xlabel("評価回数", fontsize=7)
