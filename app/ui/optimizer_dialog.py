@@ -1346,30 +1346,49 @@ class OptimizerDialog(QDialog):
             return
 
         if not result.best:
-            # 解が見つからなかった場合: 黄色カードで警告表示
+            # 制約を満たす解なし: 赤カードで明確に警告 + 最も惜しい解を表示
             self._best_summary_card.setStyleSheet(
                 "QFrame {"
-                "  background-color: #fff8e1;"
-                "  border: 1px solid #ffca28;"
-                "  border-left: 5px solid #f57f17;"
+                "  background-color: #ffebee;"
+                "  border: 1px solid #ef5350;"
+                "  border-left: 5px solid #c62828;"
                 "  border-radius: 4px;"
                 "}"
             )
-            self._bc_title_lbl.setText("<b>⚠ 制約を満たす解が見つかりませんでした</b>")
+            self._bc_title_lbl.setText(
+                "<b>制約を満たす解が見つかりませんでした</b>"
+            )
             self._bc_title_lbl.setStyleSheet(
-                "color: #e65100; font-size: 12px; background: transparent; border: none;"
+                "color: #b71c1c; font-size: 12px; background: transparent; border: none;"
             )
-            self._bc_params_lbl.setText(
-                "パラメータ範囲を広げるか、制約条件を緩和して再度お試しください。"
-            )
+
+            # 最も惜しい解（least infeasible）を表示
+            least_inf = result.least_infeasible
+            if least_inf and least_inf.objective_value < float("inf"):
+                param_strs = [f"{k}={v:.4g}" for k, v in least_inf.params.items()]
+                margin_strs = []
+                for mk, mv in least_inf.constraint_margins.items():
+                    if mv < 0 and mv > float("-inf"):
+                        margin_strs.append(f"{mk}: {mv:+.4g}")
+                detail = "  /  ".join(param_strs)
+                if margin_strs:
+                    detail += "\n制約違反: " + ", ".join(margin_strs)
+                self._bc_params_lbl.setText(
+                    f"最も惜しい解: {detail}\n"
+                    "パラメータ範囲を広げるか、制約条件を緩和して再度お試しください。"
+                )
+            else:
+                self._bc_params_lbl.setText(
+                    "パラメータ範囲を広げるか、制約条件を緩和して再度お試しください。"
+                )
             self._bc_params_lbl.setStyleSheet(
-                "color: #bf360c; font-size: 10px; background: transparent; border: none;"
+                "color: #b71c1c; font-size: 10px; background: transparent; border: none;"
             )
             self._bc_obj_lbl.setText(
                 f"{len(result.all_candidates)}点\n評価済み"
             )
             self._bc_obj_lbl.setStyleSheet(
-                "color: #e65100; font-size: 13px; font-weight: bold;"
+                "color: #c62828; font-size: 13px; font-weight: bold;"
                 "  background: transparent; border: none; text-align: right;"
             )
             self._best_summary_card.show()

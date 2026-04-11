@@ -444,6 +444,19 @@ class OptimizationResult:
         return sorted(feasible, key=lambda c: c.objective_value)
 
     @property
+    def least_infeasible(self) -> Optional[OptimizationCandidate]:
+        """制約違反候補の中で最も目的関数値が良い候補。
+
+        全候補が制約違反の場合に「最も惜しい解」を設計者に提示するのに使用。
+        制約マージンの最小違反量でソート（違反が少ない順）。
+        """
+        infeasible = [c for c in self.all_candidates if not c.is_feasible]
+        if not infeasible:
+            return None
+        # 目的関数値が良い順にソート（inf除外を優先）
+        return min(infeasible, key=lambda c: c.objective_value)
+
+    @property
     def all_ranked_candidates(self) -> List[OptimizationCandidate]:
         """全候補を制約満足優先・目的関数値順でソート。
 
@@ -697,28 +710,65 @@ class _OptimizationWorker(QThread):
     ) -> tuple:
         """制約条件を満たすかチェックし、各制約のマージンを返します。
 
+        応答データが空（評価失敗）の場合や、制約キーが応答に含まれない
+        場合は自動的に infeasible として扱います。これにより、SNAP解析
+        失敗時に制約違反を見逃すことを防ぎます。
+
         Returns
         -------
         (is_feasible, margins) : tuple[bool, Dict[str, float]]
             margins は各制約のマージン（正=余裕, 負=違反量）。
+            キー欠損時は -inf をマージンとして記録します。
         """
         is_feasible = True
         margins: Dict[str, float] = {}
+
+        # 応答が空の場合（評価失敗）は即座に infeasible
+        if not response and (config.constraints or config.criteria):
+            for key in config.constraints:
+                margins[key] = float("-inf")
+            if config.criteria:
+                for item in config.criteria.items:
+                    if item.enabled:
+                        margins[f"criteria:{item.key}"] = float("-inf")
+            logger.warning("応答データが空のため制約チェック不可 → infeasible")
+            return False, margins
+
         # 明示的な制約
         for key, limit in config.constraints.items():
             if key in response:
                 margins[key] = limit - response[key]
                 if response[key] > limit:
                     is_feasible = False
+            else:
+                # 制約キーが応答に含まれない → 安全側で infeasible
+                is_feasible = False
+                margins[key] = float("-inf")
+                logger.warning(
+                    "制約キー '%s' が応答に含まれません → infeasible として扱います",
+                    key,
+                )
         # 性能基準による制約
         if config.criteria:
             verdicts = config.criteria.evaluate(response)
+            # 有効な基準のキーセット（無効基準はNoneでも問題なし）
+            enabled_keys = {
+                item.key for item in config.criteria.items
+                if item.enabled and item.limit_value is not None
+            }
             for k, v in verdicts.items():
                 if v is False:
                     is_feasible = False
                     margins[f"criteria:{k}"] = -1.0
                 elif v is True:
                     margins[f"criteria:{k}"] = 1.0
+                elif v is None and k in enabled_keys:
+                    # 有効な基準なのに応答値が欠損 → 安全側で infeasible
+                    is_feasible = False
+                    margins[f"criteria:{k}"] = float("-inf")
+                    logger.warning(
+                        "性能基準 '%s' の応答値が欠損 → infeasible として扱います", k,
+                    )
         return is_feasible, margins
 
     def _penalized_objective(

@@ -1730,3 +1730,118 @@ class TestParallelEvaluation:
         assert results[2].objective_value != float("inf")
 
 
+# ---------------------------------------------------------------------------
+# Phase P: 制約安全性強化 + least_infeasible テスト
+# ---------------------------------------------------------------------------
+
+class TestConstraintSafety:
+    """制約キー欠損・空応答時の安全側処理を検証。"""
+
+    def test_missing_constraint_key_is_infeasible(self):
+        """制約キーが応答に含まれない場合は infeasible。"""
+        config = OptimizationConfig(
+            objective_key="max_drift",
+            parameters=[ParameterRange(key="x", min_val=0, max_val=1, step=0.1)],
+            method="grid",
+            constraints={"max_drift": 0.005, "max_acc": 5.0},
+        )
+        worker = _OptimizationWorker(config, lambda p: {})
+        # max_acc が応答に含まれない
+        is_feasible, margins = worker._check_constraints(
+            {"max_drift": 0.003}, config
+        )
+        assert is_feasible is False
+        assert margins["max_drift"] == pytest.approx(0.002)
+        assert margins["max_acc"] == float("-inf")
+
+    def test_empty_response_is_infeasible(self):
+        """応答が空の場合は全制約 infeasible。"""
+        config = OptimizationConfig(
+            objective_key="max_drift",
+            parameters=[ParameterRange(key="x", min_val=0, max_val=1, step=0.1)],
+            method="grid",
+            constraints={"max_drift": 0.005},
+        )
+        worker = _OptimizationWorker(config, lambda p: {})
+        is_feasible, margins = worker._check_constraints({}, config)
+        assert is_feasible is False
+        assert margins["max_drift"] == float("-inf")
+
+    def test_no_constraints_empty_response_is_feasible(self):
+        """制約がない場合は空応答でも feasible（制約なし=何でもOK）。"""
+        config = OptimizationConfig(
+            objective_key="max_drift",
+            parameters=[ParameterRange(key="x", min_val=0, max_val=1, step=0.1)],
+            method="grid",
+        )
+        worker = _OptimizationWorker(config, lambda p: {})
+        is_feasible, margins = worker._check_constraints({}, config)
+        assert is_feasible is True
+        assert margins == {}
+
+    def test_criteria_missing_value_is_infeasible(self):
+        """有効な性能基準の応答値が欠損している場合は infeasible。"""
+        from app.models.performance_criteria import PerformanceCriteria, CriterionItem
+        criteria = PerformanceCriteria(
+            name="test",
+            items=[CriterionItem(key="max_drift", label="最大層間変形角",
+                                 unit="rad", enabled=True, limit_value=0.005)],
+        )
+        config = OptimizationConfig(
+            objective_key="max_drift",
+            parameters=[ParameterRange(key="x", min_val=0, max_val=1, step=0.1)],
+            method="grid",
+            criteria=criteria,
+        )
+        worker = _OptimizationWorker(config, lambda p: {})
+        # max_drift が応答に含まれない → criteria evaluate → None → infeasible
+        is_feasible, margins = worker._check_constraints(
+            {"other_key": 1.0}, config
+        )
+        assert is_feasible is False
+        assert margins["criteria:max_drift"] == float("-inf")
+
+
+class TestLeastInfeasible:
+    """least_infeasible プロパティの検証。"""
+
+    def test_returns_best_infeasible(self):
+        """制約違反候補の中で目的関数値が最小の候補を返す。"""
+        r = OptimizationResult(all_candidates=[
+            OptimizationCandidate(is_feasible=False, objective_value=0.05,
+                                  constraint_margins={"max_drift": -0.001}),
+            OptimizationCandidate(is_feasible=False, objective_value=0.02,
+                                  constraint_margins={"max_drift": -0.003}),
+            OptimizationCandidate(is_feasible=False, objective_value=0.08,
+                                  constraint_margins={"max_drift": -0.01}),
+        ])
+        least = r.least_infeasible
+        assert least is not None
+        assert least.objective_value == 0.02
+
+    def test_none_when_all_feasible(self):
+        """全候補が feasible の場合は None。"""
+        r = OptimizationResult(all_candidates=[
+            OptimizationCandidate(is_feasible=True, objective_value=0.01),
+            OptimizationCandidate(is_feasible=True, objective_value=0.02),
+        ])
+        assert r.least_infeasible is None
+
+    def test_none_when_empty(self):
+        """候補が空の場合は None。"""
+        r = OptimizationResult()
+        assert r.least_infeasible is None
+
+    def test_mixed_candidates(self):
+        """feasible と infeasible が混在する場合、infeasible のみから選択。"""
+        r = OptimizationResult(all_candidates=[
+            OptimizationCandidate(is_feasible=True, objective_value=0.01),
+            OptimizationCandidate(is_feasible=False, objective_value=0.005),
+            OptimizationCandidate(is_feasible=False, objective_value=0.02),
+        ])
+        least = r.least_infeasible
+        assert least is not None
+        assert least.objective_value == 0.005
+        assert least.is_feasible is False
+
+
