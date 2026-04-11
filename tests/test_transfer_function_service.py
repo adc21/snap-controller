@@ -14,6 +14,7 @@ from app.services.transfer_function_service import (
     TransferFunctionService,
     TransferFunctionPeakMinimizer,
     PeakMinimizationResult,
+    sdof_tmd_transfer_function,
 )
 
 
@@ -167,6 +168,67 @@ class TestTransferFunctionService:
 # TransferFunctionPeakMinimizer
 # ---------------------------------------------------------------------------
 
+class TestSdofTmdTransferFunction:
+    """解析的 SDOF+TMD 伝達関数のユニットテスト。"""
+
+    def test_no_tmd_resonance(self):
+        """TMD なし（mu=0 相当: zeta_d=0, f_ratio far off）でSDOFの共振ピークが出る。"""
+        f = np.linspace(0.01, 20.0, 2000)
+        f_n = 5.0
+        zeta_s = 0.02
+        # TMD を無効化: 質量比ゼロに近い
+        H = sdof_tmd_transfer_function(f, f_n, zeta_s, mu=1e-10, f_ratio=1.0, zeta_d=0.1)
+        # ピークは f_n 付近
+        peak_idx = np.argmax(H)
+        peak_freq = f[peak_idx]
+        assert abs(peak_freq - f_n) < 0.5  # 固有振動数付近
+
+    def test_tmd_splits_peak(self):
+        """TMD 付加でピークが分裂し、元の1ピークよりゲインが下がる。"""
+        f = np.linspace(0.01, 20.0, 4000)
+        f_n = 5.0
+        zeta_s = 0.02
+        mu = 0.05
+
+        # TMD なし（mu≈0）
+        H_no_tmd = sdof_tmd_transfer_function(f, f_n, zeta_s, mu=1e-10, f_ratio=1.0, zeta_d=0.1)
+        peak_no_tmd = np.max(H_no_tmd)
+
+        # TMD 付き（Den Hartog 最適同調近似）
+        f_opt = 1.0 / (1.0 + mu)
+        zeta_opt = np.sqrt(3 * mu / (8 * (1 + mu)))
+        H_tmd = sdof_tmd_transfer_function(f, f_n, zeta_s, mu=mu, f_ratio=f_opt, zeta_d=zeta_opt)
+        peak_tmd = np.max(H_tmd)
+
+        assert peak_tmd < peak_no_tmd
+
+    def test_den_hartog_optimal(self):
+        """Den Hartog 最適同調で SDOF ピークが大幅に低減される。"""
+        f = np.linspace(0.01, 20.0, 4000)
+        f_n = 5.0
+        zeta_s = 0.0  # 無減衰主構造
+        mu = 0.05
+
+        # 無減衰SDOFのピーク（∞に近い）
+        H_no = sdof_tmd_transfer_function(f, f_n, zeta_s, mu=1e-10, f_ratio=1.0, zeta_d=0.01)
+        peak_no = np.max(H_no)
+
+        # Den Hartog 最適
+        f_opt = 1.0 / (1.0 + mu)
+        zeta_opt = np.sqrt(3 * mu / (8 * (1 + mu)))
+        H_opt = sdof_tmd_transfer_function(f, f_n, zeta_s, mu=mu, f_ratio=f_opt, zeta_d=zeta_opt)
+        peak_opt = np.max(H_opt)
+
+        # 大幅低減
+        assert peak_opt < peak_no * 0.3
+
+    def test_zero_frequency_returns_ones(self):
+        """f_n=0 の場合は全て 1.0 を返す。"""
+        f = np.linspace(0.1, 10.0, 100)
+        H = sdof_tmd_transfer_function(f, f_n=0.0, zeta_s=0.02, mu=0.05, f_ratio=1.0, zeta_d=0.1)
+        np.testing.assert_allclose(H, 1.0)
+
+
 class TestTransferFunctionPeakMinimizer:
     @pytest.fixture
     def sample_tf(self) -> TransferFunctionResult:
@@ -199,9 +261,19 @@ class TestTransferFunctionPeakMinimizer:
 
         assert result.optimized_peak_gain_db <= result.initial_peak_gain_db
 
+    def test_constructor_params(self, sample_tf):
+        """コンストラクタのパラメータが正しく設定される。"""
+        minimizer = TransferFunctionPeakMinimizer(
+            sample_tf, structural_damping=0.03, mass_ratio=0.10
+        )
+        assert minimizer.zeta_s == 0.03
+        assert minimizer.mu == 0.10
+
     def test_summary_text(self, sample_tf):
         """summary_text が文字列を返す。"""
         minimizer = TransferFunctionPeakMinimizer(sample_tf)
         result = minimizer.optimize(method="grid", grid_points=3)
         text = result.summary_text()
-        assert "ピーク最小化最適化結果" in text
+        assert "TMD ピーク最小化最適化結果" in text
+        assert "zeta_d" in text
+        assert "f_d/f_n" in text

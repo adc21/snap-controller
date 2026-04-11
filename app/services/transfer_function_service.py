@@ -287,58 +287,179 @@ class PeakMinimizationResult:
             else 0
         )
         lines = [
-            "ピーク最小化最適化結果",
+            "TMD ピーク最小化最適化結果",
             f"  初期ピークゲイン: {self.initial_peak_gain_db:.2f} dB",
             f"  最適化後ピークゲイン: {self.optimized_peak_gain_db:.2f} dB",
             f"  ゲイン低減量: {self.peak_reduction_db:.2f} dB ({reduction_pct:.1f}%)",
             f"  初期ピーク周波数: {self.initial_peak_freq:.2f} Hz",
             f"  最適化後ピーク周波数: {self.optimized_peak_freq:.2f} Hz",
-            f"  最適減衰定数: {self.optimal_damping_ratio:.4f}",
-            f"  最適剛性比: {self.optimal_stiffness_ratio:.4f}",
+            f"  最適TMD減衰比 (zeta_d): {self.optimal_damping_ratio:.4f}",
+            f"  最適同調比 (f_d/f_n): {self.optimal_stiffness_ratio:.4f}",
             f"  評価回数: {self.num_evaluations}",
         ]
         return "\n".join(lines)
 
 
+def sdof_tmd_transfer_function(
+    frequencies: np.ndarray,
+    f_n: float,
+    zeta_s: float,
+    mu: float,
+    f_ratio: float,
+    zeta_d: float,
+) -> np.ndarray:
+    """SDOF + TMD 系の変位伝達関数 |H(f)| を解析的に計算する。
+
+    主構造（質量 M, 固有振動数 f_n, 減衰比 zeta_s）に
+    TMD（質量比 mu = m/M, 同調比 f_ratio = f_d/f_n, 減衰比 zeta_d）を
+    付加した 2 自由度系の、調和地動入力に対する主構造変位の
+    振幅増幅率を返す。
+
+    Den Hartog の定式化に基づく:
+      H(r) = |N(r)| / |D(r)|
+    ただし r = omega / omega_n (振動数比)
+
+    Parameters
+    ----------
+    frequencies : array
+        周波数 [Hz]
+    f_n : float
+        主構造の固有振動数 [Hz]
+    zeta_s : float
+        主構造の減衰比
+    mu : float
+        質量比 m_d / M
+    f_ratio : float
+        同調比 f_d / f_n
+    zeta_d : float
+        TMD 減衰比
+
+    Returns
+    -------
+    H : array
+        振幅増幅率 |X1 / X_g|（線形スケール）
+    """
+    if f_n <= 0:
+        return np.ones_like(frequencies)
+
+    r = frequencies / f_n  # 振動数比 omega/omega_n
+
+    # 分子: N(r) = (f^2 - r^2) + j*(2*zeta_d*f*r)
+    N_real = f_ratio**2 - r**2
+    N_imag = 2.0 * zeta_d * f_ratio * r
+
+    # 分母: D(r) = [(1-r^2)(f^2-r^2) - mu*r^2*f^2 - 4*zeta_s*zeta_d*f*r^2]
+    #              + j*[2*zeta_s*r*(f^2-r^2) + 2*zeta_d*f*r*(1-r^2-mu*r^2)]
+    D_real = (
+        (1.0 - r**2) * (f_ratio**2 - r**2)
+        - mu * r**2 * f_ratio**2
+        - 4.0 * zeta_s * zeta_d * f_ratio * r**2
+    )
+    D_imag = (
+        2.0 * zeta_s * r * (f_ratio**2 - r**2)
+        + 2.0 * zeta_d * f_ratio * r * (1.0 - r**2 - mu * r**2)
+    )
+
+    N_mag = np.sqrt(N_real**2 + N_imag**2)
+    D_mag = np.sqrt(D_real**2 + D_imag**2)
+
+    eps = 1e-30
+    H = N_mag / (D_mag + eps)
+    return H
+
+
 class TransferFunctionPeakMinimizer:
-    """Optimize damper parameters to minimize transfer function peak gain."""
+    """TMD パラメータ最適化による伝達関数ピーク低減。
+
+    解析的 SDOF + TMD 伝達関数モデルを使い、
+    TMD の減衰比 (zeta_d) と同調比 (f_ratio = f_d/f_n) を
+    最適化してピークゲインを最小化する。
+
+    パラメータの意味:
+      - damping_ratio → TMD 減衰比 zeta_d
+      - stiffness_ratio → TMD 同調比 f_ratio (= f_d / f_n)
+    """
 
     def __init__(
         self,
         transfer_function: TransferFunctionResult,
         natural_frequency: Optional[float] = None,
+        structural_damping: float = 0.02,
+        mass_ratio: float = 0.05,
     ) -> None:
-        """Initialize minimizer."""
+        """Initialize minimizer.
+
+        Parameters
+        ----------
+        transfer_function : TransferFunctionResult
+            元の伝達関数（比較・表示用）。
+        natural_frequency : float, optional
+            主構造の固有振動数 [Hz]。None の場合はピーク周波数を使用。
+        structural_damping : float
+            主構造の減衰比。デフォルト 0.02（2%）。
+        mass_ratio : float
+            TMD 質量比 mu = m_d / M。デフォルト 0.05（5%）。
+        """
         self.tf = transfer_function
         self.natural_freq = natural_frequency or transfer_function.peak_freq
+        self.zeta_s = structural_damping
+        self.mu = mass_ratio
         self._eval_count = 0
 
     def _synthesize_damper_response(
         self, damping_ratio: float, stiffness_ratio: float
     ) -> TransferFunctionResult:
-        """Synthesize damped transfer function."""
+        """解析的 SDOF+TMD モデルで制振後の伝達関数を合成する。
+
+        Parameters
+        ----------
+        damping_ratio : float
+            TMD 減衰比 zeta_d。
+        stiffness_ratio : float
+            TMD 同調比 f_ratio = f_d / f_n。
+        """
         f = self.tf.frequencies
-        gain_db_orig = self.tf.gain_db.copy()
+        eps = 1e-30
 
-        peak_idx = np.argmax(gain_db_orig)
-        if peak_idx == 0 or peak_idx >= len(f) - 1:
-            peak_idx = np.clip(peak_idx, 1, len(f) - 2)
-
-        freq_ratio = f / self.natural_freq if self.natural_freq > 0 else f + 1e-6
-        attenuation_db = -20 * np.log10(
-            1 + stiffness_ratio * (1 + 2 * damping_ratio) + 1e-12
+        H = sdof_tmd_transfer_function(
+            frequencies=f,
+            f_n=self.natural_freq,
+            zeta_s=self.zeta_s,
+            mu=self.mu,
+            f_ratio=stiffness_ratio,
+            zeta_d=damping_ratio,
         )
-        gain_db_damped = gain_db_orig + attenuation_db
+
+        gain_db = 20.0 * np.log10(H + eps)
+
+        # 位相計算（SDOF+TMD）
+        r = f / self.natural_freq if self.natural_freq > 0 else f + eps
+        N_real = stiffness_ratio**2 - r**2
+        N_imag = 2.0 * damping_ratio * stiffness_ratio * r
+        D_real = (
+            (1.0 - r**2) * (stiffness_ratio**2 - r**2)
+            - self.mu * r**2 * stiffness_ratio**2
+            - 4.0 * self.zeta_s * damping_ratio * stiffness_ratio * r**2
+        )
+        D_imag = (
+            2.0 * self.zeta_s * r * (stiffness_ratio**2 - r**2)
+            + 2.0 * damping_ratio * stiffness_ratio * r
+            * (1.0 - r**2 - self.mu * r**2)
+        )
+        H_complex = (N_real + 1j * N_imag) / (D_real + 1j * D_imag + eps)
+        phase_deg = np.degrees(np.angle(H_complex))
+
+        peak_idx = int(np.argmax(gain_db))
 
         return TransferFunctionResult(
             frequencies=f.copy(),
-            gain_db=gain_db_damped,
-            phase_deg=self.tf.phase_deg.copy(),
+            gain_db=gain_db,
+            phase_deg=phase_deg,
             coherence=self.tf.coherence.copy() if self.tf.coherence is not None else None,
             input_label=self.tf.input_label,
-            output_label=self.tf.output_label + " (damped)",
-            peak_freq=float(f[np.argmax(gain_db_damped)]),
-            peak_gain_db=float(np.max(gain_db_damped)),
+            output_label=self.tf.output_label + " (TMD付)",
+            peak_freq=float(f[peak_idx]),
+            peak_gain_db=float(gain_db[peak_idx]),
         )
 
     def _evaluate_objective(self, damping_ratio: float, stiffness_ratio: float) -> float:
@@ -347,7 +468,7 @@ class TransferFunctionPeakMinimizer:
 
         if not (0.001 <= damping_ratio <= 0.5):
             return 1000.0
-        if not (0.001 <= stiffness_ratio <= 1.0):
+        if not (0.01 <= stiffness_ratio <= 2.0):
             return 1000.0
 
         tf_damped = self._synthesize_damper_response(damping_ratio, stiffness_ratio)
@@ -356,11 +477,24 @@ class TransferFunctionPeakMinimizer:
     def optimize(
         self,
         damping_range: Tuple[float, float] = (0.01, 0.30),
-        stiffness_range: Tuple[float, float] = (0.01, 0.50),
+        stiffness_range: Tuple[float, float] = (0.5, 1.5),
         method: str = "grid",
         grid_points: int = 20,
     ) -> PeakMinimizationResult:
-        """Run peak minimization optimization."""
+        """TMD パラメータ最適化を実行する。
+
+        Parameters
+        ----------
+        damping_range : tuple
+            TMD 減衰比 zeta_d の探索範囲。
+        stiffness_range : tuple
+            TMD 同調比 f_ratio = f_d/f_n の探索範囲。
+            デフォルト (0.5, 1.5)。最適値は通常 1/(1+μ) 付近。
+        method : str
+            "grid" (グリッドサーチ) or "simplex" (L-BFGS-B)。
+        grid_points : int
+            グリッドサーチの各軸の分割数。
+        """
         self._eval_count = 0
         initial_peak = self.tf.peak_gain_db
         initial_freq = self.tf.peak_freq
