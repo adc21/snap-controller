@@ -157,23 +157,35 @@ class PeriodXbnReader:
                 beta[k] = rec[idx] if idx < rec_size else 0.0
 
             # PM は ω の後の float群。SNAPバージョンによりパディング数が異なるため
-            # w_pos+1, w_pos+2, w_pos+3 を試し、値が 0-200% に収まる最初の位置を採用
+            # w_pos+2 を優先（実観測: raw[10]がPM_X）、次に w_pos+1, +3, +4 を試す。
+            # β の支配方向と PM の最大方向が一致するオフセットを優先的に採用する。
             pm_keys = ("X", "Y", "Z", "R")
             pm = {}
             pm_found = False
-            for pm_offset in (1, 2, 3, 4):
+
+            # β の支配方向を求める (X=0, Y=1, Z=2)
+            beta_vals = [abs(beta.get(k, 0.0)) for k in ("X", "Y", "Z")]
+            dominant_beta_idx = beta_vals.index(max(beta_vals)) if max(beta_vals) > 0 else -1
+
+            best_pm: Optional[Dict[str, float]] = None
+            for pm_offset in (2, 1, 3, 4):
                 pm_start = w_pos + pm_offset
                 if pm_start + len(pm_keys) - 1 >= rec_size:
                     continue
                 candidates = [rec[pm_start + ki] for ki in range(len(pm_keys))]
                 if all(0.0 <= c <= 200.0 for c in candidates):
-                    for ki, k in enumerate(pm_keys):
-                        pm[k] = float(candidates[ki])
-                    pm_found = True
-                    break
+                    candidate_pm = {k: float(candidates[ki]) for ki, k in enumerate(pm_keys)}
+                    # β の支配方向と PM の最大方向が一致するかチェック
+                    pm_xyz = [candidate_pm.get(k, 0.0) for k in ("X", "Y", "Z")]
+                    dominant_pm_idx = pm_xyz.index(max(pm_xyz)) if max(pm_xyz) > 0 else -1
+                    if dominant_beta_idx >= 0 and dominant_pm_idx == dominant_beta_idx:
+                        pm = candidate_pm
+                        pm_found = True
+                        break
+                    elif best_pm is None:
+                        best_pm = candidate_pm
             if not pm_found:
-                for k in pm_keys:
-                    pm[k] = 0.0
+                pm = best_pm or {k: 0.0 for k in pm_keys}
 
             mode = ModeInfo(
                 mode_no=m + 1,

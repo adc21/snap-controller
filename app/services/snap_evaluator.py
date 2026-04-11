@@ -61,6 +61,9 @@ class SnapEvaluator:
         ログ出力コールバック。指定しない場合は logging を使用。
     keep_temp_files : bool
         デバッグ用に一時ファイルを保持するかどうか。デフォルト False。
+    snap_work_dir : str, optional
+        SNAP の work ディレクトリ。SNAP はここに結果を書き出す。
+        指定しない場合は tmp ディレクトリ内から結果を検索する。
     """
 
     def __init__(
@@ -73,6 +76,7 @@ class SnapEvaluator:
         timeout: int = 300,
         log_callback: Optional[Callable[[str], None]] = None,
         keep_temp_files: bool = False,
+        snap_work_dir: str = "",
     ) -> None:
         self.snap_exe_path = snap_exe_path
         self.base_s8i_path = base_s8i_path
@@ -82,6 +86,7 @@ class SnapEvaluator:
         self.timeout = timeout
         self.log_callback = log_callback or (lambda msg: logger.info(msg))
         self.keep_temp_files = keep_temp_files
+        self.snap_work_dir = snap_work_dir
 
         # 統計情報
         self._eval_count: int = 0
@@ -139,13 +144,17 @@ class SnapEvaluator:
         """
         実際に SNAP を実行して応答値を取得する内部メソッド。
         """
-        with tempfile.TemporaryDirectory(
-            prefix="snap_opt_",
-            delete=not self.keep_temp_files,
-        ) as tmp_dir:
+        tmp_dir = tempfile.mkdtemp(prefix="snap_opt_")
+        try:
             tmp_path = Path(tmp_dir)
             src = Path(self.base_s8i_path)
             tmp_input = tmp_path / src.name
+
+            # サポートファイル (.NAP, .GEM, .wav 等) を tmp にコピー
+            _SUPPORT_EXTS = {".nap", ".gem", ".wav"}
+            for f in src.parent.iterdir():
+                if f.is_file() and f.suffix.lower() in _SUPPORT_EXTS:
+                    shutil.copy2(f, tmp_path / f.name)
 
             # .s8i をパースしてパラメータを変更
             model = parse_s8i(str(src))
@@ -166,7 +175,7 @@ class SnapEvaluator:
                             ddef.values[field_idx] = str(params[param_key])
                             self.log_callback(
                                 f"    {self.damper_def_name}[{field_idx}]: "
-                                f"{old_val} → {params[param_key]}"
+                                f"{old_val} -> {params[param_key]}"
                             )
                 else:
                     # マッピングなし → パラメータキーをフィールド名として検索
@@ -206,16 +215,54 @@ class SnapEvaluator:
                     f"SNAP が異常終了しました (code={result.returncode})"
                 )
 
-            # 出力ファイルを収集
-            out_dir = tmp_path / "results"
-            out_dir.mkdir(exist_ok=True)
-            for f in tmp_path.iterdir():
-                if f.suffix.lower() in (".out", ".txt", ".res", ".log"):
-                    shutil.copy2(f, out_dir / f.name)
+            # 結果フォルダを探す
+            # SNAP は snap_work_dir/{s8i_stem}/D{N}/ に結果を書き出す
+            result_dir = self._find_result_dir(tmp_input, tmp_path)
 
             # 結果パース
-            res = Result(str(out_dir))
+            res = Result(str(result_dir))
             return self._extract_response(res)
+        finally:
+            if not self.keep_temp_files:
+                shutil.rmtree(tmp_dir, ignore_errors=True)
+
+    def _find_result_dir(self, input_file: Path, tmp_path: Path) -> Path:
+        """SNAP 結果ファイルのディレクトリを探索する。
+
+        検索順序:
+        1. snap_work_dir/{s8i_stem}/D{N}/ (run_flag=1 の最初のDYCケース)
+        2. snap_work_dir/{s8i_stem}/ 直下の D* フォルダ (最大番号)
+        3. tmp ディレクトリ自体 (フォールバック)
+        """
+        s8i_stem = input_file.stem
+
+        if self.snap_work_dir:
+            model_dir = Path(self.snap_work_dir) / s8i_stem
+            if model_dir.exists():
+                # DYC ケース情報からアクティブな D{N} フォルダを特定
+                try:
+                    dyc_model = parse_s8i(str(input_file))
+                    for dyc in dyc_model.dyc_cases:
+                        if dyc.is_run:
+                            d_folder = model_dir / dyc.folder_name
+                            if d_folder.exists() and list(d_folder.glob("Floor*.txt")):
+                                return d_folder
+                except Exception:
+                    pass
+
+                # フォールバック: D* フォルダの最大番号を使用
+                d_folders = sorted(
+                    [d for d in model_dir.iterdir()
+                     if d.is_dir() and d.name.startswith("D") and d.name[1:].isdigit()],
+                    key=lambda p: int(p.name[1:]),
+                    reverse=True,
+                )
+                for d_folder in d_folders:
+                    if list(d_folder.glob("Floor*.txt")):
+                        return d_folder
+
+        # フォールバック: tmp ディレクトリ自体
+        return tmp_path
 
     def _extract_response(self, res: Result) -> Dict[str, float]:
         """
@@ -393,6 +440,7 @@ def create_minimizer_evaluate_fn(
     position_node_map: Optional[Dict[int, Dict[str, Any]]] = None,
     timeout: int = 300,
     log_callback: Optional[Callable[[str], None]] = None,
+    snap_work_dir: str = "",
 ) -> Optional[Callable[[List[bool]], "Tuple[Dict[str, float], bool, float]"]]:
     """
     ダンパー本数最小化用の evaluate_fn を生成するファクトリ関数。
@@ -469,11 +517,17 @@ def create_minimizer_evaluate_fn(
                         )
 
             # 一時ディレクトリで SNAP 実行
-            with tempfile.TemporaryDirectory(prefix="snap_min_") as tmp_dir:
+            tmp_dir = tempfile.mkdtemp(prefix="snap_min_")
+            try:
                 tmp_path = Path(tmp_dir)
                 src = Path(base_s8i_path)
                 tmp_input = tmp_path / src.name
                 model.write(str(tmp_input))
+
+                # サポートファイル (.NAP, .GEM 等) をコピー
+                for sf in src.parent.iterdir():
+                    if sf.is_file() and sf.suffix.lower() in {".nap", ".gem", ".wav"}:
+                        shutil.copy2(sf, tmp_path / sf.name)
 
                 result = snap_exec(
                     snap_exe=snap_exe_path,
@@ -485,8 +539,14 @@ def create_minimizer_evaluate_fn(
                 if result.returncode != 0:
                     raise RuntimeError(f"SNAP 異常終了 (code={result.returncode})")
 
-                res = Result(str(tmp_path))
+                # 結果フォルダを探索
+                result_dir = _find_minimizer_result_dir(
+                    tmp_input, tmp_path, snap_work_dir
+                )
+                res = Result(str(result_dir))
                 summary = _extract_minimizer_response(res)
+            finally:
+                shutil.rmtree(tmp_dir, ignore_errors=True)
 
             # 性能基準で判定
             is_pass = criteria.is_all_pass(summary)
@@ -503,6 +563,35 @@ def create_minimizer_evaluate_fn(
             return {}, False, -1.0
 
     return evaluate_fn
+
+
+def _find_minimizer_result_dir(
+    input_file: Path, tmp_path: Path, snap_work_dir: str
+) -> Path:
+    """最小化評価用の結果ディレクトリ探索。SnapEvaluator._find_result_dir と同等。"""
+    s8i_stem = input_file.stem
+    if snap_work_dir:
+        model_dir = Path(snap_work_dir) / s8i_stem
+        if model_dir.exists():
+            try:
+                dyc_model = parse_s8i(str(input_file))
+                for dyc in dyc_model.dyc_cases:
+                    if dyc.is_run:
+                        d_folder = model_dir / dyc.folder_name
+                        if d_folder.exists() and list(d_folder.glob("Floor*.txt")):
+                            return d_folder
+            except Exception:
+                pass
+            d_folders = sorted(
+                [d for d in model_dir.iterdir()
+                 if d.is_dir() and d.name.startswith("D") and d.name[1:].isdigit()],
+                key=lambda p: int(p.name[1:]),
+                reverse=True,
+            )
+            for d_folder in d_folders:
+                if list(d_folder.glob("Floor*.txt")):
+                    return d_folder
+    return tmp_path
 
 
 def _extract_minimizer_response(res: Result) -> Dict[str, float]:

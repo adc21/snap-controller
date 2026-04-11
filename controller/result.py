@@ -237,6 +237,15 @@ class Result:
         if base_otm_val > 0.0:
             self.base_otm = round(base_otm_val, 2)
             self.parse_log.append(f"  [Result] base_otm={self.base_otm} kN・m")
+        elif story_z:
+            # Z=0 の行がないモデル（3Dフレーム等）: 最下層のモーメントで代替
+            lowest_z = min(story_z.keys())
+            _, _, lowest_m, _ = story_z[lowest_z]
+            if lowest_m > 0.0:
+                self.base_otm = round(lowest_m, 2)
+                self.parse_log.append(
+                    f"  [Result] base_otm={self.base_otm} kN・m (最下層 Z={lowest_z}m から推定)"
+                )
 
         # Z 高さ昇順でフロア番号 1..N を割り当て
         for story_no, z in enumerate(sorted(story_z), start=1):

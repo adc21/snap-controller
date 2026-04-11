@@ -71,6 +71,12 @@ class StpReader:
             if len(scanned) > len(self.names):
                 self.names = scanned
 
+        # ASCII名が取得できなかった場合（Damper.stp, Column.stp 等の
+        # 数値IDベースのファイル）は、ファイル名ベースのフォールバック名を生成
+        if len(self.names) != self.num_records and self.num_records > 0:
+            prefix = self.stp_file.stem  # "Damper", "Column", "Beam" 等
+            self.names = [f"{prefix}-{i + 1}" for i in range(self.num_records)]
+
     # ------------------------------------------------------------------
     def _extract_names_fixed_stride(self) -> List[str]:
         """(file_size - 16) / num_records が整数の場合、固定幅でレコードを読む。
