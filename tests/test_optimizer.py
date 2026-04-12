@@ -109,6 +109,20 @@ class TestParameterRangeDiscreteValues:
         vals = pr.discrete_values(max_points=5)
         assert len(vals) <= 5
 
+    def test_continuous_single_point(self):
+        """max_points=1 で除算ゼロにならないこと。"""
+        pr = ParameterRange(key="a", min_val=0, max_val=1, step=0)
+        vals = pr.discrete_values(max_points=1)
+        assert len(vals) == 1
+        assert vals[0] == pytest.approx(0.0)
+
+    def test_min_equals_max(self):
+        """min_val == max_val の場合に少なくとも1値を返すこと。"""
+        pr = ParameterRange(key="a", min_val=5.0, max_val=5.0, step=0)
+        vals = pr.discrete_values()
+        assert len(vals) >= 1
+        assert vals[0] == pytest.approx(5.0)
+
 
 class TestParameterRangeRandomValue:
     def test_in_range(self):

@@ -2369,18 +2369,22 @@ class OptimizerDialog(QDialog):
                                 try:
                                     param_field_map[pr.key] = int(pr.key)
                                 except ValueError:
-                                    pass
+                                    logger.debug("パラメータキー '%s' は整数変換不可、フィールドマッチングで解決", pr.key)
                             for idx_str in override_keys:
                                 try:
                                     idx = int(idx_str)
                                     if pr.key.lower() in str(overrides.get(idx_str, "")).lower():
                                         param_field_map[pr.key] = idx
                                 except (ValueError, TypeError):
-                                    pass
+                                    logger.debug("override key '%s' のマッチング失敗（param=%s）", idx_str, pr.key)
 
+                        applied_count = 0
                         for param_key, field_idx in param_field_map.items():
                             if param_key in best.params and field_idx < len(ddef.values):
                                 ddef.values[field_idx] = str(best.params[param_key])
+                                applied_count += 1
+                        if not param_field_map:
+                            logger.warning("ダンパー '%s' のパラメータマッピングが空 — 書き戻しなし", damper_def_name)
 
             model.write(model_path)
             QMessageBox.information(

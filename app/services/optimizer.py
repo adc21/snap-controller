@@ -346,10 +346,13 @@ class ParameterRange:
         else:
             # 連続値を等分割
             n = min(20, max_points)
-            values = [
-                round(self.min_val + i * (self.max_val - self.min_val) / (n - 1), 10)
-                for i in range(n)
-            ]
+            if n <= 1:
+                values = [self.min_val]
+            else:
+                values = [
+                    round(self.min_val + i * (self.max_val - self.min_val) / (n - 1), 10)
+                    for i in range(n)
+                ]
         if self.is_integer:
             values = list(sorted(set(int(v) for v in values)))
         return values[:max_points]
