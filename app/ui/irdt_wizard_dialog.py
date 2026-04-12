@@ -353,9 +353,25 @@ class IrdtWizardDialog(QDialog):
 
         # --- 感度解析 (Multi-parameter Sensitivity Chart) ---
         self._sensitivity_group = QGroupBox(
-            "感度解析 — μ / ζ_d / f_opt を ±20% 変動"
+            "感度解析 — μ / ζ_d / f_opt の変動時の性能変化"
         )
         sens_layout = QVBoxLayout(self._sensitivity_group)
+        # 変動幅コントロール
+        sens_ctrl = QHBoxLayout()
+        sens_ctrl.addWidget(QLabel("変動幅:"))
+        self._variation_spin = QSpinBox()
+        self._variation_spin.setRange(5, 50)
+        self._variation_spin.setValue(20)
+        self._variation_spin.setSuffix(" %")
+        self._variation_spin.setToolTip("パラメータ変動幅（±%）")
+        self._variation_spin.valueChanged.connect(
+            lambda _: self._update_tornado_chart(
+                self._zeta_s_spin.value() if hasattr(self, "_zeta_s_spin") else 0.02
+            )
+        )
+        sens_ctrl.addWidget(self._variation_spin)
+        sens_ctrl.addStretch()
+        sens_layout.addLayout(sens_ctrl)
         self._tornado_figure = Figure(figsize=(6, 3.0))
         self._tornado_canvas = FigureCanvas(self._tornado_figure)
         self._tornado_canvas.setMinimumHeight(200)
@@ -795,7 +811,8 @@ class IrdtWizardDialog(QDialog):
         """多パラメータ感度解析チャートを更新する。
 
         μ (質量比), ζ_d (ダンパー減衰比), f_opt (同調比) の3パラメータを
-        ±20% 変動させた感度曲線を重ね描きで表示する。
+        ±N% 変動させた感度曲線を重ね描きで表示する。
+        変動幅はUI上のスピンボックスから取得する。
         """
         plan = self._placement_plan
         if plan is None or plan.base_parameters is None:
@@ -804,13 +821,19 @@ class IrdtWizardDialog(QDialog):
         params = plan.base_parameters
         mu = params.mass_ratio
 
+        variation_pct = float(
+            self._variation_spin.value()
+            if hasattr(self, "_variation_spin")
+            else 20.0
+        )
+
         try:
             entries = multi_param_sensitivity_analysis(
                 primary_mass=params.target_mass,
                 primary_period=params.target_period,
                 base_mass_ratio=mu,
                 damping_ratio_primary=damping_ratio_primary,
-                variation_pct=20.0,
+                variation_pct=variation_pct,
                 n_steps=5,
             )
         except Exception:
@@ -863,7 +886,7 @@ class IrdtWizardDialog(QDialog):
         ax.axvline(0, color="#888", linestyle="--", linewidth=0.8, alpha=0.5)
         ax.set_xlabel("パラメータ変動率 [%]", fontsize=8)
         ax.set_ylabel("応答低減率 [%]", fontsize=8)
-        ax.set_title("多パラメータ感度解析: ±20% 変動時の性能変化", fontsize=9)
+        ax.set_title(f"多パラメータ感度解析: ±{variation_pct:.0f}% 変動時の性能変化", fontsize=9)
         ax.legend(fontsize=7, loc="best")
         ax.tick_params(labelsize=7)
         ax.grid(True, alpha=0.3)

@@ -816,15 +816,15 @@ class OptimizerDialog(QDialog):
         table_group = QGroupBox("探索結果 (上位20)")
         table_layout = QVBoxLayout(table_group)
 
-        self._result_table = QTableWidget(0, 5)
+        self._result_table = QTableWidget(0, 6)
         self._result_table.setHorizontalHeaderLabels([
-            "順位", "パラメータ", "目的関数値", "判定", "詳細"
+            "順位", "パラメータ", "目的関数値", "判定", "最小マージン", "詳細"
         ])
         self._result_table.horizontalHeader().setSectionResizeMode(
             1, QHeaderView.Stretch
         )
         self._result_table.horizontalHeader().setSectionResizeMode(
-            4, QHeaderView.Stretch
+            5, QHeaderView.Stretch
         )
         self._result_table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self._result_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
@@ -2051,6 +2051,23 @@ class OptimizerDialog(QDialog):
             )
             self._result_table.setItem(row, 3, verdict_item)
 
+            # 最小マージン（制約余裕の最小値）— 数値ソート対応
+            if cand.constraint_margins:
+                min_margin = min(cand.constraint_margins.values())
+                min_key = min(
+                    cand.constraint_margins, key=cand.constraint_margins.get
+                )
+                margin_text = f"{min_margin:+.4g} ({min_key})"
+                margin_item = _NumericTableItem(margin_text, min_margin)
+                if min_margin >= 0:
+                    margin_item.setForeground(QColor("#2ca02c"))
+                else:
+                    margin_item.setForeground(QColor("#d62728"))
+            else:
+                margin_item = _NumericTableItem("—", float("inf"))
+            margin_item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+            self._result_table.setItem(row, 4, margin_item)
+
             # 詳細（他の応答値）— ダブルクリックで全詳細表示
             details = []
             for k, v in cand.response_values.items():
@@ -2060,13 +2077,13 @@ class OptimizerDialog(QDialog):
             if len(details) > 3:
                 summary += f" (+{len(details) - 3})"
             self._result_table.setItem(
-                row, 4, QTableWidgetItem(summary)
+                row, 5, QTableWidgetItem(summary)
             )
 
             # 制約違反候補の行を薄い赤背景で表示
             if not cand.is_feasible:
                 bg = QColor(214, 39, 40, 30)  # 薄い赤
-                for col in range(5):
+                for col in range(6):
                     item = self._result_table.item(row, col)
                     if item:
                         item.setBackground(bg)

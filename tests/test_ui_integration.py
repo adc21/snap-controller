@@ -1789,3 +1789,104 @@ class TestHeatmapDialog:
         mock_worker.request_stop.assert_called_once()
         mock_worker.quit.assert_called_once()
         mock_worker.wait.assert_called_once_with(3000)
+
+
+class TestConstraintMarginColumn:
+    """結果テーブルの最小マージン列テスト。"""
+
+    def test_margin_column_header_exists(self, qapp):
+        """結果テーブルに最小マージン列ヘッダーが存在する。"""
+        from app.ui.optimizer_dialog import OptimizerDialog
+        dlg = OptimizerDialog()
+        headers = [
+            dlg._result_table.horizontalHeaderItem(i).text()
+            for i in range(dlg._result_table.columnCount())
+        ]
+        assert "最小マージン" in headers
+        assert dlg._result_table.columnCount() == 6
+        dlg.close()
+
+    def test_margin_column_shows_values(self, qapp):
+        """制約マージンが結果テーブルに表示される。"""
+        from app.ui.optimizer_dialog import OptimizerDialog
+        from app.services.optimizer import (
+            OptimizationCandidate, OptimizationResult, OptimizationConfig,
+        )
+
+        dlg = OptimizerDialog()
+        result = OptimizationResult(
+            config=OptimizationConfig(objective_key="max_drift", method="grid"),
+            best=OptimizationCandidate(
+                params={"Cd": 500}, objective_value=0.003,
+                response_values={"max_drift": 0.003}, is_feasible=True,
+                constraint_margins={"max_drift": 0.002, "max_acc": 0.5},
+            ),
+            all_candidates=[
+                OptimizationCandidate(
+                    params={"Cd": 500}, objective_value=0.003,
+                    response_values={"max_drift": 0.003}, is_feasible=True,
+                    constraint_margins={"max_drift": 0.002, "max_acc": 0.5},
+                ),
+                OptimizationCandidate(
+                    params={"Cd": 300}, objective_value=0.01,
+                    response_values={"max_drift": 0.01}, is_feasible=False,
+                    constraint_margins={"max_drift": -0.005, "max_acc": 0.1},
+                ),
+            ],
+        )
+        dlg._populate_result_table(result)
+        assert dlg._result_table.rowCount() == 2
+        # feasible候補: 最小マージン = 0.002 (max_drift)
+        margin_text = dlg._result_table.item(0, 4).text()
+        assert "max_drift" in margin_text
+        assert "+0.002" in margin_text
+        # infeasible候補: 最小マージン = -0.005 (max_drift)
+        margin_text2 = dlg._result_table.item(1, 4).text()
+        assert "-0.005" in margin_text2
+        dlg.close()
+
+    def test_margin_column_no_margins(self, qapp):
+        """制約マージンが無い候補は「—」表示。"""
+        from app.ui.optimizer_dialog import OptimizerDialog
+        from app.services.optimizer import (
+            OptimizationCandidate, OptimizationResult, OptimizationConfig,
+        )
+
+        dlg = OptimizerDialog()
+        result = OptimizationResult(
+            config=OptimizationConfig(objective_key="max_drift", method="grid"),
+            best=OptimizationCandidate(
+                params={"Cd": 500}, objective_value=0.003,
+                response_values={"max_drift": 0.003}, is_feasible=True,
+            ),
+            all_candidates=[
+                OptimizationCandidate(
+                    params={"Cd": 500}, objective_value=0.003,
+                    response_values={"max_drift": 0.003}, is_feasible=True,
+                ),
+            ],
+        )
+        dlg._populate_result_table(result)
+        assert dlg._result_table.item(0, 4).text() == "—"
+        dlg.close()
+
+
+class TestIrdtVariationControl:
+    """iRDTウィザード感度解析変動幅コントロールのテスト。"""
+
+    def test_variation_spin_exists(self, qapp):
+        """変動幅スピンボックスが存在し、デフォルト20%。"""
+        from app.ui.irdt_wizard_dialog import IrdtWizardDialog
+        dlg = IrdtWizardDialog()
+        assert hasattr(dlg, "_variation_spin")
+        assert dlg._variation_spin.value() == 20
+        assert dlg._variation_spin.minimum() == 5
+        assert dlg._variation_spin.maximum() == 50
+        dlg.close()
+
+    def test_variation_spin_suffix(self, qapp):
+        """スピンボックスに%サフィックスがある。"""
+        from app.ui.irdt_wizard_dialog import IrdtWizardDialog
+        dlg = IrdtWizardDialog()
+        assert dlg._variation_spin.suffix() == " %"
+        dlg.close()
