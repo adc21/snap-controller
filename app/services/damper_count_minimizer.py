@@ -176,21 +176,23 @@ def minimize_floor_add(
 
         # 基準超過の階を特定し、最もマージンが悪い階に+1
         worst_floor = None
-        worst_margin = float("inf")
+        worst_margin_val = float("inf")
         for fr in result.floor_responses:
-            for key, val in fr.values.items():
-                if key.startswith("margin_"):
-                    criterion = key[len("margin_"):]
-                    if val < worst_margin and fr.damper_count < max_quantities.get(fr.floor_key, 999):
-                        worst_margin = val
-                        worst_floor = fr.floor_key
+            # margin_* キーから最悪マージンを取得
+            floor_margins = [v for k, v in fr.values.items() if k.startswith("margin_")]
+            if floor_margins:
+                floor_worst = min(floor_margins)
+                if floor_worst < worst_margin_val and quantities.get(fr.floor_key, 0) < max_quantities.get(fr.floor_key, 999):
+                    worst_margin_val = floor_worst
+                    worst_floor = fr.floor_key
 
         if worst_floor is None:
-            # マージン情報がない場合、未満載の階を順に追加
-            for k in floor_keys:
-                if quantities[k] < max_quantities.get(k, 999):
-                    worst_floor = k
-                    break
+            # マージン情報がない場合、ダンパー本数が少ない階から追加（本数昇順）
+            candidates = [(k, quantities.get(k, 0)) for k in floor_keys
+                          if quantities.get(k, 0) < max_quantities.get(k, 999)]
+            if candidates:
+                candidates.sort(key=lambda x: x[1])
+                worst_floor = candidates[0][0]
 
         if worst_floor is None:
             break  # 全階が上限
@@ -448,6 +450,16 @@ def minimize_linear_search(
 # ---------------------------------------------------------------------------
 
 
+def _auto_penalty_weight(max_quantities: Dict[str, int]) -> float:
+    """問題スケールに応じたペナルティ重みを算出。
+
+    ペナルティ = weight * |margin| なので、infeasible 解の目的関数値が
+    feasible 解の最大合計本数より十分大きくなるように設定する。
+    """
+    max_total = sum(max_quantities.values()) if max_quantities else 10
+    return max(100.0, max_total * 10.0)
+
+
 def minimize_ga(
     floor_keys: List[str],
     max_quantities: Dict[str, int],
@@ -455,9 +467,11 @@ def minimize_ga(
     progress_cb: Optional[ProgressCb] = None,
     population_size: int = 30,
     generations: int = 50,
-    penalty_weight: float = 1000.0,
+    penalty_weight: Optional[float] = None,
 ) -> MinimizationResult:
     """整数GAで合計本数を最小化。"""
+    if penalty_weight is None:
+        penalty_weight = _auto_penalty_weight(max_quantities)
     n = len(floor_keys)
     maxes = [max_quantities.get(k, 10) for k in floor_keys]
     history: List[MinimizationStep] = []
@@ -508,10 +522,14 @@ def minimize_ga(
         elite_count = max(2, population_size // 10)
         new_pop = [list(pop[i]) for i in sorted_idx[:elite_count]]
 
-        # 交叉 + 突然変異
+        # 交叉 + 突然変異（トーナメント選択）
+        def tournament(k=3):
+            candidates = random.sample(range(population_size), min(k, population_size))
+            return min(candidates, key=lambda i: fitnesses[i])
+
         while len(new_pop) < population_size:
-            p1 = pop[random.choice(sorted_idx[:population_size // 2])]
-            p2 = pop[random.choice(sorted_idx[:population_size // 2])]
+            p1 = pop[tournament()]
+            p2 = pop[tournament()]
             child = []
             for i in range(n):
                 # BLX-α交叉 → 整数丸め
@@ -565,9 +583,11 @@ def minimize_sa(
     progress_cb: Optional[ProgressCb] = None,
     max_iterations: int = 200,
     initial_temp: float = 100.0,
-    penalty_weight: float = 1000.0,
+    penalty_weight: Optional[float] = None,
 ) -> MinimizationResult:
     """焼きなまし法。"""
+    if penalty_weight is None:
+        penalty_weight = _auto_penalty_weight(max_quantities)
     n = len(floor_keys)
     maxes = [max_quantities.get(k, 10) for k in floor_keys]
     history: List[MinimizationStep] = []
@@ -662,9 +682,11 @@ def minimize_pso(
     progress_cb: Optional[ProgressCb] = None,
     n_particles: int = 20,
     max_iterations: int = 50,
-    penalty_weight: float = 1000.0,
+    penalty_weight: Optional[float] = None,
 ) -> MinimizationResult:
     """粒子群最適化 (PSO)。"""
+    if penalty_weight is None:
+        penalty_weight = _auto_penalty_weight(max_quantities)
     n = len(floor_keys)
     maxes = np.array([max_quantities.get(k, 10) for k in floor_keys], dtype=float)
     history: List[MinimizationStep] = []
@@ -689,8 +711,9 @@ def minimize_pso(
     g_best_obj = float("inf")
     g_best_result = EvaluationResult()
 
-    w = 0.7  # 慣性
+    w_start, w_end = 0.9, 0.4  # 慣性（線形減衰）
     c1, c2 = 1.5, 1.5  # 認知・社会係数
+    v_max = maxes * 0.3  # 速度上限（探索範囲の30%）
 
     for it in range(max_iterations):
         for i in range(n_particles):
@@ -713,12 +736,17 @@ def minimize_pso(
         if progress_cb:
             progress_cb(step)
 
+        # 慣性の線形減衰
+        w = w_start - (w_start - w_end) * it / max(1, max_iterations - 1)
+
         # 速度・位置更新
         r1 = np.random.random((n_particles, n))
         r2 = np.random.random((n_particles, n))
         velocities = (w * velocities
                       + c1 * r1 * (p_best - positions)
                       + c2 * r2 * (g_best - positions))
+        # 速度クランプ
+        velocities = np.clip(velocities, -v_max, v_max)
         positions = positions + velocities
 
     final_q = {floor_keys[i]: int(g_best[i]) for i in range(n)}
@@ -751,11 +779,13 @@ def minimize_de(
     progress_cb: Optional[ProgressCb] = None,
     population_size: int = 30,
     max_iterations: int = 50,
-    penalty_weight: float = 1000.0,
+    penalty_weight: Optional[float] = None,
     F: float = 0.8,
     CR: float = 0.9,
 ) -> MinimizationResult:
     """差分進化 (DE/rand/1/bin)。"""
+    if penalty_weight is None:
+        penalty_weight = _auto_penalty_weight(max_quantities)
     n = len(floor_keys)
     maxes = [max_quantities.get(k, 10) for k in floor_keys]
     history: List[MinimizationStep] = []
@@ -839,11 +869,13 @@ def minimize_sqp(
     max_quantities: Dict[str, int],
     evaluate_fn: EvaluateFn,
     progress_cb: Optional[ProgressCb] = None,
-    penalty_weight: float = 1000.0,
+    penalty_weight: Optional[float] = None,
 ) -> MinimizationResult:
     """SQP法 (SLSQP) — 連続緩和+整数丸め。"""
     from scipy.optimize import minimize as sp_minimize
 
+    if penalty_weight is None:
+        penalty_weight = _auto_penalty_weight(max_quantities)
     n = len(floor_keys)
     maxes = [max_quantities.get(k, 10) for k in floor_keys]
     history: List[MinimizationStep] = []
@@ -916,11 +948,13 @@ def minimize_nelder_mead(
     max_quantities: Dict[str, int],
     evaluate_fn: EvaluateFn,
     progress_cb: Optional[ProgressCb] = None,
-    penalty_weight: float = 1000.0,
+    penalty_weight: Optional[float] = None,
 ) -> MinimizationResult:
     """Nelder-Mead法 — 微分不要シンプレックス、連続緩和+整数丸め。"""
     from scipy.optimize import minimize as sp_minimize
 
+    if penalty_weight is None:
+        penalty_weight = _auto_penalty_weight(max_quantities)
     n = len(floor_keys)
     maxes = [max_quantities.get(k, 10) for k in floor_keys]
     history: List[MinimizationStep] = []
@@ -994,11 +1028,13 @@ def minimize_bayesian(
     progress_cb: Optional[ProgressCb] = None,
     max_iterations: int = 50,
     n_initial: int = 10,
-    penalty_weight: float = 1000.0,
+    penalty_weight: Optional[float] = None,
 ) -> MinimizationResult:
     """ガウス過程回帰 + EI獲得関数。"""
     from scipy.stats import norm
 
+    if penalty_weight is None:
+        penalty_weight = _auto_penalty_weight(max_quantities)
     n = len(floor_keys)
     maxes = [max_quantities.get(k, 10) for k in floor_keys]
     history: List[MinimizationStep] = []
@@ -1060,8 +1096,11 @@ def minimize_bayesian(
             ei = (best_y - mu) * norm.cdf(z_val) + sigma * norm.pdf(z_val)
             best_idx = np.argmax(ei)
             next_x = candidates[best_idx].astype(int).tolist()
-        except Exception:
-            # sklearn未インストール時はランダム
+        except ImportError:
+            logger.warning("sklearn がインストールされていません。ランダムサンプリングにフォールバックします。")
+            next_x = [random.randint(0, m) for m in maxes]
+        except Exception as e:
+            logger.debug("GP予測エラー（ランダムにフォールバック）: %s", e)
             next_x = [random.randint(0, m) for m in maxes]
 
         eval_point(next_x)
@@ -1099,9 +1138,11 @@ def minimize_random(
     evaluate_fn: EvaluateFn,
     progress_cb: Optional[ProgressCb] = None,
     max_iterations: int = 100,
-    penalty_weight: float = 1000.0,
+    penalty_weight: Optional[float] = None,
 ) -> MinimizationResult:
     """ランダムサーチ（ベースライン）。"""
+    if penalty_weight is None:
+        penalty_weight = _auto_penalty_weight(max_quantities)
     n = len(floor_keys)
     maxes = [max_quantities.get(k, 10) for k in floor_keys]
     history: List[MinimizationStep] = []

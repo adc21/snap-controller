@@ -584,6 +584,9 @@ def build_floor_rd_map(
     """
     .s8i ファイルからフロアキー→RD要素インデックスのマッピングを構築する。
 
+    ダンパーノードの z_grid が設定されている場合はそれを使い、
+    空の場合は z 座標からどの層間（ストーリー）に属するかを推定する。
+
     Returns
     -------
     floor_rd_map : Dict[str, List[int]]
@@ -594,17 +597,49 @@ def build_floor_rd_map(
         フロアキーの昇順リスト
     """
     from collections import defaultdict
+    import bisect
 
     model = parse_s8i(base_s8i_path)
+
+    # z_grid → z 座標のマッピングを構築（フロアレベル推定用）
+    z_levels: Dict[float, str] = {}  # z座標 → z_grid名
+    for node in model.nodes.values():
+        if node.z_grid and node.z is not None:
+            z_levels[node.z] = node.z_grid
+
+    # z座標を昇順ソート（層境界として使用）
+    sorted_z = sorted(z_levels.keys())
+
     floor_rd_map: Dict[str, List[int]] = defaultdict(list)
     floor_qty: Dict[str, int] = defaultdict(int)
 
     for idx, elem in enumerate(model.damper_elements):
         node_j = model.nodes.get(elem.node_j)
+        floor_key = None
+
         if node_j and node_j.z_grid:
+            # z_grid が直接設定されている場合
             floor_key = _normalize_floor_key(node_j.z_grid)
-        else:
+        elif node_j and node_j.z is not None and sorted_z:
+            # z座標からどの層間に属するかを推定
+            # ダンパーの z がフロアレベル z_i と z_{i+1} の間にある場合、
+            # そのストーリー（i番目の層間 = F{i}）に属するとする
+            z = node_j.z
+            pos = bisect.bisect_right(sorted_z, z)
+            if pos == 0:
+                # 最下層レベルより下 → F1
+                story_idx = 1
+            elif pos >= len(sorted_z):
+                # 最上層レベルより上 → 最上層
+                story_idx = len(sorted_z) - 1
+            else:
+                # sorted_z[pos-1] <= z < sorted_z[pos] → ストーリー pos
+                story_idx = pos
+            floor_key = f"F{story_idx}"
+
+        if floor_key is None:
             floor_key = f"RD{idx}"
+
         floor_rd_map[floor_key].append(idx)
         floor_qty[floor_key] += max(1, elem.quantity)
 
@@ -695,17 +730,25 @@ def create_minimizer_evaluate_fn(
                     model.update_damper_element(rd_idx, quantity=elem_qty)
 
             # 一時ディレクトリで SNAP 実行
+            # ファイル名にユニークIDを含め、SNAP work dir の既存結果との衝突を回避
             tmp_dir = tempfile.mkdtemp(prefix="snap_min_")
             try:
                 tmp_path = Path(tmp_dir)
                 src = Path(base_s8i_path)
-                tmp_input = tmp_path / src.name
+                unique_stem = f"{src.stem}_min{_eval_count[0]}"
+                tmp_input = tmp_path / f"{unique_stem}{src.suffix}"
                 model.write(str(tmp_input))
 
                 # サポートファイル (.NAP, .GEM 等) をコピー
+                # s8iと同名の .NAP はリネームが必要（SNAPが同名NAPを参照する）
                 for sf in src.parent.iterdir():
                     if sf.is_file() and sf.suffix.lower() in {".nap", ".gem", ".wav"}:
-                        shutil.copy2(sf, tmp_path / sf.name)
+                        if sf.stem == src.stem:
+                            # 元のs8iと同名 → リネームしてコピー
+                            dest = tmp_path / f"{unique_stem}{sf.suffix}"
+                        else:
+                            dest = tmp_path / sf.name
+                        shutil.copy2(sf, dest)
 
                 result = snap_exec(
                     snap_exe=snap_exe_path,
@@ -725,6 +768,11 @@ def create_minimizer_evaluate_fn(
                 summary = _extract_minimizer_response(res)
             finally:
                 shutil.rmtree(tmp_dir, ignore_errors=True)
+                # SNAP work dir に生成された一時結果フォルダをクリーンアップ
+                if snap_work_dir:
+                    work_result = Path(snap_work_dir) / unique_stem
+                    if work_result.exists():
+                        shutil.rmtree(str(work_result), ignore_errors=True)
 
             # 性能基準で判定
             is_pass = criteria.is_all_pass(summary)
