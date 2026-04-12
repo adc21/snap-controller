@@ -74,18 +74,32 @@ def snap_exec(
         cwd=str(inp_path.parent),
     )
 
-    output_lines = []
-    try:
-        for line in proc.stdout:  # type: ignore[union-attr]
-            line = line.rstrip("\n")
-            output_lines.append(line)
-            if stdout_callback:
-                stdout_callback(line)
+    output_lines: list = []
 
+    # stdout 読み取りを別スレッドで行う（SNAP は GUI アプリのため
+    # stdout に何も書かない場合がある。メインスレッドでの for line in
+    # proc.stdout はプロセス終了まで永久ブロックするため、タイムアウト
+    # が効かなくなる問題を回避する）
+    def _reader():
+        try:
+            for line in proc.stdout:  # type: ignore[union-attr]
+                line = line.rstrip("\n")
+                output_lines.append(line)
+                if stdout_callback:
+                    stdout_callback(line)
+        except (ValueError, OSError):
+            pass  # プロセス kill 後の読み取りエラーを無視
+
+    reader_thread = threading.Thread(target=_reader, daemon=True)
+    reader_thread.start()
+
+    try:
         proc.wait(timeout=timeout)
     except subprocess.TimeoutExpired:
         proc.kill()
         raise
+    finally:
+        reader_thread.join(timeout=5)
 
     rc = proc.returncode
     if on_finish:
