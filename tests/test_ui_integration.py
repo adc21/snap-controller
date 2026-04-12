@@ -868,3 +868,71 @@ class TestComparisonDialog:
         dlg = OptimizerDialog()
         assert hasattr(dlg, "_compare_btn")
         dlg.close()
+
+
+class TestCorrelationDialog:
+    """CorrelationDialog のUIテスト。"""
+
+    def test_instantiation(self, qapp):
+        """CorrelationDialogが正常にインスタンス化される。"""
+        from app.ui.optimizer_dialog import CorrelationDialog
+        from app.services.optimizer import (
+            CorrelationResult,
+            CorrelationEntry,
+        )
+        corr = CorrelationResult(
+            entries=[
+                CorrelationEntry(
+                    param_x="Cd", param_y="alpha",
+                    label_x="減衰係数", label_y="速度指数",
+                    correlation=0.85,
+                    x_values=[100, 200, 300],
+                    y_values=[0.2, 0.4, 0.6],
+                ),
+            ],
+            param_keys=["Cd", "alpha"],
+            param_labels=["減衰係数", "速度指数"],
+            n_candidates=10,
+            objective_key="max_drift",
+        )
+        dlg = CorrelationDialog(corr)
+        assert dlg is not None
+        assert "相関分析" in dlg.windowTitle()
+        dlg.close()
+
+    def test_no_strong_correlation(self, qapp):
+        """強い相関がない場合も正常表示。"""
+        from app.ui.optimizer_dialog import CorrelationDialog
+        from app.services.optimizer import CorrelationResult, CorrelationEntry
+        corr = CorrelationResult(
+            entries=[
+                CorrelationEntry(
+                    param_x="Cd", param_y="alpha",
+                    label_x="減衰係数", label_y="速度指数",
+                    correlation=0.1,
+                ),
+            ],
+            param_keys=["Cd", "alpha"],
+            param_labels=["減衰係数", "速度指数"],
+            n_candidates=5,
+            objective_key="max_drift",
+        )
+        dlg = CorrelationDialog(corr)
+        assert dlg is not None
+        dlg.close()
+
+    def test_correlation_button_exists(self, qapp):
+        """OptimizerDialogに相関分析ボタンがある。"""
+        from app.ui.optimizer_dialog import OptimizerDialog
+        dlg = OptimizerDialog()
+        assert hasattr(dlg, "_correlation_btn")
+        assert not dlg._correlation_btn.isEnabled()
+        dlg.close()
+
+    def test_log_export_button_exists(self, qapp):
+        """OptimizerDialogに評価ログボタンがある。"""
+        from app.ui.optimizer_dialog import OptimizerDialog
+        dlg = OptimizerDialog()
+        assert hasattr(dlg, "_log_export_btn")
+        assert not dlg._log_export_btn.isEnabled()
+        dlg.close()

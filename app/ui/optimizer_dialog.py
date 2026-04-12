@@ -101,13 +101,16 @@ import matplotlib.pyplot as plt
 from app.models import AnalysisCase
 from app.models.performance_criteria import PerformanceCriteria
 from app.services.optimizer import (
+    CorrelationResult,
     DamperOptimizer,
     OptimizationCandidate,
     OptimizationConfig,
     OptimizationResult,
     ParameterRange,
     SensitivityResult,
+    compute_correlation_analysis,
     compute_sensitivity,
+    export_optimization_log,
 )
 from app.services.snap_evaluator import create_snap_evaluator
 from .theme import ThemeManager, MPL_STYLES
@@ -716,10 +719,24 @@ class OptimizerDialog(QDialog):
         )
         btn_row.addWidget(self._compare_btn)
 
+        self._correlation_btn = QPushButton("相関分析")
+        self._correlation_btn.setEnabled(False)
+        self._correlation_btn.setToolTip(
+            "上位候補のパラメータ間の相関を分析します（相関行列ヒートマップ）"
+        )
+        btn_row.addWidget(self._correlation_btn)
+
+        self._log_export_btn = QPushButton("評価ログ")
+        self._log_export_btn.setEnabled(False)
+        self._log_export_btn.setToolTip(
+            "全評価履歴をCSVログとして出力します（審査・規制文書用）"
+        )
+        btn_row.addWidget(self._log_export_btn)
+
         self._report_btn = QPushButton("HTMLレポート")
         self._report_btn.setEnabled(False)
         self._report_btn.setToolTip(
-            "最適化結果をHTMLレポートとして出力します（設定・��良解・収束グラフ含む）"
+            "最適化結果をHTMLレポートとして出力します（設定・最良解・収束グラフ含む）"
         )
         btn_row.addWidget(self._report_btn)
 
@@ -742,6 +759,8 @@ class OptimizerDialog(QDialog):
         self._warm_start_cb.toggled.connect(self._warm_start_browse_btn.setEnabled)
         self._warm_start_browse_btn.clicked.connect(self._browse_warm_start)
         self._compare_btn.clicked.connect(self._show_comparison)
+        self._correlation_btn.clicked.connect(self._show_correlation)
+        self._log_export_btn.clicked.connect(self._export_log)
         self._report_btn.clicked.connect(self._export_html_report)
         self._result_table.cellDoubleClicked.connect(self._show_candidate_detail)
         self._optimizer.progress.connect(self._on_progress)
@@ -1289,6 +1308,8 @@ class OptimizerDialog(QDialog):
         self._export_csv_btn.setEnabled(False)
         self._sensitivity_btn.setEnabled(False)
         self._pareto_btn.setEnabled(False)
+        self._correlation_btn.setEnabled(False)
+        self._log_export_btn.setEnabled(False)
         self._save_btn.setEnabled(False)
         self._report_btn.setEnabled(False)
         self._progress_bar.show()
@@ -1426,6 +1447,11 @@ class OptimizerDialog(QDialog):
             self._sensitivity_btn.setEnabled(True)
             self._save_btn.setEnabled(True)
             self._report_btn.setEnabled(True)
+            self._log_export_btn.setEnabled(True)
+            # 相関分析は2パラメータ以上・3候補以上のときのみ有効
+            if (result.config and len(result.config.parameters) >= 2
+                    and len(result.all_candidates) >= 3):
+                self._correlation_btn.setEnabled(True)
             # Paretoボタンは複合目的関数使用時のみ有効
             if result.config and result.config.objective_weights:
                 self._pareto_btn.setEnabled(True)
@@ -1434,11 +1460,15 @@ class OptimizerDialog(QDialog):
                 "制約を満たす解が見つかりませんでした。"
                 "パラメータ範囲や制約条件を見直してください。"
             )
-            # NG結果でもCSV/JSON/レポート出力は許可（デバッグ用）
+            # NG結果でもCSV/JSON/レポート/ログ出力は許可（デバッグ用）
             if result.all_candidates:
                 self._export_csv_btn.setEnabled(True)
                 self._save_btn.setEnabled(True)
                 self._report_btn.setEnabled(True)
+                self._log_export_btn.setEnabled(True)
+                if (result.config and len(result.config.parameters) >= 2
+                        and len(result.all_candidates) >= 3):
+                    self._correlation_btn.setEnabled(True)
 
     def _on_checkpoint(self, intermediate: "OptimizationResult") -> None:
         """チェックポイントシグナルを受けて中間結果を自動保存する。"""
@@ -1984,6 +2014,41 @@ class OptimizerDialog(QDialog):
         dlg = ComparisonDialog(parent=self)
         dlg.exec()
 
+    def _show_correlation(self) -> None:
+        """パラメータ相関分析ダイアログを表示します。"""
+        if not self._result:
+            return
+        corr = compute_correlation_analysis(self._result)
+        if corr is None:
+            QMessageBox.information(
+                self, "相関分析",
+                "候補数またはパラメータ数が不足しているため相関分析できません。\n"
+                "（3候補以上・2パラメータ以上が必要です）",
+            )
+            return
+        dlg = CorrelationDialog(corr, parent=self)
+        dlg.exec()
+
+    def _export_log(self) -> None:
+        """最適化の全評価履歴をCSVログとして出力します。"""
+        if not self._result:
+            return
+        path, _ = QFileDialog.getSaveFileName(
+            self, "評価ログ出力先を選択", "optimization_log.csv",
+            "CSV Files (*.csv);;All Files (*)",
+        )
+        if not path:
+            return
+        try:
+            export_optimization_log(self._result, path)
+            QMessageBox.information(
+                self, "評価ログ出力完了",
+                f"全{len(self._result.all_candidates)}件の評価履歴を出力しました:\n{path}",
+            )
+        except Exception as exc:
+            logger.exception("評価ログ出力エラー")
+            QMessageBox.warning(self, "出力エラー", str(exc))
+
     def _save_result_json(self) -> None:
         """最適化結果をJSONファイルに保存します。"""
         if not self._result:
@@ -2035,11 +2100,16 @@ class OptimizerDialog(QDialog):
         # ボタン有効化
         self._export_csv_btn.setEnabled(True)
         self._save_btn.setEnabled(True)
+        self._report_btn.setEnabled(True)
+        self._log_export_btn.setEnabled(True)
         if result.best:
             self._apply_btn.setEnabled(True)
             self._sensitivity_btn.setEnabled(True)
         if result.config and result.config.objective_weights:
             self._pareto_btn.setEnabled(True)
+        if (result.config and len(result.config.parameters) >= 2
+                and len(result.all_candidates) >= 3):
+            self._correlation_btn.setEnabled(True)
 
         obj_label = result.config.objective_label if result.config else "目的関数"
         n_cands = len(result.all_candidates)
@@ -2698,3 +2768,97 @@ class ParetoDialog(QDialog):
 
         pareto_pts = points[pareto_mask]
         return pareto_pts[:, 0].tolist(), pareto_pts[:, 1].tolist()
+
+
+class CorrelationDialog(QDialog):
+    """パラメータ相関分析結果を表示するダイアログ。
+
+    相関行列ヒートマップと強い相関のサマリーを表示し、
+    設計者がパラメータ間の相互作用を理解するのを支援します。
+    """
+
+    def __init__(
+        self,
+        correlation: CorrelationResult,
+        parent: Optional[QWidget] = None,
+    ) -> None:
+        super().__init__(parent)
+        self._correlation = correlation
+        self.setWindowTitle("パラメータ相関分析")
+        self.resize(700, 600)
+        self._setup_ui()
+
+    def _setup_ui(self) -> None:
+        layout = QVBoxLayout(self)
+
+        # サマリーテキスト
+        summary = QLabel(
+            f"分析対象: 上位{self._correlation.n_candidates}候補  |  "
+            f"パラメータ数: {len(self._correlation.param_keys)}"
+        )
+        summary.setStyleSheet("font-size: 12px; color: #888;")
+        layout.addWidget(summary)
+
+        # 強い相関の警告
+        strong = self._correlation.strong_correlations
+        if strong:
+            strong_text = "強い相関 (|r| >= 0.5):\n"
+            for e in sorted(strong, key=lambda x: abs(x.correlation), reverse=True):
+                sign = "正" if e.correlation > 0 else "負"
+                strong_text += f"  {e.label_x} ↔ {e.label_y}: r = {e.correlation:+.3f} ({sign}相関)\n"
+            strong_label = QLabel(strong_text.strip())
+            strong_label.setStyleSheet(
+                "background-color: #FFF3E0; padding: 8px; border-radius: 4px; "
+                "font-family: monospace;"
+            )
+            strong_label.setWordWrap(True)
+            layout.addWidget(strong_label)
+        else:
+            no_corr = QLabel("パラメータ間に強い相関 (|r| >= 0.5) は検出されませんでした。")
+            no_corr.setStyleSheet("color: #4CAF50; padding: 4px;")
+            layout.addWidget(no_corr)
+
+        # ヒートマップ
+        fig = Figure(figsize=(6, 5))
+        canvas = FigureCanvas(fig)
+        layout.addWidget(canvas, stretch=1)
+        self._draw_heatmap(fig)
+
+        # 閉じるボタン
+        btn_box = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+        btn_box.rejected.connect(self.reject)
+        layout.addWidget(btn_box)
+
+    def _draw_heatmap(self, fig: Figure) -> None:
+        """相関行列ヒートマップを描画する。"""
+        corr = self._correlation
+        mat = np.array(corr.correlation_matrix)
+        n = len(corr.param_labels)
+
+        ax = fig.add_subplot(111)
+        # カラーマップ: 青(-1) → 白(0) → 赤(+1)
+        im = ax.imshow(
+            mat, cmap="RdBu_r", vmin=-1, vmax=1,
+            aspect="equal", interpolation="nearest",
+        )
+        fig.colorbar(im, ax=ax, label="相関係数 r", shrink=0.8)
+
+        # ラベル
+        ax.set_xticks(range(n))
+        ax.set_yticks(range(n))
+        ax.set_xticklabels(corr.param_labels, rotation=45, ha="right", fontsize=9)
+        ax.set_yticklabels(corr.param_labels, fontsize=9)
+
+        # セル内に相関係数を表示
+        for i in range(n):
+            for j in range(n):
+                val = mat[i, j]
+                color = "white" if abs(val) > 0.6 else "black"
+                ax.text(
+                    j, i, f"{val:.2f}",
+                    ha="center", va="center", fontsize=10,
+                    color=color, fontweight="bold" if abs(val) >= 0.5 else "normal",
+                )
+
+        ax.set_title("パラメータ相関行列", fontsize=12)
+        fig.tight_layout()

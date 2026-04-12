@@ -22,6 +22,7 @@ app/services/optimizer.py
 from __future__ import annotations
 
 import concurrent.futures
+import csv
 import itertools
 import json
 import logging
@@ -2312,3 +2313,212 @@ def compute_sensitivity(
         base_objective=base_obj,
         objective_key=objective_key,
     )
+
+
+# ---------------------------------------------------------------------------
+# パラメータ相関分析
+# ---------------------------------------------------------------------------
+
+@dataclass
+class CorrelationEntry:
+    """2パラメータ間の相関。"""
+    param_x: str
+    param_y: str
+    label_x: str
+    label_y: str
+    correlation: float  # ピアソン相関係数 [-1, 1]
+    x_values: List[float] = field(default_factory=list)
+    y_values: List[float] = field(default_factory=list)
+
+
+@dataclass
+class CorrelationResult:
+    """パラメータ相関分析の全体結果。"""
+    entries: List[CorrelationEntry]
+    param_keys: List[str]
+    param_labels: List[str]
+    n_candidates: int
+    objective_key: str
+
+    @property
+    def correlation_matrix(self) -> List[List[float]]:
+        """相関行列を2次元リストとして返す。"""
+        n = len(self.param_keys)
+        mat = [[1.0] * n for _ in range(n)]
+        key_to_idx = {k: i for i, k in enumerate(self.param_keys)}
+        for e in self.entries:
+            i = key_to_idx.get(e.param_x)
+            j = key_to_idx.get(e.param_y)
+            if i is not None and j is not None:
+                mat[i][j] = e.correlation
+                mat[j][i] = e.correlation
+        return mat
+
+    @property
+    def strong_correlations(self) -> List[CorrelationEntry]:
+        """|r| >= 0.5 の強い相関のみ返す。"""
+        return [e for e in self.entries if abs(e.correlation) >= 0.5]
+
+
+def compute_correlation_analysis(
+    result: OptimizationResult,
+    top_n: int = 0,
+) -> Optional[CorrelationResult]:
+    """
+    最適化結果の上位候補からパラメータ間の相関を分析します。
+
+    設計者がどのパラメータが互いに関連して最適解に寄与しているかを
+    把握するのに役立ちます。
+
+    Parameters
+    ----------
+    result : OptimizationResult
+        最適化結果。
+    top_n : int
+        上位何候補を使うか（0=制約満足候補すべて）。
+
+    Returns
+    -------
+    CorrelationResult or None
+        相関分析結果。候補が2つ未満の場合は None。
+    """
+    candidates = result.all_ranked_candidates
+    if top_n > 0:
+        candidates = candidates[:top_n]
+
+    if len(candidates) < 3:
+        return None
+
+    # パラメータキーを取得
+    param_keys = list(candidates[0].params.keys())
+    if len(param_keys) < 2:
+        return None
+
+    # パラメータラベルを取得
+    param_labels = list(param_keys)
+    if result.config:
+        key_to_label = {p.key: (p.label or p.key) for p in result.config.parameters}
+        param_labels = [key_to_label.get(k, k) for k in param_keys]
+
+    # 値を抽出
+    param_values: Dict[str, List[float]] = {k: [] for k in param_keys}
+    for c in candidates:
+        for k in param_keys:
+            param_values[k].append(c.params.get(k, 0.0))
+
+    entries: List[CorrelationEntry] = []
+    for i in range(len(param_keys)):
+        for j in range(i + 1, len(param_keys)):
+            kx, ky = param_keys[i], param_keys[j]
+            xs = param_values[kx]
+            ys = param_values[ky]
+
+            # ピアソン相関係数を計算
+            r = _pearson_correlation(xs, ys)
+
+            entries.append(CorrelationEntry(
+                param_x=kx,
+                param_y=ky,
+                label_x=param_labels[i],
+                label_y=param_labels[j],
+                correlation=r,
+                x_values=list(xs),
+                y_values=list(ys),
+            ))
+
+    return CorrelationResult(
+        entries=entries,
+        param_keys=param_keys,
+        param_labels=param_labels,
+        n_candidates=len(candidates),
+        objective_key=result.config.objective_key if result.config else "",
+    )
+
+
+def _pearson_correlation(xs: List[float], ys: List[float]) -> float:
+    """ピアソン相関係数を計算する。分散が0の場合は0を返す。"""
+    n = len(xs)
+    if n < 2:
+        return 0.0
+    mx = sum(xs) / n
+    my = sum(ys) / n
+    sx = sum((x - mx) ** 2 for x in xs)
+    sy = sum((y - my) ** 2 for y in ys)
+    if sx == 0 or sy == 0:
+        return 0.0
+    sxy = sum((xs[i] - mx) * (ys[i] - my) for i in range(n))
+    return sxy / math.sqrt(sx * sy)
+
+
+# ---------------------------------------------------------------------------
+# 最適化ログ詳細出力
+# ---------------------------------------------------------------------------
+
+def export_optimization_log(
+    result: OptimizationResult,
+    path: str,
+) -> None:
+    """
+    最適化の全評価履歴を詳細CSVログとして出力します。
+
+    構造設計の審査・規制文書で必要な「全ての評価とその結果」の
+    トレーサビリティを提供します。
+
+    出力列:
+    - 評価番号, パラメータ値..., 目的関数値, 応答値..., 制約判定,
+      制約マージン..., 評価方式, 時刻
+
+    Parameters
+    ----------
+    result : OptimizationResult
+        最適化結果。
+    path : str
+        出力CSVファイルパス。
+    """
+    if not result.all_candidates:
+        return
+
+    # ヘッダーを構築
+    first = result.all_candidates[0]
+    param_keys = sorted(first.params.keys())
+    response_keys = sorted(first.response_values.keys())
+    margin_keys = sorted(first.constraint_margins.keys()) if first.constraint_margins else []
+
+    headers = ["評価番号"]
+    headers.extend([f"param:{k}" for k in param_keys])
+    headers.append("目的関数値")
+    headers.extend([f"応答:{k}" for k in response_keys])
+    headers.append("制約判定")
+    headers.extend([f"制約マージン:{k}" for k in margin_keys])
+
+    # メタデータ行
+    meta_lines = []
+    meta_lines.append(f"# 最適化ログ")
+    if result.config:
+        meta_lines.append(f"# 目的関数: {result.config.objective_label}")
+        meta_lines.append(f"# 探索手法: {result.config.method}")
+        meta_lines.append(f"# ダンパー種類: {result.config.damper_type or '未指定'}")
+    eval_label = "SNAP実解析" if result.evaluation_method == "snap" else "モック評価"
+    meta_lines.append(f"# 評価方式: {eval_label}")
+    meta_lines.append(f"# 計算時間: {result.elapsed_sec:.2f} sec")
+    meta_lines.append(f"# 総評価数: {len(result.all_candidates)}")
+    meta_lines.append(f"# 制約満足数: {len(result.feasible_candidates)}")
+    if result.best:
+        meta_lines.append(f"# 最良目的関数値: {result.best.objective_value:.6g}")
+
+    with open(path, "w", encoding="utf-8-sig", newline="") as f:
+        # メタデータをコメント行として書き込み
+        for line in meta_lines:
+            f.write(line + "\n")
+
+        writer = csv.writer(f)
+        writer.writerow(headers)
+
+        for c in result.all_candidates:
+            row = [c.iteration]
+            row.extend([c.params.get(k, "") for k in param_keys])
+            row.append(c.objective_value)
+            row.extend([c.response_values.get(k, "") for k in response_keys])
+            row.append("OK" if c.is_feasible else "NG")
+            row.extend([c.constraint_margins.get(k, "") for k in margin_keys])
+            writer.writerow(row)

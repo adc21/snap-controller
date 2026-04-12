@@ -56,11 +56,15 @@ except (ImportError, OSError):
 
 # Now import the optimizer classes (always succeeds)
 from app.services.optimizer import (
+    CorrelationResult,
     ParameterRange,
     OptimizationConfig,
     OptimizationCandidate,
     OptimizationResult,
     _mock_evaluate,
+    _pearson_correlation,
+    compute_correlation_analysis,
+    export_optimization_log,
     _GaussianProcessRegressor,
     _expected_improvement_no_scipy,
     _OptimizationWorker,
@@ -2228,5 +2232,225 @@ class TestRobustOptimization:
         config = OptimizationConfig(objective_key="max_drift")
         assert config.robustness_samples == 0
         assert config.robustness_delta == 0.05
+
+
+# ===================================================================
+# パラメータ相関分析
+# ===================================================================
+
+
+class TestPearsonCorrelation:
+    def test_perfect_positive(self):
+        """完全正相関 r=1。"""
+        r = _pearson_correlation([1, 2, 3, 4], [2, 4, 6, 8])
+        assert abs(r - 1.0) < 1e-10
+
+    def test_perfect_negative(self):
+        """完全負相関 r=-1。"""
+        r = _pearson_correlation([1, 2, 3, 4], [8, 6, 4, 2])
+        assert abs(r - (-1.0)) < 1e-10
+
+    def test_weak_correlation(self):
+        """弱い相関のケース。"""
+        r = _pearson_correlation([1, 2, 3, 4, 5], [2, 1, 4, 3, 5])
+        assert abs(r) < 1.0  # 完全相関ではない
+        assert -1.0 <= r <= 1.0
+
+    def test_zero_variance(self):
+        """分散0（全値同じ）の場合は r=0。"""
+        r = _pearson_correlation([5, 5, 5], [1, 2, 3])
+        assert r == 0.0
+
+    def test_single_element(self):
+        """要素1つの場合は r=0。"""
+        r = _pearson_correlation([1], [2])
+        assert r == 0.0
+
+
+class TestCorrelationAnalysis:
+    def _make_result(self, n_candidates=10, n_params=3):
+        """テスト用のOptimizationResultを生成する。"""
+        config = OptimizationConfig(
+            objective_key="max_drift",
+            parameters=[
+                ParameterRange(key="Cd", label="減衰係数", min_val=100, max_val=1000),
+                ParameterRange(key="alpha", label="速度指数", min_val=0.1, max_val=1.0),
+                ParameterRange(key="Qd", label="降伏荷重", min_val=50, max_val=500),
+            ][:n_params],
+        )
+        candidates = []
+        for i in range(n_candidates):
+            params = {}
+            for p in config.parameters:
+                params[p.key] = p.min_val + (p.max_val - p.min_val) * (i / max(1, n_candidates - 1))
+            candidates.append(OptimizationCandidate(
+                params=params,
+                objective_value=0.01 - i * 0.001,
+                response_values={"max_drift": 0.005},
+                is_feasible=True,
+                iteration=i,
+            ))
+        return OptimizationResult(
+            best=candidates[0],
+            all_candidates=candidates,
+            config=config,
+        )
+
+    def test_basic_correlation(self):
+        """相関分析が正常に実行される。"""
+        result = self._make_result()
+        corr = compute_correlation_analysis(result)
+        assert corr is not None
+        assert len(corr.param_keys) == 3
+        # 3パラメータ → 3C2 = 3 ペア
+        assert len(corr.entries) == 3
+
+    def test_correlation_matrix_shape(self):
+        """相関行列のサイズが正しい。"""
+        result = self._make_result()
+        corr = compute_correlation_analysis(result)
+        mat = corr.correlation_matrix
+        assert len(mat) == 3
+        assert all(len(row) == 3 for row in mat)
+        # 対角は1.0
+        for i in range(3):
+            assert mat[i][i] == 1.0
+
+    def test_too_few_candidates(self):
+        """候補が2つ未満の場合はNone。"""
+        result = self._make_result(n_candidates=2)
+        corr = compute_correlation_analysis(result)
+        assert corr is None
+
+    def test_single_param(self):
+        """パラメータが1つの場合はNone。"""
+        result = self._make_result(n_params=1)
+        corr = compute_correlation_analysis(result)
+        assert corr is None
+
+    def test_top_n_filter(self):
+        """top_nで上位候補のみ分析。"""
+        result = self._make_result(n_candidates=20)
+        corr = compute_correlation_analysis(result, top_n=5)
+        assert corr is not None
+        assert corr.n_candidates == 5
+
+    def test_strong_correlations_property(self):
+        """strong_correlationsプロパティ。"""
+        result = self._make_result()
+        corr = compute_correlation_analysis(result)
+        # 線形に生成しているので強い正相関が出るはず
+        strong = corr.strong_correlations
+        assert isinstance(strong, list)
+
+
+# ===================================================================
+# 最適化ログ出力
+# ===================================================================
+
+
+class TestExportOptimizationLog:
+    def _make_result(self):
+        config = OptimizationConfig(
+            objective_key="max_drift",
+            objective_label="最大層間変形角",
+            method="grid",
+            damper_type="オイルダンパー",
+            parameters=[
+                ParameterRange(key="Cd", label="減衰係数", min_val=100, max_val=500),
+            ],
+        )
+        candidates = [
+            OptimizationCandidate(
+                params={"Cd": 200},
+                objective_value=0.005,
+                response_values={"max_drift": 0.005, "max_acc": 3.0},
+                is_feasible=True,
+                iteration=1,
+                constraint_margins={"max_drift": 0.005},
+            ),
+            OptimizationCandidate(
+                params={"Cd": 300},
+                objective_value=0.004,
+                response_values={"max_drift": 0.004, "max_acc": 2.8},
+                is_feasible=True,
+                iteration=2,
+                constraint_margins={"max_drift": 0.006},
+            ),
+            OptimizationCandidate(
+                params={"Cd": 100},
+                objective_value=0.008,
+                response_values={"max_drift": 0.008, "max_acc": 3.5},
+                is_feasible=False,
+                iteration=3,
+                constraint_margins={"max_drift": -0.002},
+            ),
+        ]
+        return OptimizationResult(
+            best=candidates[1],
+            all_candidates=candidates,
+            config=config,
+            elapsed_sec=1.5,
+            evaluation_method="mock",
+        )
+
+    def test_export_creates_file(self, tmp_path):
+        """CSVファイルが作成される。"""
+        result = self._make_result()
+        path = str(tmp_path / "log.csv")
+        export_optimization_log(result, path)
+        import os
+        assert os.path.exists(path)
+
+    def test_export_content(self, tmp_path):
+        """出力CSVの内容が正しい。"""
+        result = self._make_result()
+        path = str(tmp_path / "log.csv")
+        export_optimization_log(result, path)
+        with open(path, "r", encoding="utf-8-sig") as f:
+            content = f.read()
+        # メタデータコメント
+        assert "# 最適化ログ" in content
+        assert "最大層間変形角" in content
+        assert "モック評価" in content
+        # ヘッダー
+        assert "評価番号" in content
+        assert "param:Cd" in content
+        assert "目的関数値" in content
+        # データ行
+        assert "OK" in content
+        assert "NG" in content
+
+    def test_export_row_count(self, tmp_path):
+        """データ行数が候補数と一致する。"""
+        import csv
+        result = self._make_result()
+        path = str(tmp_path / "log.csv")
+        export_optimization_log(result, path)
+        with open(path, "r", encoding="utf-8-sig") as f:
+            lines = f.readlines()
+        # コメント行を除外
+        data_lines = [l for l in lines if not l.startswith("#")]
+        reader = csv.reader(data_lines)
+        rows = list(reader)
+        assert len(rows) == 4  # ヘッダー + 3データ行
+
+    def test_export_empty_candidates(self, tmp_path):
+        """候補が空の場合はファイルを作成しない。"""
+        import os
+        result = OptimizationResult()
+        path = str(tmp_path / "log.csv")
+        export_optimization_log(result, path)
+        assert not os.path.exists(path)
+
+    def test_export_snap_evaluation(self, tmp_path):
+        """SNAP評価方式が正しく記録される。"""
+        result = self._make_result()
+        result.evaluation_method = "snap"
+        path = str(tmp_path / "log.csv")
+        export_optimization_log(result, path)
+        with open(path, "r", encoding="utf-8-sig") as f:
+            content = f.read()
+        assert "SNAP実解析" in content
 
 
