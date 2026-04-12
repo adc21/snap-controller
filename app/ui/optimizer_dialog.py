@@ -856,101 +856,117 @@ class OptimizerDialog(QDialog):
         result_splitter.setStretchFactor(1, 1)
         layout.addWidget(result_splitter, stretch=1)
 
-        # ---- ボタン ----
-        btn_row = QHBoxLayout()
-        self._apply_btn = QPushButton("最良解をケースに適用")
-        self._apply_btn.setEnabled(False)
-        btn_row.addWidget(self._apply_btn)
-
-        self._export_csv_btn = QPushButton("CSV出力")
-        self._export_csv_btn.setEnabled(False)
-        self._export_csv_btn.setToolTip("探索結果をCSVファイルに出力します")
-        btn_row.addWidget(self._export_csv_btn)
+        # ---- ボタン (3行に分類整理) ----
+        # 行1: 分析ツール
+        analysis_row = QHBoxLayout()
+        analysis_label = QLabel("分析:")
+        analysis_label.setStyleSheet("font-weight: bold; color: #888;")
+        analysis_row.addWidget(analysis_label)
 
         self._sensitivity_btn = QPushButton("感度解析")
         self._sensitivity_btn.setEnabled(False)
         self._sensitivity_btn.setToolTip(
             "最適解周りのパラメータ感度を解析します（各パラメータを±20%変動）"
         )
-        btn_row.addWidget(self._sensitivity_btn)
+        analysis_row.addWidget(self._sensitivity_btn)
 
         self._sobol_btn = QPushButton("Sobol解析")
         self._sobol_btn.setEnabled(False)
         self._sobol_btn.setToolTip(
             "Sobol分散ベースグローバル感度解析（交互作用を含む一次/全次指標）"
         )
-        btn_row.addWidget(self._sobol_btn)
+        analysis_row.addWidget(self._sobol_btn)
 
         self._pareto_btn = QPushButton("Pareto Front")
         self._pareto_btn.setEnabled(False)
         self._pareto_btn.setToolTip(
             "複合目的関数使用時のトレードオフ曲線を表示します"
         )
-        btn_row.addWidget(self._pareto_btn)
-
-        self._save_btn = QPushButton("結果保存")
-        self._save_btn.setEnabled(False)
-        self._save_btn.setToolTip("最適化結果をJSONファイルに保存します")
-        btn_row.addWidget(self._save_btn)
-
-        self._load_btn = QPushButton("結果読込")
-        self._load_btn.setToolTip("保存済みの最適化結果をJSONファイルから読み込みます")
-        btn_row.addWidget(self._load_btn)
-
-        self._compare_btn = QPushButton("結果比較")
-        self._compare_btn.setToolTip(
-            "複数の最適化結果JSONを読み込み、パラメータ・収束曲線を比較します"
-        )
-        btn_row.addWidget(self._compare_btn)
+        analysis_row.addWidget(self._pareto_btn)
 
         self._correlation_btn = QPushButton("相関分析")
         self._correlation_btn.setEnabled(False)
         self._correlation_btn.setToolTip(
             "上位候補のパラメータ間の相関を分析します（相関行列ヒートマップ）"
         )
-        btn_row.addWidget(self._correlation_btn)
-
-        self._log_export_btn = QPushButton("評価ログ")
-        self._log_export_btn.setEnabled(False)
-        self._log_export_btn.setToolTip(
-            "全評価履歴をCSVログとして出力します（審査・規制文書用）"
-        )
-        btn_row.addWidget(self._log_export_btn)
-
-        self._report_btn = QPushButton("HTMLレポート")
-        self._report_btn.setEnabled(False)
-        self._report_btn.setToolTip(
-            "最適化結果をHTMLレポートとして出力します（設定・最良解・収束グラフ含む）"
-        )
-        btn_row.addWidget(self._report_btn)
+        analysis_row.addWidget(self._correlation_btn)
 
         self._diagnostics_btn = QPushButton("収束診断")
         self._diagnostics_btn.setEnabled(False)
         self._diagnostics_btn.setToolTip(
             "探索の品質を診断し、再実行の必要性や推奨アクションを表示します"
         )
-        btn_row.addWidget(self._diagnostics_btn)
+        analysis_row.addWidget(self._diagnostics_btn)
 
         self._heatmap_btn = QPushButton("空間ヒートマップ")
         self._heatmap_btn.setEnabled(False)
         self._heatmap_btn.setToolTip(
             "パラメータ空間の探索密度と目的関数値を2Dヒートマップで可視化します"
         )
-        btn_row.addWidget(self._heatmap_btn)
+        analysis_row.addWidget(self._heatmap_btn)
+        analysis_row.addStretch()
+        layout.addLayout(analysis_row)
+
+        # 行2: 出力・保存
+        export_row = QHBoxLayout()
+        export_label = QLabel("出力:")
+        export_label.setStyleSheet("font-weight: bold; color: #888;")
+        export_row.addWidget(export_label)
+
+        self._export_csv_btn = QPushButton("CSV出力")
+        self._export_csv_btn.setEnabled(False)
+        self._export_csv_btn.setToolTip("探索結果をCSVファイルに出力します")
+        export_row.addWidget(self._export_csv_btn)
+
+        self._log_export_btn = QPushButton("評価ログ")
+        self._log_export_btn.setEnabled(False)
+        self._log_export_btn.setToolTip(
+            "全評価履歴をCSVログとして出力します（審査・規制文書用）"
+        )
+        export_row.addWidget(self._log_export_btn)
+
+        self._report_btn = QPushButton("HTMLレポート")
+        self._report_btn.setEnabled(False)
+        self._report_btn.setToolTip(
+            "最適化結果をHTMLレポートとして出力します（設定・最良解・収束グラフ含む）"
+        )
+        export_row.addWidget(self._report_btn)
+
+        self._save_btn = QPushButton("結果保存")
+        self._save_btn.setEnabled(False)
+        self._save_btn.setToolTip("最適化結果をJSONファイルに保存します")
+        export_row.addWidget(self._save_btn)
+
+        self._load_btn = QPushButton("結果読込")
+        self._load_btn.setToolTip("保存済みの最適化結果をJSONファイルから読み込みます")
+        export_row.addWidget(self._load_btn)
+
+        self._compare_btn = QPushButton("結果比較")
+        self._compare_btn.setToolTip(
+            "複数の最適化結果JSONを読み込み、パラメータ・収束曲線を比較します"
+        )
+        export_row.addWidget(self._compare_btn)
 
         self._copy_params_btn = QPushButton("最良パラメータコピー")
         self._copy_params_btn.setEnabled(False)
         self._copy_params_btn.setToolTip(
             "最良解のパラメータ値をクリップボードにコピーします"
         )
-        btn_row.addWidget(self._copy_params_btn)
+        export_row.addWidget(self._copy_params_btn)
+        export_row.addStretch()
+        layout.addLayout(export_row)
 
-        btn_row.addStretch()
+        # 行3: アクション
+        action_row = QHBoxLayout()
+        self._apply_btn = QPushButton("最良解をケースに適用")
+        self._apply_btn.setEnabled(False)
+        action_row.addWidget(self._apply_btn)
+        action_row.addStretch()
 
         close_btn = QPushButton("閉じる")
         close_btn.clicked.connect(self.reject)
-        btn_row.addWidget(close_btn)
-        layout.addLayout(btn_row)
+        action_row.addWidget(close_btn)
+        layout.addLayout(action_row)
 
     def _connect_signals(self) -> None:
         self._run_btn.clicked.connect(self._start_optimization)

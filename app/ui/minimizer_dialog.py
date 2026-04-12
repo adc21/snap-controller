@@ -11,8 +11,8 @@ import csv
 import logging
 from typing import Callable, Dict, List, Optional
 
-from PySide6.QtCore import Qt, QThread, Signal
-from PySide6.QtGui import QFont
+from PySide6.QtCore import QSize, Qt, QThread, Signal
+from PySide6.QtGui import QFont, QStandardItem
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -201,14 +201,27 @@ class MinimizerDialog(QDialog):
         algo_group = QGroupBox("探索設定")
         algo_layout = QVBoxLayout(algo_group)
 
-        # アルゴリズム選択
+        # アルゴリズム選択（カテゴリ別グループ表示）
         algo_layout.addWidget(QLabel("探索戦略:"))
         self._combo_strategy = QComboBox()
+        model = self._combo_strategy.model()
+        first_selectable_idx = -1
         for cat_name, cat_keys in STRATEGY_CATEGORIES.items():
+            # カテゴリヘッダー（選択不可）
+            header_item = QStandardItem(f"── {cat_name} ──")
+            header_item.setEnabled(False)
+            f = header_item.font()
+            f.setBold(True)
+            header_item.setFont(f)
+            model.appendRow(header_item)
+            # 戦略アイテム
             for key in cat_keys:
                 label = STRATEGIES[key]
-                self._combo_strategy.addItem(f"[{cat_name}] {label}", key)
-        self._combo_strategy.setCurrentIndex(0)
+                self._combo_strategy.addItem(f"  {label}", key)
+                if first_selectable_idx < 0:
+                    first_selectable_idx = model.rowCount() - 1
+        if first_selectable_idx >= 0:
+            self._combo_strategy.setCurrentIndex(first_selectable_idx)
         algo_layout.addWidget(self._combo_strategy)
 
         # 反復回数
