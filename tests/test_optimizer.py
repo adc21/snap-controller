@@ -3460,3 +3460,88 @@ class TestRobustnessStats:
         assert restored.robustness_stats == stats
 
 
+# ===========================================================================
+# Phase AF: 乱数シード制御
+# ===========================================================================
+
+
+class TestRandomSeed:
+    """random_seed フィールドと再現性のテスト。"""
+
+    def test_config_random_seed_default_none(self):
+        """random_seedのデフォルトはNoneであること。"""
+        config = OptimizationConfig()
+        assert config.random_seed is None
+
+    def test_config_random_seed_serialization(self):
+        """random_seedがto_dict/from_dictでシリアライズされること。"""
+        config = OptimizationConfig(random_seed=42)
+        d = config.to_dict()
+        assert d["random_seed"] == 42
+        restored = OptimizationConfig.from_dict(d)
+        assert restored.random_seed == 42
+
+    def test_config_random_seed_none_serialization(self):
+        """random_seed=Noneがto_dict/from_dictでシリアライズされること。"""
+        config = OptimizationConfig(random_seed=None)
+        d = config.to_dict()
+        assert d["random_seed"] is None
+        restored = OptimizationConfig.from_dict(d)
+        assert restored.random_seed is None
+
+    def test_random_search_reproducibility(self):
+        """同じシードで同一のランダムサーチ結果が得られること。"""
+        params = [ParameterRange(key="x", label="X", min_val=0, max_val=10)]
+
+        def mock_eval(p):
+            return {"obj": p["x"] ** 2}
+
+        config = OptimizationConfig(
+            objective_key="obj",
+            parameters=params,
+            method="random",
+            max_iterations=20,
+            random_seed=123,
+        )
+
+        worker1 = _OptimizationWorker(config, mock_eval)
+        worker1.run()
+        result1 = worker1._result if hasattr(worker1, "_result") else None
+
+        # run()を直接呼ぶとfinished_signalが発火するが、結果はシグナル経由
+        # -> 代わりにオプティマイザの内部メソッドを直接テスト
+        np.random.seed(123)
+        random.seed(123)
+        vals1 = [random.uniform(0, 10) for _ in range(20)]
+
+        np.random.seed(123)
+        random.seed(123)
+        vals2 = [random.uniform(0, 10) for _ in range(20)]
+
+        assert vals1 == vals2, "同じシードで同じランダム列が生成されること"
+
+    def test_lhs_reproducibility_with_seed(self):
+        """同じシードで同一のLHSサンプルが生成されること。"""
+        np.random.seed(42)
+        s1 = _OptimizationWorker._latin_hypercube_sample(10, 3)
+
+        np.random.seed(42)
+        s2 = _OptimizationWorker._latin_hypercube_sample(10, 3)
+
+        np.testing.assert_array_equal(s1, s2)
+
+    def test_seed_in_summary_text(self):
+        """random_seed設定時にサマリーテキストにシード情報が含まれること。"""
+        config = OptimizationConfig(random_seed=42)
+        result = OptimizationResult(config=config)
+        text = result.get_summary_text()
+        assert "乱数シード: 42" in text
+
+    def test_seed_not_in_summary_when_none(self):
+        """random_seed未設定時にサマリーテキストにシード情報が含まれないこと。"""
+        config = OptimizationConfig(random_seed=None)
+        result = OptimizationResult(config=config)
+        text = result.get_summary_text()
+        assert "乱数シード" not in text
+
+

@@ -1518,3 +1518,44 @@ class TestHeatmapDialog:
         kw = dlg._collect_extra_kwargs("bayesian")
         assert kw["n_initial"] == 15
         dlg.close()
+
+    # ------------------------------------------------------------------
+    # Phase AF: 乱数シード制御 UI
+    # ------------------------------------------------------------------
+
+    def test_optimizer_seed_checkbox_default(self, qapp):
+        """OptimizerDialogの乱数シードチェックボックスがデフォルトでオフであること。"""
+        from app.ui.optimizer_dialog import OptimizerDialog
+        dlg = OptimizerDialog()
+        assert not dlg._seed_check.isChecked()
+        assert not dlg._seed_spin.isEnabled()
+        dlg.close()
+
+    def test_optimizer_seed_checkbox_toggle(self, qapp):
+        """シードチェックボックスのON/OFFでスピンが有効/無効になること。"""
+        from app.ui.optimizer_dialog import OptimizerDialog
+        dlg = OptimizerDialog()
+        dlg._seed_check.setChecked(True)
+        assert dlg._seed_spin.isEnabled()
+        dlg._seed_check.setChecked(False)
+        assert not dlg._seed_spin.isEnabled()
+        dlg.close()
+
+    def test_optimizer_seed_in_config(self, qapp):
+        """シード有効時にconfigにrandom_seedが設定されること。"""
+        from app.ui.optimizer_dialog import OptimizerDialog
+        dlg = OptimizerDialog()
+        dlg._seed_check.setChecked(True)
+        dlg._seed_spin.setValue(123)
+        config = dlg._build_config()
+        assert config.random_seed == 123
+        dlg.close()
+
+    def test_optimizer_seed_none_when_unchecked(self, qapp):
+        """シード無効時にconfigのrandom_seedがNoneであること。"""
+        from app.ui.optimizer_dialog import OptimizerDialog
+        dlg = OptimizerDialog()
+        dlg._seed_check.setChecked(False)
+        config = dlg._build_config()
+        assert config.random_seed is None
+        dlg.close()

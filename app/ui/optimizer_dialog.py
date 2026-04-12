@@ -586,6 +586,28 @@ class OptimizerDialog(QDialog):
         self._ga_row_widget.setVisible(False)  # GA選択時のみ表示
         layout.addWidget(self._ga_row_widget)
 
+        # ---- 乱数シード ----
+        seed_row = QHBoxLayout()
+        self._seed_check = QCheckBox("乱数シード:")
+        self._seed_check.setChecked(False)
+        self._seed_check.setToolTip(
+            "整数を指定すると再現性のある結果を得られます。\n"
+            "同じシードで同じ設定を実行すると同一の結果になります。\n"
+            "構造設計のレビューや結果の再現性確認に有用です。"
+        )
+        seed_row.addWidget(self._seed_check)
+        self._seed_spin = QSpinBox()
+        self._seed_spin.setRange(0, 999999)
+        self._seed_spin.setValue(42)
+        self._seed_spin.setFixedWidth(80)
+        self._seed_spin.setEnabled(False)
+        seed_row.addWidget(self._seed_spin)
+        seed_row.addStretch()
+        self._seed_check.toggled.connect(self._seed_spin.setEnabled)
+        seed_widget = QWidget()
+        seed_widget.setLayout(seed_row)
+        layout.addWidget(seed_widget)
+
         # ---- 並列評価 ----
         parallel_row = QHBoxLayout()
         parallel_row.addWidget(QLabel("並列評価数:"))
@@ -1441,6 +1463,11 @@ class OptimizerDialog(QDialog):
             acquisition_function=self._acq_combo.currentData(),
             acquisition_kappa=self._acq_kappa_spin.value(),
             ga_adaptive_mutation=self._ga_adaptive_cb.isChecked(),
+            random_seed=(
+                self._seed_spin.value()
+                if self._seed_check.isChecked()
+                else None
+            ),
         )
 
     def _edit_cost_coefficients(self) -> None:
@@ -2786,6 +2813,14 @@ class OptimizerDialog(QDialog):
 
         # GA適応的突然変異
         self._ga_adaptive_cb.setChecked(preset.get("ga_adaptive_mutation", False))
+
+        # 乱数シード
+        seed = preset.get("random_seed")
+        if seed is not None:
+            self._seed_check.setChecked(True)
+            self._seed_spin.setValue(seed)
+        else:
+            self._seed_check.setChecked(False)
 
         self._update_est_run_label()
 

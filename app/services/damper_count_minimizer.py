@@ -1003,9 +1003,14 @@ def minimize_nelder_mead(
 
     x0 = [m / 2.0 for m in maxes]
 
+    # 問題スケールに基づく適応的許容値
+    max_max = max(maxes) if maxes else 10
+    xatol = max(0.5, max_max * 0.05)  # 最大値の5%（最低0.5）
+    fatol = max(0.5, penalty_weight * 0.01) if penalty_weight > 10 else 0.5
+
     try:
         sp_minimize(obj_fn, x0, method="Nelder-Mead",
-                    options={"maxiter": 200, "xatol": 0.5, "fatol": 0.5})
+                    options={"maxiter": 200, "xatol": xatol, "fatol": fatol})
     except Exception as e:
         logger.warning("Nelder-Mead最適化でエラー: %s", e)
 
@@ -1114,7 +1119,10 @@ def minimize_bayesian(
             best_idx = np.argmax(ei)
             next_x = candidates[best_idx].astype(int).tolist()
         except ImportError:
-            logger.warning("sklearn がインストールされていません。ランダムサンプリングにフォールバックします。")
+            logger.warning(
+                "sklearn がインストールされていません。ランダムサンプリングにフォールバックします。"
+                " インストール: pip install scikit-learn"
+            )
             next_x = [random.randint(0, m) for m in maxes]
         except Exception as e:
             logger.debug("GP予測エラー（ランダムにフォールバック）: %s", e)
@@ -1245,6 +1253,7 @@ def minimize_damper_count(
     strategy: str = "floor_add",
     initial_quantities: Optional[Dict[str, int]] = None,
     progress_cb: Optional[ProgressCb] = None,
+    random_seed: Optional[int] = None,
     **kwargs,
 ) -> MinimizationResult:
     """
@@ -1264,7 +1273,15 @@ def minimize_damper_count(
         初期本数（floor_remove で使用）
     progress_cb : Optional[ProgressCb]
         進捗コールバック
+    random_seed : Optional[int]
+        乱数シード。整数を指定すると再現性のある結果を得られる。
     """
+    # 乱数シード設定（再現性の確保）
+    if random_seed is not None:
+        np.random.seed(random_seed)
+        random.seed(random_seed)
+        logger.info("Minimizer乱数シード設定: %d", random_seed)
+
     strategy = strategy.lower()
     max_q = max(max_quantities.values()) if max_quantities else 10
 

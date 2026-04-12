@@ -462,6 +462,10 @@ class OptimizationConfig:
     """GA で適応的突然変異率を使用するか。True の場合、世代が進むにつれて
     突然変異率を線形減衰させ、序盤は探索・終盤は利用を重視する。
     交叉率も逆方向に増加させて終盤の局所精錬を促進する。"""
+    random_seed: Optional[int] = None
+    """乱数シード。整数を指定すると全確率的手法で再現性のある結果を得られる。
+    None の場合は毎回異なるランダムシードを使用（デフォルト）。
+    構造設計のレビューや結果の再現性確認に有用。"""
 
     def compute_objective(self, response: Dict[str, float], params: Optional[Dict[str, float]] = None) -> float:
         """応答値辞書から目的関数値を計算する。
@@ -516,6 +520,7 @@ class OptimizationConfig:
             "acquisition_function": self.acquisition_function,
             "acquisition_kappa": self.acquisition_kappa,
             "ga_adaptive_mutation": self.ga_adaptive_mutation,
+            "random_seed": self.random_seed,
         }
 
     @classmethod
@@ -541,6 +546,7 @@ class OptimizationConfig:
             acquisition_function=d.get("acquisition_function", "ei"),
             acquisition_kappa=d.get("acquisition_kappa", 2.0),
             ga_adaptive_mutation=d.get("ga_adaptive_mutation", False),
+            random_seed=d.get("random_seed"),
         )
 
 
@@ -686,6 +692,8 @@ class OptimizationResult:
                 f"コスト重み: {self.config.cost_weight:.4g} "
                 f"(係数: {self.config.cost_coefficients})"
             )
+        if self.config and self.config.random_seed is not None:
+            lines.append(f"乱数シード: {self.config.random_seed}")
         if self.config and self.config.envelope_mode:
             lines.append(
                 f"多波エンベロープ: {self.config.envelope_mode} "
@@ -887,6 +895,12 @@ class _OptimizationWorker(QThread):
     def run(self) -> None:
         config = self._config
         start_time = time.time()
+
+        # 乱数シード設定（再現性の確保）
+        if config.random_seed is not None:
+            np.random.seed(config.random_seed)
+            random.seed(config.random_seed)
+            logger.info("乱数シード設定: %d", config.random_seed)
 
         # ロバスト最適化: 評価関数をラップして最悪ケース評価にする
         if config.robustness_samples > 0:

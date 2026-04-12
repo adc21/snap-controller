@@ -313,3 +313,80 @@ class TestAutoPenaltyWeight:
         from app.services.damper_count_minimizer import _auto_penalty_weight
         w = _auto_penalty_weight({"F1": 1})
         assert w >= 100.0
+
+
+# ===========================================================================
+# Phase AF: 乱数シード制御 + Nelder-Mead適応許容値
+# ===========================================================================
+
+# 簡易評価関数: 合計本数が閾値(3)を超えればfeasible
+_simple_eval = make_evaluator({"F1": 1.0, "F2": 1.0}, 3.0)
+
+
+class TestRandomSeedMinimizer:
+    """minimize_damper_count の random_seed 引数テスト。"""
+
+    def test_random_seed_reproducibility(self):
+        """同じシードでminimize_randomが同一結果を返すこと。"""
+        floor_keys = ["F1", "F2"]
+        max_q = {"F1": 5, "F2": 5}
+
+        results = []
+        for _ in range(2):
+            r = minimize_damper_count(
+                floor_keys, max_q, _simple_eval,
+                strategy="random", random_seed=42,
+                max_iterations=10,
+            )
+            results.append(r)
+
+        assert results[0].final_quantities == results[1].final_quantities
+        assert results[0].final_count == results[1].final_count
+
+    def test_random_seed_ga_reproducibility(self):
+        """同じシードでGAが同一結果を返すこと。"""
+        floor_keys = ["F1", "F2"]
+        max_q = {"F1": 5, "F2": 5}
+
+        results = []
+        for _ in range(2):
+            r = minimize_damper_count(
+                floor_keys, max_q, _simple_eval,
+                strategy="ga", random_seed=99,
+                population_size=8, generations=3,
+            )
+            results.append(r)
+
+        assert results[0].final_quantities == results[1].final_quantities
+
+    def test_random_seed_none_default(self):
+        """random_seed=Noneでエラーなく実行できること。"""
+        floor_keys = ["F1"]
+        max_q = {"F1": 3}
+        r = minimize_damper_count(
+            floor_keys, max_q, _simple_eval,
+            strategy="random", random_seed=None,
+            max_iterations=5,
+        )
+        assert r.final_quantities is not None
+
+
+class TestNelderMeadAdaptiveTol:
+    """Nelder-Mead適応的許容値のテスト。"""
+
+    def test_nelder_mead_runs_with_adaptive_tol(self):
+        """適応的許容値でNelder-Meadが正常に完了すること。"""
+        floor_keys = ["F1", "F2"]
+        max_q = {"F1": 10, "F2": 10}
+        r = minimize_nelder_mead(floor_keys, max_q, _simple_eval)
+        assert r.strategy == "nelder_mead"
+        assert r.final_quantities is not None
+        assert r.evaluations > 0
+
+    def test_nelder_mead_large_scale(self):
+        """大きなmax_quantitiesでもNelder-Meadが正常に完了すること。"""
+        floor_keys = ["F1", "F2"]
+        max_q = {"F1": 100, "F2": 100}
+        r = minimize_nelder_mead(floor_keys, max_q, _simple_eval)
+        assert r.strategy == "nelder_mead"
+        assert r.final_quantities is not None
