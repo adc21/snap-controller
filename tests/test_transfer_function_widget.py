@@ -10,6 +10,8 @@ FFT 計算ロジック・UI インスタンス化・空データ/異常データ
 
 from __future__ import annotations
 
+import os
+
 import numpy as np
 import pytest
 
@@ -425,3 +427,111 @@ class TestReferenceOverlay:
         w = TransferFunctionWidget()
         w._set_reference()
         assert w._reference_data is None
+
+    def test_csv_export_button_exists(self):
+        """CSV出力ボタンが存在する。"""
+        from app.ui.transfer_function_widget import TransferFunctionWidget
+        w = TransferFunctionWidget()
+        assert hasattr(w, "_btn_export_csv")
+        assert w._btn_export_csv.text() == "CSV出力"
+
+    def test_collect_fft_data_no_entries(self):
+        """ケースがない場合、_collect_fft_dataは空リストを返す。"""
+        from app.ui.transfer_function_widget import TransferFunctionWidget
+        w = TransferFunctionWidget()
+        assert w._collect_fft_data() == []
+
+    def test_collect_fft_data_with_entries(self):
+        """エントリがある場合、FFTデータを収集できる。"""
+        from app.ui.transfer_function_widget import TransferFunctionWidget
+        from unittest.mock import MagicMock
+
+        dt = 0.01
+        n_records = 5
+        n_fields = 3
+        n_steps = 1024
+        t = np.arange(n_steps) * dt
+        data_array = np.sin(2 * np.pi * 2.0 * t)
+
+        mock_header = MagicMock()
+        mock_header.num_records = n_records
+        mock_header.fields_per_record = n_fields
+        mock_header.num_steps = n_steps
+
+        mock_hst = MagicMock()
+        mock_hst.header = mock_header
+        mock_hst.dt = dt
+        mock_hst.time_series.return_value = data_array
+        mock_hst.field_labels.return_value = [f"Field-{i}" for i in range(n_fields)]
+
+        mock_bc = MagicMock()
+        mock_bc.hst = mock_hst
+        mock_bc.record_name.side_effect = lambda i: f"Rec-{i}"
+        loader = MagicMock()
+        loader.get.side_effect = lambda cat: mock_bc if cat == "Floor" else None
+
+        w = TransferFunctionWidget()
+        w.set_entries([("TestCase", loader)])
+
+        result = w._collect_fft_data()
+        assert len(result) == 1
+        name, freqs, amplitude = result[0]
+        assert name == "TestCase"
+        assert len(freqs) > 0
+        assert len(amplitude) == len(freqs)
+
+    def test_export_csv_writes_file(self, tmp_path):
+        """_export_csvでCSVファイルが正しく書き出される。"""
+        from app.ui.transfer_function_widget import TransferFunctionWidget
+        from unittest.mock import patch, MagicMock
+        import csv as csv_mod
+
+        dt = 0.01
+        n_records = 5
+        n_fields = 3
+        n_steps = 256
+        t = np.arange(n_steps) * dt
+        data_array = np.sin(2 * np.pi * 2.0 * t)
+
+        mock_header = MagicMock()
+        mock_header.num_records = n_records
+        mock_header.fields_per_record = n_fields
+        mock_header.num_steps = n_steps
+
+        mock_hst = MagicMock()
+        mock_hst.header = mock_header
+        mock_hst.dt = dt
+        mock_hst.time_series.return_value = data_array
+        mock_hst.field_labels.return_value = [f"Field-{i}" for i in range(n_fields)]
+
+        mock_bc = MagicMock()
+        mock_bc.hst = mock_hst
+        mock_bc.record_name.side_effect = lambda i: f"Rec-{i}"
+        loader = MagicMock()
+        loader.get.side_effect = lambda cat: mock_bc if cat == "Floor" else None
+
+        w = TransferFunctionWidget()
+        w.set_entries([("Case1", loader)])
+
+        csv_path = str(tmp_path / "test_fft.csv")
+        with patch.object(
+            type(w), "_export_csv",
+            wraps=w._export_csv,
+        ):
+            # QFileDialogをモックしてパスを返す
+            with patch(
+                "app.ui.transfer_function_widget.QFileDialog.getSaveFileName",
+                return_value=(csv_path, "CSV Files (*.csv)"),
+            ), patch(
+                "app.ui.transfer_function_widget.QMessageBox.information",
+            ):
+                w._export_csv()
+
+        assert os.path.exists(csv_path)
+        with open(csv_path, "r", encoding="utf-8-sig") as f:
+            reader = csv_mod.reader(f)
+            header = next(reader)
+            assert "周波数 [Hz]" in header[0]
+            assert "Case1" in header[1]
+            rows = list(reader)
+            assert len(rows) > 0

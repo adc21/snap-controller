@@ -49,6 +49,9 @@ try:
 except Exception:
     pass
 
+import csv
+import os
+
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QWidget,
@@ -57,6 +60,8 @@ from PySide6.QtWidgets import (
     QLabel,
     QComboBox,
     QCheckBox,
+    QFileDialog,
+    QMessageBox,
     QPushButton,
 )
 
@@ -205,6 +210,14 @@ class TransferFunctionWidget(QWidget):
         self._btn_clear_ref.clicked.connect(self._clear_reference)
         self._btn_clear_ref.setEnabled(False)
         ctrl.addWidget(self._btn_clear_ref)
+
+        self._btn_export_csv = QPushButton("CSV出力")
+        self._btn_export_csv.setFixedWidth(70)
+        self._btn_export_csv.setToolTip(
+            "表示中の周波数・振幅データをCSVファイルに出力します"
+        )
+        self._btn_export_csv.clicked.connect(self._export_csv)
+        ctrl.addWidget(self._btn_export_csv)
 
         root.addLayout(ctrl)
 
@@ -379,6 +392,109 @@ class TransferFunctionWidget(QWidget):
         self._btn_clear_ref.setEnabled(False)
         self._status_label.setText("基準データをクリアしました")
         self._refresh()
+
+    # ------------------------------------------------------------------
+    # CSV エクスポート
+    # ------------------------------------------------------------------
+
+    def _collect_fft_data(self) -> List[Tuple[str, np.ndarray, np.ndarray]]:
+        """現在の選択に基づくFFTデータを収集する。
+
+        Returns
+        -------
+        list of (case_name, freqs, amplitude)
+        """
+        results: List[Tuple[str, np.ndarray, np.ndarray]] = []
+        cat = self._cat_combo.currentText()
+        rec_idx = self._rec_combo.currentData()
+        field_idx = self._field_combo.currentData()
+
+        if not cat or rec_idx is None or field_idx is None or not self._entries:
+            return results
+
+        for case_name, loader in self._entries:
+            bc = loader.get(cat)
+            if not bc or not bc.hst or not bc.hst.header:
+                continue
+            hst = bc.hst
+            h = hst.header
+            if rec_idx >= h.num_records or field_idx >= h.fields_per_record:
+                continue
+            try:
+                hst.ensure_loaded()
+                y = hst.time_series(rec_idx, field_idx)
+            except Exception:
+                continue
+            if len(y) < 2:
+                continue
+
+            n = len(y)
+            dt = hst.dt
+            Y = rfft(y)
+            freqs = rfftfreq(n, d=dt)
+            amplitude = np.abs(Y) * (2.0 / n)
+            freqs = freqs[1:]
+            amplitude = amplitude[1:]
+            if len(freqs) > 0:
+                results.append((case_name, freqs, amplitude))
+
+        return results
+
+    def _export_csv(self) -> None:
+        """表示中の周波数・振幅データをCSVファイルにエクスポートします。"""
+        data = self._collect_fft_data()
+        if not data:
+            QMessageBox.information(self, "情報", "エクスポートするデータがありません。")
+            return
+
+        cat = self._cat_combo.currentText()
+        rec_name = self._rec_combo.currentText()
+        field_name = self._field_combo.currentText()
+        default_name = f"fft_{cat}_{rec_name}_{field_name}.csv"
+        # ファイル名に使えない文字を除去
+        default_name = default_name.replace("/", "_").replace("\\", "_")
+
+        path, _ = QFileDialog.getSaveFileName(
+            self, "CSV出力先を選択", default_name,
+            "CSV Files (*.csv);;All Files (*)",
+        )
+        if not path:
+            return
+
+        try:
+            with open(path, "w", encoding="utf-8-sig", newline="") as f:
+                writer = csv.writer(f)
+                # ヘッダー行
+                header = ["周波数 [Hz]"]
+                for case_name, _, _ in data:
+                    header.append(f"|H(f)| ({case_name})")
+                writer.writerow(header)
+
+                # 最長のデータに合わせる
+                max_len = max(len(freqs) for _, freqs, _ in data)
+                for i in range(max_len):
+                    row = []
+                    # 周波数は最初のケースから取得
+                    if i < len(data[0][1]):
+                        row.append(f"{data[0][1][i]:.6g}")
+                    else:
+                        row.append("")
+                    for _, freqs, amplitude in data:
+                        if i < len(amplitude):
+                            row.append(f"{amplitude[i]:.6g}")
+                        else:
+                            row.append("")
+                    writer.writerow(row)
+
+            n_cases = len(data)
+            n_points = max_len
+            QMessageBox.information(
+                self, "CSV出力完了",
+                f"周波数応答データを出力しました。\n{path}\n"
+                f"({n_cases} ケース, {n_points} データ点)",
+            )
+        except OSError as e:
+            QMessageBox.warning(self, "エラー", f"ファイルの書き込みに失敗しました:\n{e}")
 
     # ------------------------------------------------------------------
     # SNAP 伝達関数計算

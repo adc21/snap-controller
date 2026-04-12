@@ -425,8 +425,31 @@ class OptimizerDialog(QDialog):
 
         # パラメータ範囲テーブル
         param_group = QGroupBox("探索パラメータ範囲")
-        self._param_layout = QVBoxLayout(param_group)
+        param_group_layout = QVBoxLayout(param_group)
+        self._param_layout = QVBoxLayout()
+        param_group_layout.addLayout(self._param_layout)
         self._on_damper_type_changed(self._damper_combo.currentText())
+
+        # 設定保存/読込ボタン
+        config_btn_row = QHBoxLayout()
+        config_btn_row.addStretch()
+        self._save_config_btn = QPushButton("設定保存")
+        self._save_config_btn.setFixedWidth(80)
+        self._save_config_btn.setToolTip(
+            "現在のパラメータ範囲・目的関数・探索手法の設定を\n"
+            "JSONファイルに保存します（プリセットとして再利用可能）"
+        )
+        self._save_config_btn.clicked.connect(self._save_config_preset)
+        config_btn_row.addWidget(self._save_config_btn)
+        self._load_config_btn = QPushButton("設定読込")
+        self._load_config_btn.setFixedWidth(80)
+        self._load_config_btn.setToolTip(
+            "保存済みのパラメータ設定をJSONファイルから読み込みます"
+        )
+        self._load_config_btn.clicked.connect(self._load_config_preset)
+        config_btn_row.addWidget(self._load_config_btn)
+        param_group_layout.addLayout(config_btn_row)
+
         settings_layout.addWidget(param_group)
 
         layout.addWidget(settings_group)
@@ -2058,6 +2081,134 @@ class OptimizerDialog(QDialog):
         fname = os.path.basename(path)
         self._warm_start_path_label.setText(f"{fname} ({n}点)")
         self._warm_start_path_label.setToolTip(path)
+
+    # ------------------------------------------------------------------
+    # 設定プリセット保存・読込
+    # ------------------------------------------------------------------
+
+    def _save_config_preset(self) -> None:
+        """現在のパラメータ範囲・目的関数・探索手法の設定をJSONに保存します。"""
+        try:
+            config = self._build_config()
+        except Exception as e:
+            QMessageBox.warning(self, "設定エラー", f"設定の取得に失敗しました:\n{e}")
+            return
+
+        preset = config.to_dict()
+        # 結果に影響しない設定もプリセットに含める
+        preset["_preset_version"] = 1
+
+        path, _ = QFileDialog.getSaveFileName(
+            self, "設定プリセットの保存先を選択", "optimizer_preset.json",
+            "JSON Files (*.json);;All Files (*)",
+        )
+        if not path:
+            return
+
+        try:
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(preset, f, ensure_ascii=False, indent=2)
+            QMessageBox.information(
+                self, "保存完了",
+                f"設定プリセットを保存しました。\n{path}",
+            )
+        except OSError as e:
+            QMessageBox.warning(self, "エラー", f"ファイルの書き込みに失敗しました:\n{e}")
+
+    def _load_config_preset(self) -> None:
+        """JSONファイルからパラメータ設定を読み込み、UIに反映します。"""
+        path, _ = QFileDialog.getOpenFileName(
+            self, "設定プリセットファイルを選択", "",
+            "JSON Files (*.json);;All Files (*)",
+        )
+        if not path:
+            return
+
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                preset = json.load(f)
+        except (OSError, json.JSONDecodeError) as e:
+            QMessageBox.warning(self, "読込エラー", f"ファイルの読み込みに失敗しました:\n{e}")
+            return
+
+        try:
+            self._apply_config_preset(preset)
+        except Exception as e:
+            logger.warning("設定プリセット適用エラー: %s", e, exc_info=True)
+            QMessageBox.warning(self, "適用エラー", f"設定の適用に失敗しました:\n{e}")
+
+    def _apply_config_preset(self, preset: dict) -> None:
+        """プリセット辞書の内容をUI要素に反映します。"""
+        # ダンパー種類
+        damper_type = preset.get("damper_type", "")
+        if damper_type:
+            idx = self._damper_combo.findText(damper_type)
+            if idx >= 0:
+                self._damper_combo.setCurrentIndex(idx)
+
+        # 目的関数
+        obj_key = preset.get("objective_key", "max_drift")
+        for i, (key, _, _) in enumerate(_OBJECTIVE_ITEMS):
+            if key == obj_key:
+                self._obj_combo.setCurrentIndex(i)
+                break
+
+        # 複合目的関数の重み
+        obj_weights = preset.get("objective_weights", {})
+        if obj_weights:
+            self._composite_check.setChecked(True)
+            for w in self._weight_spins:
+                w["spin"].setValue(obj_weights.get(w["key"], 0.0))
+        else:
+            self._composite_check.setChecked(False)
+
+        # 探索手法
+        method = preset.get("method", "grid")
+        for i in range(self._method_combo.count()):
+            if self._method_combo.itemData(i) == method:
+                self._method_combo.setCurrentIndex(i)
+                break
+
+        # 反復数
+        self._iter_spin.setValue(preset.get("max_iterations", 100))
+
+        # パラメータ範囲
+        params = preset.get("parameters", [])
+        if params and self._param_widgets:
+            for pw, pd in zip(self._param_widgets, params):
+                pw["min"].setValue(pd.get("min_val", pw["min"].value()))
+                pw["max"].setValue(pd.get("max_val", pw["max"].value()))
+                pw["step"].setValue(pd.get("step", pw["step"].value()))
+
+        # 制約ペナルティ重み
+        penalty = preset.get("constraint_penalty_weight", 0.0)
+        if penalty > 0:
+            self._penalty_cb.setChecked(True)
+            self._penalty_spin.setValue(penalty)
+        else:
+            self._penalty_cb.setChecked(False)
+
+        # 並列評価数
+        self._parallel_spin.setValue(preset.get("n_parallel", 1))
+
+        # チェックポイント
+        cp_interval = preset.get("checkpoint_interval", 10)
+        if cp_interval > 0:
+            self._checkpoint_check.setChecked(True)
+            self._checkpoint_interval_spin.setValue(cp_interval)
+        else:
+            self._checkpoint_check.setChecked(False)
+
+        # ロバスト最適化
+        rob_samples = preset.get("robustness_samples", 0)
+        if rob_samples > 0:
+            self._robust_check.setChecked(True)
+            self._robust_samples_spin.setValue(rob_samples)
+            self._robust_delta_spin.setValue(preset.get("robustness_delta", 0.05))
+        else:
+            self._robust_check.setChecked(False)
+
+        self._update_est_run_label()
 
 
 class ComparisonDialog(QDialog):

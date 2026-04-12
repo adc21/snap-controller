@@ -759,6 +759,91 @@ class TestWarmStartUI:
         dlg.close()
 
 
+class TestConfigPreset:
+    """設定プリセット保存・読込のテスト。"""
+
+    def test_save_config_buttons_exist(self, qapp):
+        """OptimizerDialogに設定保存/読込ボタンがある。"""
+        from app.ui.optimizer_dialog import OptimizerDialog
+        dlg = OptimizerDialog()
+        assert hasattr(dlg, "_save_config_btn")
+        assert hasattr(dlg, "_load_config_btn")
+        dlg.close()
+
+    def test_build_config_roundtrip(self, qapp):
+        """_build_config() → to_dict → _apply_config_preset のラウンドトリップ。"""
+        from app.ui.optimizer_dialog import OptimizerDialog
+        dlg = OptimizerDialog()
+        # 値を変更
+        dlg._iter_spin.setValue(200)
+        dlg._parallel_spin.setValue(4)
+        dlg._penalty_cb.setChecked(True)
+        dlg._penalty_spin.setValue(50.0)
+
+        config = dlg._build_config()
+        preset = config.to_dict()
+
+        # 別のダイアログで復元
+        dlg2 = OptimizerDialog()
+        dlg2._apply_config_preset(preset)
+        assert dlg2._iter_spin.value() == 200
+        assert dlg2._parallel_spin.value() == 4
+        assert dlg2._penalty_cb.isChecked() is True
+        assert dlg2._penalty_spin.value() == 50.0
+        dlg.close()
+        dlg2.close()
+
+    def test_apply_preset_objective_key(self, qapp):
+        """プリセットから目的関数が正しく復元される。"""
+        from app.ui.optimizer_dialog import OptimizerDialog
+        dlg = OptimizerDialog()
+        preset = {"objective_key": "max_acc", "parameters": [], "method": "random"}
+        dlg._apply_config_preset(preset)
+        # max_acc は _OBJECTIVE_ITEMS の2番目(index=1)
+        assert dlg._obj_combo.currentIndex() == 1
+        dlg.close()
+
+    def test_apply_preset_damper_type(self, qapp):
+        """プリセットからダンパー種類が正しく復元さ��る。"""
+        from app.ui.optimizer_dialog import OptimizerDialog
+        dlg = OptimizerDialog()
+        preset = {"damper_type": "鋼材ダンパー", "parameters": []}
+        dlg._apply_config_preset(preset)
+        assert dlg._damper_combo.currentText() == "鋼材ダンパー"
+        dlg.close()
+
+    def test_apply_preset_param_ranges(self, qapp):
+        """プリセットからパラメータ範囲が正しく復元される。"""
+        from app.ui.optimizer_dialog import OptimizerDialog
+        dlg = OptimizerDialog()
+        # デフォルト（オイルダンパー）のパラメータを変更するプリセット
+        preset = {
+            "damper_type": "オイルダンパー",
+            "parameters": [
+                {"key": "Cd", "label": "減衰係数 Cd", "min_val": 200, "max_val": 1500, "step": 50},
+                {"key": "alpha", "label": "速度指数 α", "min_val": 0.2, "max_val": 0.8, "step": 0.05},
+            ],
+        }
+        dlg._apply_config_preset(preset)
+        assert len(dlg._param_widgets) >= 2
+        assert dlg._param_widgets[0]["min"].value() == 200
+        assert dlg._param_widgets[0]["max"].value() == 1500
+        assert dlg._param_widgets[0]["step"].value() == 50
+        assert dlg._param_widgets[1]["min"].value() == 0.2
+        dlg.close()
+
+    def test_apply_preset_robust(self, qapp):
+        """プリセットからロバスト最適化設定が復元される。"""
+        from app.ui.optimizer_dialog import OptimizerDialog
+        dlg = OptimizerDialog()
+        preset = {"robustness_samples": 5, "robustness_delta": 0.1}
+        dlg._apply_config_preset(preset)
+        assert dlg._robust_check.isChecked() is True
+        assert dlg._robust_samples_spin.value() == 5
+        assert abs(dlg._robust_delta_spin.value() - 0.1) < 1e-6
+        dlg.close()
+
+
 class TestComparisonDialog:
     """結果比較ダイアログのテスト。"""
 
