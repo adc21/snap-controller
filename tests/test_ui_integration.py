@@ -1663,3 +1663,129 @@ class TestHeatmapDialog:
         assert os.path.exists(out_path)
         assert os.path.getsize(out_path) > 0
         dlg.close()
+
+    # ------------------------------------------------------------------
+    # MinimizerDialog: 結果適用ボタン + closeEvent
+    # ------------------------------------------------------------------
+
+    def test_minimizer_apply_button_disabled_without_model(self, qapp):
+        """model_pathなしでは適用ボタンが無効。"""
+        from app.ui.minimizer_dialog import MinimizerDialog
+
+        dlg = MinimizerDialog(["F1", "F2"], {"F1": 5, "F2": 3}, {"F1": 10, "F2": 6})
+        assert not dlg._btn_apply.isEnabled()
+        dlg.close()
+
+    def test_minimizer_apply_button_enabled_after_finish(self, qapp):
+        """model_path+floor_rd_mapありで完了後に適用ボタンが有効。"""
+        from app.ui.minimizer_dialog import MinimizerDialog
+        from app.services.damper_count_minimizer import MinimizationResult
+
+        dlg = MinimizerDialog(
+            ["F1"], {"F1": 5}, {"F1": 10},
+            model_path="/tmp/test.s8i",
+            floor_rd_map={"F1": [0, 1]},
+        )
+        result = MinimizationResult(
+            strategy="floor_add",
+            initial_quantities={"F1": 5},
+            final_quantities={"F1": 3},
+            final_count=3,
+            is_feasible=True,
+            final_margin=0.05,
+            evaluations=5,
+        )
+        dlg._on_finished(result)
+        assert dlg._btn_apply.isEnabled()
+        dlg.close()
+
+    def test_minimizer_apply_writes_s8i(self, qapp, tmp_path, monkeypatch):
+        """適用ボタンが.s8iファイルにダンパー本数を書き戻す。"""
+        from unittest.mock import patch, MagicMock
+        from PySide6.QtWidgets import QMessageBox
+        from app.ui.minimizer_dialog import MinimizerDialog
+        from app.services.damper_count_minimizer import MinimizationResult
+
+        dlg = MinimizerDialog(
+            ["F1"], {"F1": 5}, {"F1": 10},
+            model_path="/tmp/test.s8i",
+            floor_rd_map={"F1": [0, 1]},
+        )
+        result = MinimizationResult(
+            strategy="floor_add",
+            initial_quantities={"F1": 5},
+            final_quantities={"F1": 4},
+            final_count=4,
+            is_feasible=True,
+            final_margin=0.05,
+            evaluations=5,
+        )
+        dlg._on_finished(result)
+
+        mock_model = MagicMock()
+        with patch(
+            "app.ui.minimizer_dialog.QMessageBox.question",
+            return_value=QMessageBox.StandardButton.Yes,
+        ), patch(
+            "app.models.s8i_parser.parse_s8i",
+            return_value=mock_model,
+        ), patch(
+            "app.ui.minimizer_dialog.QMessageBox.information",
+        ):
+            dlg._apply_result_to_s8i()
+
+        # F1: 4本を2要素に分配 → 2本, 2本
+        assert mock_model.update_damper_element.call_count == 2
+        mock_model.update_damper_element.assert_any_call(0, quantity=2)
+        mock_model.update_damper_element.assert_any_call(1, quantity=2)
+        mock_model.write.assert_called_once_with("/tmp/test.s8i")
+        dlg.close()
+
+    def test_minimizer_apply_infeasible_warning(self, qapp, monkeypatch):
+        """制約未充足時に警告を表示する。"""
+        from unittest.mock import patch
+        from PySide6.QtWidgets import QMessageBox
+        from app.ui.minimizer_dialog import MinimizerDialog
+        from app.services.damper_count_minimizer import MinimizationResult
+
+        dlg = MinimizerDialog(
+            ["F1"], {"F1": 5}, {"F1": 10},
+            model_path="/tmp/test.s8i",
+            floor_rd_map={"F1": [0]},
+        )
+        result = MinimizationResult(
+            strategy="floor_add",
+            initial_quantities={"F1": 5},
+            final_quantities={"F1": 3},
+            final_count=3,
+            is_feasible=False,
+            final_margin=-0.02,
+            evaluations=5,
+        )
+        dlg._on_finished(result)
+
+        # Noを選択 → 書き戻さない
+        with patch(
+            "app.ui.minimizer_dialog.QMessageBox.warning",
+            return_value=QMessageBox.StandardButton.No,
+        ) as mock_warn:
+            dlg._apply_result_to_s8i()
+            mock_warn.assert_called_once()
+        dlg.close()
+
+    def test_minimizer_close_event_stops_worker(self, qapp):
+        """closeEventでワーカーを停止する。"""
+        from unittest.mock import MagicMock
+        from app.ui.minimizer_dialog import MinimizerDialog
+
+        dlg = MinimizerDialog(["F1"], {"F1": 5}, {"F1": 10})
+        mock_worker = MagicMock()
+        mock_worker.isRunning.return_value = True
+        mock_worker.wait.return_value = True
+        dlg._worker = mock_worker
+
+        dlg.close()
+
+        mock_worker.request_stop.assert_called_once()
+        mock_worker.quit.assert_called_once()
+        mock_worker.wait.assert_called_once_with(3000)

@@ -144,6 +144,9 @@ class MinimizerDialog(QDialog):
         max_quantities: Dict[str, int],
         evaluate_fn: Optional[EvaluateFn] = None,
         parent: Optional[QWidget] = None,
+        *,
+        model_path: str = "",
+        floor_rd_map: Optional[Dict[str, List[int]]] = None,
     ) -> None:
         super().__init__(parent)
         self._floor_keys = floor_keys
@@ -152,6 +155,8 @@ class MinimizerDialog(QDialog):
         self._evaluate_fn = evaluate_fn
         self._is_snap = evaluate_fn is not None
         self._worker: Optional[_MinimizerWorker] = None
+        self._model_path = model_path
+        self._floor_rd_map = floor_rd_map or {}
         self._result: Optional[MinimizationResult] = None
 
         # リアルタイムプロット用データ
@@ -374,6 +379,15 @@ class MinimizerDialog(QDialog):
         self._btn_copy.setEnabled(False)
         self._btn_copy.clicked.connect(self._copy_result)
         bottom.addWidget(self._btn_copy)
+
+        self._btn_apply = QPushButton("結果を .s8i に適用")
+        self._btn_apply.setEnabled(False)
+        self._btn_apply.setToolTip(
+            "最適化結果のダンパー本数を元の .s8i ファイルに書き戻します"
+        )
+        self._btn_apply.clicked.connect(self._apply_result_to_s8i)
+        bottom.addWidget(self._btn_apply)
+
         bottom.addStretch()
         self._btn_close = QPushButton("閉じる")
         self._btn_close.clicked.connect(self.close)
@@ -503,6 +517,7 @@ class MinimizerDialog(QDialog):
         self._btn_cancel.setEnabled(False)
         self._btn_csv.setEnabled(True)
         self._btn_copy.setEnabled(True)
+        self._btn_apply.setEnabled(bool(self._model_path and self._floor_rd_map))
 
         feasible_text = "OK" if result.is_feasible else "NG"
         eval_tag = "[SNAP]" if self._is_snap else "[モック]"
@@ -836,6 +851,80 @@ class MinimizerDialog(QDialog):
         from PySide6.QtWidgets import QApplication
         QApplication.clipboard().setText(self._result.summary_text())
         self._lbl_status.setText("クリップボードにコピーしました")
+
+    def _apply_result_to_s8i(self) -> None:
+        """最適化結果のダンパー本数を元の .s8i ファイルに書き戻す。"""
+        if self._result is None or not self._model_path or not self._floor_rd_map:
+            return
+
+        if not self._result.is_feasible:
+            ret = QMessageBox.warning(
+                self,
+                "制約未充足",
+                "最適化結果は性能基準を満たしていません。\n"
+                "それでも .s8i ファイルに書き戻しますか？",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if ret != QMessageBox.StandardButton.Yes:
+                return
+
+        # 確認ダイアログ
+        quantities = self._result.final_quantities
+        detail_lines = [f"  {k}: {v}本" for k, v in sorted(quantities.items())]
+        detail = "\n".join(detail_lines)
+        ret = QMessageBox.question(
+            self,
+            "適用確認",
+            f"以下のダンパー本数を .s8i ファイルに書き戻します:\n\n"
+            f"{detail}\n\n"
+            f"合計: {self._result.final_count}本\n\n"
+            f"対象: {self._model_path}\n\n"
+            "元のファイルが上書きされます。続行しますか？",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if ret != QMessageBox.StandardButton.Yes:
+            return
+
+        try:
+            from app.models.s8i_parser import parse_s8i
+
+            model = parse_s8i(self._model_path)
+            for floor_key, rd_indices in self._floor_rd_map.items():
+                qty = quantities.get(floor_key, 0)
+                n_rd = len(rd_indices)
+                if n_rd == 0:
+                    continue
+                base_qty = qty // n_rd
+                remainder = qty % n_rd
+                for i, rd_idx in enumerate(rd_indices):
+                    elem_qty = base_qty + (1 if i < remainder else 0)
+                    model.update_damper_element(rd_idx, quantity=elem_qty)
+            model.write(self._model_path)
+            QMessageBox.information(
+                self,
+                "適用完了",
+                f"ダンパー本数を .s8i ファイルに書き戻しました。\n"
+                f"合計: {self._result.final_count}本",
+            )
+            self._lbl_status.setText("結果を .s8i に適用しました")
+        except Exception as exc:
+            logger.error("結果の .s8i 書き戻しに失敗", exc_info=True)
+            QMessageBox.critical(
+                self, "書き戻しエラー",
+                f".s8i ファイルへの書き戻しに失敗しました:\n{exc}",
+            )
+
+    def closeEvent(self, event) -> None:
+        """ダイアログ終了時にワーカースレッドを安全に停止する。"""
+        if self._worker is not None and self._worker.isRunning():
+            self._worker.request_stop()
+            self._worker.quit()
+            if not self._worker.wait(3000):
+                logger.warning("ワーカースレッドが3秒以内に停止しませんでした")
+            self._worker = None
+        super().closeEvent(event)
 
     def result(self) -> Optional[MinimizationResult]:
         return self._result

@@ -2630,6 +2630,8 @@ class MainWindow(QMainWindow):
             max_quantities=max_quantities,
             evaluate_fn=evaluate_fn,
             parent=self,
+            model_path=model_path,
+            floor_rd_map=floor_rd_map,
         )
         dlg.minimizationCompleted.connect(self._on_minimizer_completed)
         dlg.exec()
@@ -2641,7 +2643,7 @@ class MainWindow(QMainWindow):
             f"マージン={result.final_margin:.4f} ==="
         )
         self.statusBar().showMessage(
-            f"ダンパー最小化完了 — {placed}本配置",
+            f"ダンパー最小化完了 — {result.final_count}本配置",
             8000,
         )
 
