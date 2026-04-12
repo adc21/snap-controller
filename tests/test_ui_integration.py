@@ -992,3 +992,54 @@ class TestDiagnosticsDialog:
         assert hasattr(dlg, "_diagnostics_btn")
         assert not dlg._diagnostics_btn.isEnabled()
         dlg.close()
+
+    def test_format_duration(self, qapp):
+        """_format_duration が秒/分/時間を正しくフォーマットする。"""
+        from app.ui.optimizer_dialog import OptimizerDialog
+        fmt = OptimizerDialog._format_duration
+        assert fmt(5) == "5秒"
+        assert fmt(59) == "59秒"
+        assert fmt(60) == "1分0秒"
+        assert fmt(90) == "1分30秒"
+        assert fmt(3661) == "1時間1分"
+
+    def test_eta_progress_label(self, qapp):
+        """_on_progress でETA情報が進捗ラベルに含まれる。"""
+        import time
+        from app.ui.optimizer_dialog import OptimizerDialog
+        dlg = OptimizerDialog()
+        dlg._opt_start_time = time.time() - 10  # 10秒前に開始
+        dlg._on_progress(5, 10, "評価中: 5/10")
+        label_text = dlg._progress_label.text()
+        assert "経過" in label_text
+        assert "残り" in label_text
+        dlg.close()
+
+    def test_copy_params_button_exists(self, qapp):
+        """OptimizerDialogに最良パラメータコピーボタンがある。"""
+        from app.ui.optimizer_dialog import OptimizerDialog
+        dlg = OptimizerDialog()
+        assert hasattr(dlg, "_copy_params_btn")
+        assert not dlg._copy_params_btn.isEnabled()
+        dlg.close()
+
+    def test_copy_best_params_with_result(self, qapp):
+        """最良解がある場合にパラメータをクリップボードにコピーできる。"""
+        from app.ui.optimizer_dialog import OptimizerDialog
+        from app.services.optimizer import OptimizationResult, OptimizationCandidate
+        from PySide6.QtWidgets import QApplication
+        dlg = OptimizerDialog()
+        best = OptimizationCandidate(
+            params={"Cd": 500.0, "alpha": 0.3},
+            objective_value=0.003,
+            response_values={"max_drift": 0.003, "max_acc": 2.5},
+            is_feasible=True,
+        )
+        dlg._result = OptimizationResult(best=best, all_candidates=[best])
+        dlg._copy_best_params()
+        clipboard = QApplication.clipboard()
+        text = clipboard.text() if clipboard else ""
+        assert "Cd = 500" in text
+        assert "alpha = 0.3" in text
+        assert "目的関数値" in text
+        dlg.close()

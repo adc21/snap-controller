@@ -59,6 +59,7 @@ from __future__ import annotations
 
 import csv
 import json
+import time
 from typing import Any, Dict, List, Optional
 
 import numpy as np
@@ -67,6 +68,7 @@ from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor, QFont
 from PySide6.QtWidgets import (
     QAbstractItemView,
+    QApplication,
     QCheckBox,
     QComboBox,
     QDialog,
@@ -289,6 +291,7 @@ class OptimizerDialog(QDialog):
         self._result: Optional[OptimizationResult] = None
         self._param_widgets: List[dict] = []
         self._convergence_history: List[float] = []
+        self._opt_start_time: float = 0.0  # 最適化開始時刻 (time.time)
 
         self.setWindowTitle("ダンパー最適化")
         self.setMinimumWidth(900)
@@ -872,6 +875,13 @@ class OptimizerDialog(QDialog):
         )
         btn_row.addWidget(self._diagnostics_btn)
 
+        self._copy_params_btn = QPushButton("最良パラメータコピー")
+        self._copy_params_btn.setEnabled(False)
+        self._copy_params_btn.setToolTip(
+            "最良解のパラメータ値をクリップボードにコピーします"
+        )
+        btn_row.addWidget(self._copy_params_btn)
+
         btn_row.addStretch()
 
         close_btn = QPushButton("閉じる")
@@ -896,6 +906,7 @@ class OptimizerDialog(QDialog):
         self._log_export_btn.clicked.connect(self._export_log)
         self._report_btn.clicked.connect(self._export_html_report)
         self._diagnostics_btn.clicked.connect(self._show_diagnostics)
+        self._copy_params_btn.clicked.connect(self._copy_best_params)
         self._result_table.cellDoubleClicked.connect(self._show_candidate_detail)
         self._optimizer.progress.connect(self._on_progress)
         self._optimizer.candidate_found.connect(self._on_candidate)
@@ -1525,8 +1536,10 @@ class OptimizerDialog(QDialog):
         self._save_btn.setEnabled(False)
         self._report_btn.setEnabled(False)
         self._diagnostics_btn.setEnabled(False)
+        self._copy_params_btn.setEnabled(False)
         self._progress_bar.show()
         self._progress_bar.setValue(0)
+        self._opt_start_time = time.time()
 
         # グラフクリア
         self._conv_canvas.ax.clear()
@@ -1632,7 +1645,30 @@ class OptimizerDialog(QDialog):
     def _on_progress(self, current: int, total: int, message: str) -> None:
         self._progress_bar.setMaximum(total)
         self._progress_bar.setValue(current)
-        self._progress_label.setText(message)
+        # ETA計算
+        eta_str = ""
+        if current > 0 and total > 0 and self._opt_start_time > 0:
+            elapsed = time.time() - self._opt_start_time
+            remaining = max(current, 1)
+            eta_sec = elapsed / remaining * (total - current)
+            elapsed_str = self._format_duration(elapsed)
+            if current < total:
+                eta_str = f" | 経過 {elapsed_str}, 残り {self._format_duration(eta_sec)}"
+            else:
+                eta_str = f" | 経過 {elapsed_str}"
+        self._progress_label.setText(message + eta_str)
+
+    @staticmethod
+    def _format_duration(seconds: float) -> str:
+        """秒数を人間が読みやすい時間文字列に変換します。"""
+        s = int(seconds)
+        if s < 60:
+            return f"{s}秒"
+        m, s = divmod(s, 60)
+        if m < 60:
+            return f"{m}分{s}秒"
+        h, m = divmod(m, 60)
+        return f"{h}時間{m}分"
 
     def _on_candidate(self, candidate: OptimizationCandidate) -> None:
         if candidate.is_feasible:
@@ -1691,6 +1727,7 @@ class OptimizerDialog(QDialog):
             self._report_btn.setEnabled(True)
             self._log_export_btn.setEnabled(True)
             self._diagnostics_btn.setEnabled(True)
+            self._copy_params_btn.setEnabled(True)
             # 相関分析は2パラメータ以上・3候補以上のときのみ有効
             if (result.config and len(result.config.parameters) >= 2
                     and len(result.all_candidates) >= 3):
@@ -1710,6 +1747,8 @@ class OptimizerDialog(QDialog):
                 self._report_btn.setEnabled(True)
                 self._log_export_btn.setEnabled(True)
                 self._diagnostics_btn.setEnabled(True)
+                if result.best:
+                    self._copy_params_btn.setEnabled(True)
                 if (result.config and len(result.config.parameters) >= 2
                         and len(result.all_candidates) >= 3):
                     self._correlation_btn.setEnabled(True)
@@ -2127,6 +2166,26 @@ class OptimizerDialog(QDialog):
             self.accept()
         else:
             QMessageBox.information(self, "情報", "適用可能な最良解がありません。")
+
+    def _copy_best_params(self) -> None:
+        """最良解のパラメータをクリップボードにコピーします。"""
+        if not self._result or not self._result.best:
+            QMessageBox.information(self, "情報", "コピーするパラメータがありません。")
+            return
+        best = self._result.best
+        lines = ["[最適化結果 - 最良パラメータ]"]
+        for key, val in best.params.items():
+            lines.append(f"  {key} = {val}")
+        lines.append(f"  目的関数値 = {best.objective_value:.6g}")
+        if best.response_values:
+            lines.append("[応答値]")
+            for key, val in best.response_values.items():
+                lines.append(f"  {key} = {val:.6g}")
+        text = "\n".join(lines)
+        clipboard = QApplication.clipboard()
+        if clipboard:
+            clipboard.setText(text)
+        self._progress_label.setText("最良パラメータをクリップボードにコピーしました")
 
     def _export_csv(self) -> None:
         """探索結果をCSVファイルにエクスポートします。"""
