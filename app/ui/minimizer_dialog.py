@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import csv
+import io
+import logging
 from typing import Callable, List, Optional, Tuple, Dict
 
 from PySide6.QtCore import Qt, QThread, Signal
@@ -10,6 +13,7 @@ from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
     QDialog,
+    QFileDialog,
     QGroupBox,
     QHBoxLayout,
     QHeaderView,
@@ -18,11 +22,17 @@ from PySide6.QtWidgets import (
     QProgressBar,
     QPushButton,
     QScrollArea,
+    QSplitter,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
     QWidget,
 )
+
+from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
+from matplotlib.figure import Figure
+
+logger = logging.getLogger(__name__)
 
 from app.services.damper_count_minimizer import (
     EvaluateFn,
@@ -113,7 +123,7 @@ class MinimizerDialog(QDialog):
         self._result: Optional[MinimizationResult] = None
 
         self.setWindowTitle("ダンパー本数最小化")
-        self.setMinimumSize(560, 520)
+        self.setMinimumSize(720, 580)
         self._build_ui()
 
     def _build_ui(self) -> None:
@@ -210,12 +220,14 @@ class MinimizerDialog(QDialog):
         exec_layout.addWidget(self._lbl_status)
         root.addLayout(exec_layout)
 
-        # 結果表示
+        # 結果表示 (スプリッター: 左=テーブル, 右=チャート)
         result_group = QGroupBox("結果")
         result_layout = QVBoxLayout(result_group)
         self._lbl_summary = QLabel("")
         self._lbl_summary.setWordWrap(True)
         result_layout.addWidget(self._lbl_summary)
+
+        splitter = QSplitter(Qt.Orientation.Horizontal)
 
         self._table = QTableWidget()
         self._table.setColumnCount(3)
@@ -226,11 +238,29 @@ class MinimizerDialog(QDialog):
         )
         self._table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self._table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
-        result_layout.addWidget(self._table)
+        splitter.addWidget(self._table)
+
+        # ステップ履歴チャート
+        self._fig = Figure(figsize=(4, 3))
+        self._canvas = FigureCanvas(self._fig)
+        self._canvas.setMinimumWidth(280)
+        splitter.addWidget(self._canvas)
+        splitter.setStretchFactor(0, 1)
+        splitter.setStretchFactor(1, 1)
+
+        result_layout.addWidget(splitter)
         root.addWidget(result_group, stretch=1)
 
         # ボタン行
         bottom = QHBoxLayout()
+        self._btn_csv = QPushButton("CSV出力")
+        self._btn_csv.setEnabled(False)
+        self._btn_csv.clicked.connect(self._export_csv)
+        bottom.addWidget(self._btn_csv)
+        self._btn_copy = QPushButton("結果コピー")
+        self._btn_copy.setEnabled(False)
+        self._btn_copy.clicked.connect(self._copy_result)
+        bottom.addWidget(self._btn_copy)
         bottom.addStretch()
         self._btn_close = QPushButton("閉じる")
         self._btn_close.clicked.connect(self.close)
@@ -345,8 +375,128 @@ class MinimizerDialog(QDialog):
             self._table.setItem(i, 1, item_placed)
             self._table.setItem(i, 2, item_req)
 
+        self._btn_csv.setEnabled(True)
+        self._btn_copy.setEnabled(True)
+        self._draw_history_chart(result)
+
         self.minimizationCompleted.emit(result)
         self._worker = None
+
+    def _draw_history_chart(self, result: MinimizationResult) -> None:
+        """ステップ履歴チャート: 本数推移 + マージン推移の2段表示。"""
+        self._fig.clear()
+        history = result.history
+        if not history:
+            self._canvas.draw()
+            return
+
+        iterations = [s.iteration for s in history]
+        counts = [s.count for s in history]
+        margins = [s.margin for s in history]
+        feasibles = [s.is_feasible for s in history]
+
+        try:
+            ax1, ax2 = self._fig.subplots(2, 1, sharex=True)
+
+            # 上段: ダンパー本数推移
+            ax1.step(iterations, counts, where="post", color="#1976d2", linewidth=2)
+            for it, c, f in zip(iterations, counts, feasibles):
+                color = "#4caf50" if f else "#f44336"
+                ax1.plot(it, c, "o", color=color, markersize=6)
+            ax1.set_ylabel("本数")
+            ax1.set_title("ステップ履歴", fontsize=10)
+            ax1.grid(True, alpha=0.3)
+            ax1.yaxis.set_major_locator(
+                __import__("matplotlib.ticker", fromlist=["MaxNLocator"]).MaxNLocator(integer=True)
+            )
+
+            # 下段: マージン推移
+            ax2.plot(iterations, margins, "s-", color="#ff9800", linewidth=1.5, markersize=5)
+            ax2.axhline(0, color="#888", linestyle="--", linewidth=0.8)
+            ax2.fill_between(iterations, margins, 0, alpha=0.15,
+                             where=[m >= 0 for m in margins], color="#4caf50")
+            ax2.fill_between(iterations, margins, 0, alpha=0.15,
+                             where=[m < 0 for m in margins], color="#f44336")
+            ax2.set_xlabel("ステップ")
+            ax2.set_ylabel("マージン")
+            ax2.grid(True, alpha=0.3)
+
+            self._fig.tight_layout()
+        except Exception:
+            logger.warning("ステップ履歴チャートの描画に失敗", exc_info=True)
+        self._canvas.draw()
+
+    def _export_csv(self) -> None:
+        """最小化結果をCSV出力。"""
+        if self._result is None:
+            return
+        path, _ = QFileDialog.getSaveFileName(
+            self, "CSV出力", "minimizer_result.csv",
+            "CSV (*.csv);;すべて (*)",
+        )
+        if not path:
+            return
+        try:
+            with open(path, "w", newline="", encoding="utf-8-sig") as f:
+                writer = csv.writer(f)
+                # メタデータ
+                eval_tag = "SNAP" if self._is_snap else "モック"
+                writer.writerow([f"# ダンパー本数最小化結果 (評価: {eval_tag})"])
+                writer.writerow([f"# 戦略: {self._result.strategy}"])
+                writer.writerow([f"# 最終本数: {self._result.final_count}"])
+                writer.writerow([f"# マージン: {self._result.final_margin:+.4f}"])
+                writer.writerow([f"# 評価回数: {self._result.evaluations}"])
+                writer.writerow([])
+
+                # 最終配置テーブル
+                writer.writerow(["位置名", "配置", "必須"])
+                required_set = {
+                    i for i in range(self._n_positions)
+                    if self._cb_required[i].isChecked()
+                }
+                for i in range(self._n_positions):
+                    label = (
+                        self._position_labels[i]
+                        if i < len(self._position_labels)
+                        else f"位置{i}"
+                    )
+                    placed = self._result.final_placement[i] if i < len(self._result.final_placement) else False
+                    writer.writerow([
+                        label,
+                        "設置" if placed else "撤去",
+                        "必須" if i in required_set and placed else "",
+                    ])
+
+                # ステップ履歴
+                if self._result.history:
+                    writer.writerow([])
+                    writer.writerow(["# ステップ履歴"])
+                    writer.writerow(["ステップ", "操作", "位置", "本数", "判定", "マージン", "備考"])
+                    for step in self._result.history:
+                        pos_label = ""
+                        if step.position_index is not None and step.position_index < len(self._position_labels):
+                            pos_label = self._position_labels[step.position_index]
+                        writer.writerow([
+                            step.iteration,
+                            step.action,
+                            pos_label,
+                            step.count,
+                            "OK" if step.is_feasible else "NG",
+                            f"{step.margin:+.4f}",
+                            step.note,
+                        ])
+            QMessageBox.information(self, "CSV出力", f"保存しました:\n{path}")
+        except Exception as exc:
+            QMessageBox.critical(self, "CSV出力エラー", str(exc))
+
+    def _copy_result(self) -> None:
+        """結果サマリーをクリップボードにコピー。"""
+        if self._result is None:
+            return
+        from PySide6.QtWidgets import QApplication
+        text = self._result.summary_text()
+        QApplication.clipboard().setText(text)
+        self._lbl_status.setText("クリップボードにコピーしました")
 
     def _on_error(self, msg: str) -> None:
         self._progress.setVisible(False)

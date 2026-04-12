@@ -282,6 +282,122 @@ class TestDialogInteractions:
         assert dlg._is_snap
         assert "SNAP" in dlg._lbl_eval_mode.text()
 
+    def test_minimizer_chart_and_buttons(self, qapp):
+        """チャートキャンバスとCSV/コピーボタンが存在すること。"""
+        from app.ui.minimizer_dialog import MinimizerDialog
+        dlg = MinimizerDialog(
+            n_positions=3,
+            position_labels=["1F", "2F", "3F"],
+        )
+        assert dlg._canvas is not None
+        assert dlg._fig is not None
+        assert not dlg._btn_csv.isEnabled()
+        assert not dlg._btn_copy.isEnabled()
+
+    def test_minimizer_draw_history_chart(self, qapp):
+        """ステップ履歴チャートが描画されること。"""
+        from app.ui.minimizer_dialog import MinimizerDialog
+        from app.services.damper_count_minimizer import MinimizationResult, MinimizationStep
+        dlg = MinimizerDialog(
+            n_positions=3,
+            position_labels=["1F", "2F", "3F"],
+        )
+        steps = [
+            MinimizationStep(0, "init", None, [True, True, True], 3, True, 0.2),
+            MinimizationStep(1, "remove", 2, [True, True, False], 2, True, 0.1),
+            MinimizationStep(2, "final", None, [True, True, False], 2, True, 0.1),
+        ]
+        result = MinimizationResult(
+            strategy="greedy_remove",
+            initial_placement=[True, True, True],
+            final_placement=[True, True, False],
+            final_count=2, is_feasible=True, final_margin=0.1,
+            history=steps, evaluations=5,
+        )
+        dlg._draw_history_chart(result)
+        assert len(dlg._fig.axes) == 2  # 2段サブプロット
+
+    def test_minimizer_export_csv(self, qapp, tmp_path, monkeypatch):
+        """CSV出力が正しく動作すること。"""
+        from app.ui.minimizer_dialog import MinimizerDialog
+        from app.services.damper_count_minimizer import MinimizationResult, MinimizationStep
+        dlg = MinimizerDialog(
+            n_positions=3,
+            position_labels=["1F", "2F", "3F"],
+        )
+        steps = [
+            MinimizationStep(0, "init", None, [True, True, True], 3, True, 0.2),
+            MinimizationStep(1, "remove", 2, [True, True, False], 2, True, 0.1),
+        ]
+        dlg._result = MinimizationResult(
+            strategy="greedy_remove",
+            initial_placement=[True, True, True],
+            final_placement=[True, True, False],
+            final_count=2, is_feasible=True, final_margin=0.1,
+            history=steps, evaluations=5,
+        )
+        csv_path = str(tmp_path / "test_min.csv")
+        monkeypatch.setattr(
+            "app.ui.minimizer_dialog.QFileDialog.getSaveFileName",
+            lambda *a, **kw: (csv_path, ""),
+        )
+        monkeypatch.setattr(
+            "app.ui.minimizer_dialog.QMessageBox.information",
+            lambda *a, **kw: None,
+        )
+        dlg._export_csv()
+        with open(csv_path, encoding="utf-8-sig") as f:
+            content = f.read()
+        assert "ダンパー本数最小化結果" in content
+        assert "greedy_remove" in content
+        assert "1F" in content
+        assert "ステップ履歴" in content
+
+    def test_minimizer_copy_result(self, qapp):
+        """結果コピーがクリップボードに設定されること。"""
+        from app.ui.minimizer_dialog import MinimizerDialog
+        from app.services.damper_count_minimizer import MinimizationResult
+        from PySide6.QtWidgets import QApplication
+        dlg = MinimizerDialog(
+            n_positions=3,
+            position_labels=["1F", "2F", "3F"],
+        )
+        dlg._result = MinimizationResult(
+            strategy="greedy_remove",
+            initial_placement=[True, True, True],
+            final_placement=[True, True, False],
+            final_count=2, is_feasible=True, final_margin=0.1,
+            evaluations=5,
+        )
+        dlg._copy_result()
+        text = QApplication.clipboard().text()
+        assert "greedy_remove" in text
+        assert "最終本数" in text
+
+    def test_minimizer_on_finished_enables_buttons(self, qapp):
+        """_on_finished でCSV/コピーボタンが有効化されること。"""
+        from app.ui.minimizer_dialog import MinimizerDialog
+        from app.services.damper_count_minimizer import MinimizationResult, MinimizationStep
+        dlg = MinimizerDialog(
+            n_positions=3,
+            position_labels=["1F", "2F", "3F"],
+        )
+        assert not dlg._btn_csv.isEnabled()
+        result = MinimizationResult(
+            strategy="greedy_remove",
+            initial_placement=[True, True, True],
+            final_placement=[True, True, False],
+            final_count=2, is_feasible=True, final_margin=0.1,
+            history=[
+                MinimizationStep(0, "init", None, [True, True, True], 3, True, 0.2),
+            ],
+            evaluations=3,
+        )
+        dlg._on_finished(result)
+        assert dlg._btn_csv.isEnabled()
+        assert dlg._btn_copy.isEnabled()
+        assert dlg._result is not None
+
     def test_sweep_add_remove_params(self, qapp):
         from app.ui.sweep_dialog import SweepDialog
         dlg = SweepDialog()
