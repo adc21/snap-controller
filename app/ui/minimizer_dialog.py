@@ -54,6 +54,10 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 
+class _CancelledError(Exception):
+    """ユーザーによる中止を示す例外。"""
+
+
 class _MinimizerWorker(QThread):
     """バックグラウンドで最小化を実行するワーカースレッド。"""
 
@@ -78,6 +82,17 @@ class _MinimizerWorker(QThread):
         self._evaluate_fn = evaluate_fn
         self._strategy = strategy
         self._max_iterations = max_iterations
+        self._stop_requested = False
+
+    def request_stop(self) -> None:
+        """中止リクエスト。次の progress_cb 呼び出し時に例外で停止する。"""
+        self._stop_requested = True
+
+    def _progress_cb(self, step: MinimizationStep) -> None:
+        """進捗コールバック。中止リクエスト時は例外で探索ループを脱出する。"""
+        if self._stop_requested:
+            raise _CancelledError("ユーザーにより中止されました")
+        self.stepCompleted.emit(step)
 
     def run(self) -> None:
         try:
@@ -96,10 +111,12 @@ class _MinimizerWorker(QThread):
                 evaluate_fn=self._evaluate_fn,
                 strategy=self._strategy,
                 initial_quantities=self._initial_quantities,
-                progress_cb=lambda step: self.stepCompleted.emit(step),
+                progress_cb=self._progress_cb,
                 **kwargs,
             )
             self.finished_.emit(result)
+        except _CancelledError:
+            self.errorOccurred.emit("中止しました")
         except Exception as exc:
             self.errorOccurred.emit(str(exc))
 
@@ -214,12 +231,17 @@ class MinimizerDialog(QDialog):
         settings_layout.addWidget(algo_group, stretch=1)
         root.addLayout(settings_layout)
 
-        # === 実行ボタン + プログレス ===
+        # === 実行ボタン + 中止ボタン + プログレス ===
         exec_layout = QHBoxLayout()
         self._btn_run = QPushButton("実行")
         self._btn_run.setFont(QFont("", -1, QFont.Weight.Bold))
         self._btn_run.clicked.connect(self._on_run)
         exec_layout.addWidget(self._btn_run)
+
+        self._btn_cancel = QPushButton("中止")
+        self._btn_cancel.setEnabled(False)
+        self._btn_cancel.clicked.connect(self._on_cancel)
+        exec_layout.addWidget(self._btn_cancel)
 
         self._progress = QProgressBar()
         self._progress.setRange(0, 0)
@@ -297,6 +319,7 @@ class MinimizerDialog(QDialog):
         strategy = self._combo_strategy.currentData()
 
         self._btn_run.setEnabled(False)
+        self._btn_cancel.setEnabled(True)
         self._progress.setVisible(True)
         self._lbl_status.setText("実行中...")
         self._lbl_summary.setText("")
@@ -344,10 +367,18 @@ class MinimizerDialog(QDialog):
         if len(self._plot_counts) <= 20 or len(self._plot_counts) % 5 == 0:
             self._update_realtime_chart()
 
+    def _on_cancel(self) -> None:
+        """中止ボタン押下。"""
+        if self._worker is not None:
+            self._worker.request_stop()
+            self._btn_cancel.setEnabled(False)
+            self._lbl_status.setText("中止要求中...")
+
     def _on_finished(self, result: MinimizationResult) -> None:
         self._result = result
         self._progress.setVisible(False)
         self._btn_run.setEnabled(True)
+        self._btn_cancel.setEnabled(False)
         self._btn_csv.setEnabled(True)
         self._btn_copy.setEnabled(True)
 
@@ -373,8 +404,11 @@ class MinimizerDialog(QDialog):
     def _on_error(self, msg: str) -> None:
         self._progress.setVisible(False)
         self._btn_run.setEnabled(True)
-        self._lbl_status.setText("エラー")
-        QMessageBox.critical(self, "実行エラー", msg)
+        self._btn_cancel.setEnabled(False)
+        is_cancel = "中止" in msg
+        self._lbl_status.setText("中止" if is_cancel else "エラー")
+        if not is_cancel:
+            QMessageBox.critical(self, "実行エラー", msg)
         self._worker = None
 
     # -------------------------------------------------------------------

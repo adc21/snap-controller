@@ -388,6 +388,67 @@ class TestDialogInteractions:
         assert dlg._btn_copy.isEnabled()
         assert dlg._result is not None
 
+    def test_minimizer_cancel_button_exists(self, qapp):
+        from app.ui.minimizer_dialog import MinimizerDialog
+        dlg = MinimizerDialog(
+            floor_keys=["F1", "F2"],
+            current_quantities={"F1": 2, "F2": 3},
+            max_quantities={"F1": 5, "F2": 5},
+        )
+        assert hasattr(dlg, "_btn_cancel")
+        assert not dlg._btn_cancel.isEnabled()
+
+    def test_minimizer_cancel_disables_after_finish(self, qapp):
+        from app.ui.minimizer_dialog import MinimizerDialog
+        from app.services.damper_count_minimizer import MinimizationResult, MinimizationStep
+        dlg = MinimizerDialog(
+            floor_keys=["F1", "F2"],
+            current_quantities={"F1": 2, "F2": 3},
+            max_quantities={"F1": 5, "F2": 5},
+        )
+        result = MinimizationResult(
+            strategy="floor_add",
+            initial_quantities={"F1": 2, "F2": 3},
+            final_quantities={"F1": 1, "F2": 2},
+            final_count=3, is_feasible=True, final_margin=0.05,
+            history=[
+                MinimizationStep(0, {"F1": 2, "F2": 3}, 5, True, 0.1, action="init"),
+            ],
+            evaluations=2,
+        )
+        dlg._on_finished(result)
+        assert not dlg._btn_cancel.isEnabled()
+
+    def test_minimizer_cancel_on_error(self, qapp):
+        from app.ui.minimizer_dialog import MinimizerDialog
+        dlg = MinimizerDialog(
+            floor_keys=["F1", "F2"],
+            current_quantities={"F1": 2, "F2": 3},
+            max_quantities={"F1": 5, "F2": 5},
+        )
+        dlg._on_error("中止しました")
+        assert not dlg._btn_cancel.isEnabled()
+        assert "中止" in dlg._lbl_status.text()
+
+    def test_minimizer_worker_stop_requested(self, qapp):
+        from app.ui.minimizer_dialog import _MinimizerWorker, _CancelledError
+        from app.services.damper_count_minimizer import EvaluationResult, MinimizationStep
+        import pytest
+
+        def dummy_eval(q):
+            return EvaluationResult(total_count=sum(q.values()),
+                                    is_feasible=True, worst_margin=0.1)
+
+        worker = _MinimizerWorker(
+            floor_keys=["F1"], max_quantities={"F1": 5},
+            initial_quantities={"F1": 3}, evaluate_fn=dummy_eval,
+            strategy="random", max_iterations=10,
+        )
+        worker.request_stop()
+        step = MinimizationStep(1, {"F1": 3}, 3, True, 0.1, action="eval")
+        with pytest.raises(_CancelledError):
+            worker._progress_cb(step)
+
     def test_minimizer_floor_table(self, qapp):
         from app.ui.minimizer_dialog import MinimizerDialog
         dlg = MinimizerDialog(

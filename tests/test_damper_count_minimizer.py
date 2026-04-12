@@ -211,6 +211,43 @@ class TestEntryPoint:
         assert result.strategy == "binary_search"
 
 
+class TestSACooling:
+    """SA指数冷却スケジュールのテスト。"""
+
+    def test_sa_explores_late_iterations(self):
+        """指数冷却により後半でも温度が十分正（>0）であること。"""
+        evalfn = make_evaluator(WEIGHTS, THRESHOLD)
+        temps = []
+
+        def capture_progress(step):
+            if step.note and "T=" in step.note:
+                t_str = step.note.split("T=")[1].split()[0]
+                temps.append(float(t_str))
+
+        result = minimize_sa(FLOOR_KEYS, MAX_Q, evalfn,
+                             max_iterations=100, progress_cb=capture_progress)
+        assert result.strategy == "sa"
+        # 指数冷却: 中盤（全体の半分付近）でまだ有意な温度が残る
+        if len(temps) >= 2:
+            mid = len(temps) // 2
+            assert temps[mid] > 0.1, f"中盤温度が低すぎ: {temps[mid]}"
+
+    def test_sa_completes_all_iterations(self):
+        """指数冷却では temp<=0 によるbreakが起きず全反復を完了する。"""
+        evalfn = make_evaluator(WEIGHTS, THRESHOLD)
+        step_count = [0]
+
+        def count_progress(step):
+            step_count[0] += 1
+
+        max_it = 50
+        result = minimize_sa(FLOOR_KEYS, MAX_Q, evalfn,
+                             max_iterations=max_it, progress_cb=count_progress)
+        # init + 周期的ステップ + final の分、少なくとも3ステップは記録
+        assert step_count[0] >= 3
+        assert result.evaluations >= max_it
+
+
 class TestSummaryText:
     def test_summary_contains_key_info(self):
         evalfn = make_evaluator(WEIGHTS, THRESHOLD)

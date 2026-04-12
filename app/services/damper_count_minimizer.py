@@ -259,6 +259,7 @@ def minimize_floor_remove(
         # 余裕が最大の階を探す（本数>0の階から）
         best_floor = None
         best_margin = -math.inf
+        best_trial_result = None
 
         removable = [k for k in floor_keys if quantities.get(k, 0) > 0]
         if not removable:
@@ -272,13 +273,13 @@ def minimize_floor_remove(
             if trial_result.is_feasible and trial_result.worst_margin > best_margin:
                 best_margin = trial_result.worst_margin
                 best_floor = k
+                best_trial_result = trial_result
 
         if best_floor is None:
             break  # どの階を減らしてもNG
 
         quantities[best_floor] -= 1
-        result = evaluate_fn(quantities)
-        evaluations += 1
+        result = best_trial_result  # 試行時に既に評価済み
         step = _make_step(iteration, quantities, result, action="remove",
                           changed_floor=best_floor, note=f"{best_floor} -1")
         history.append(step)
@@ -593,10 +594,11 @@ def minimize_sa(
     if progress_cb:
         progress_cb(step)
 
+    t_min = 1e-3
+    cooling_rate = (t_min / initial_temp) ** (1.0 / max(1, max_iterations - 1))
+
     for it in range(1, max_iterations + 1):
-        temp = initial_temp * (1 - it / max_iterations)
-        if temp <= 0:
-            break
+        temp = initial_temp * cooling_rate ** it
 
         # 近傍: ランダムな1階の本数を±1〜2
         neighbor = list(current)
