@@ -609,6 +609,7 @@ class OptimizationResult:
     message: str = ""
     evaluation_method: str = "mock"  # "mock" or "snap"
     evaluator_stats: Optional[Dict[str, int]] = None  # SNAP評価統計
+    robustness_stats: Optional[Dict[str, int]] = None  # ロバスト摂動統計
 
     @property
     def feasible_candidates(self) -> List[OptimizationCandidate]:
@@ -704,6 +705,18 @@ class OptimizationResult:
                 f"キャッシュヒット {s.get('cache_hits', 0)}"
             )
 
+        if self.robustness_stats:
+            rs = self.robustness_stats
+            rate = rs.get("success_rate", 1.0) * 100
+            lines.append(
+                f"ロバスト摂動: 成功 {rs.get('success', 0)}/{rs.get('total', 0)} "
+                f"(成功率 {rate:.0f}%)"
+            )
+            if rate < 80:
+                lines.append(
+                    "⚠ ロバスト摂動の成功率が低いため、結果の信頼性が低い可能性があります"
+                )
+
         if self.best:
             lines.append("")
             lines.append("--- 最良解 ---")
@@ -731,6 +744,7 @@ class OptimizationResult:
             "message": self.message,
             "evaluation_method": self.evaluation_method,
             "evaluator_stats": self.evaluator_stats,
+            "robustness_stats": self.robustness_stats,
         }
 
     @classmethod
@@ -749,6 +763,7 @@ class OptimizationResult:
             message=d.get("message", ""),
             evaluation_method=d.get("evaluation_method", "mock"),
             evaluator_stats=d.get("evaluator_stats"),
+            robustness_stats=d.get("robustness_stats"),
         )
 
     def save_json(self, path: str) -> None:
@@ -863,6 +878,8 @@ class _OptimizationWorker(QThread):
         self._is_snap = evaluate_fn is not None
         self._evaluate_fn = evaluate_fn or self._default_evaluate
         self._cancelled = False
+        self._robustness_success = 0
+        self._robustness_failed = 0
 
     def cancel(self) -> None:
         self._cancelled = True
@@ -914,6 +931,16 @@ class _OptimizationWorker(QThread):
             except Exception:
                 pass
 
+        # ロバスト摂動統計
+        total_robust = self._robustness_success + self._robustness_failed
+        if total_robust > 0:
+            result.robustness_stats = {
+                "success": self._robustness_success,
+                "failed": self._robustness_failed,
+                "total": total_robust,
+                "success_rate": self._robustness_success / total_robust,
+            }
+
         self.finished_signal.emit(result)
 
     def _default_evaluate(self, params: Dict[str, float]) -> Dict[str, float]:
@@ -947,6 +974,8 @@ class _OptimizationWorker(QThread):
         worst_response = center_response
 
         # 摂動サンプルの評価
+        n_success = 0
+        n_failed = 0
         for _ in range(n_samples):
             perturbed = {}
             for pr in config.parameters:
@@ -963,11 +992,17 @@ class _OptimizationWorker(QThread):
             try:
                 resp = base_fn(perturbed)
                 obj = config.compute_objective(resp, perturbed)
+                n_success += 1
                 if obj > best_worst_obj:
                     best_worst_obj = obj
                     worst_response = resp
             except Exception:
-                pass  # 摂動が失敗しても中心値で続行
+                n_failed += 1
+                logger.debug("ロバスト摂動評価失敗: params=%s", params)
+
+        # 統計を累積記録
+        self._robustness_success += n_success
+        self._robustness_failed += n_failed
 
         return worst_response
 

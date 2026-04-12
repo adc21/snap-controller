@@ -108,6 +108,7 @@ class MinimizerDialog(QDialog):
         self._n_positions = n_positions
         self._position_labels = position_labels
         self._evaluate_fn = evaluate_fn
+        self._is_snap = evaluate_fn is not None
         self._worker: Optional[_MinimizerWorker] = None
         self._result: Optional[MinimizationResult] = None
 
@@ -179,6 +180,19 @@ class MinimizerDialog(QDialog):
         self._combo_strategy.addItem("exhaustive (小規模向け)", "exhaustive")
         strat_layout.addWidget(self._combo_strategy, stretch=1)
         root.addWidget(strat_group)
+
+        # 評価方式表示
+        eval_layout = QHBoxLayout()
+        eval_layout.addWidget(QLabel("評価方式:"))
+        self._lbl_eval_mode = QLabel()
+        if self._is_snap:
+            self._lbl_eval_mode.setText("SNAP実解析")
+            self._lbl_eval_mode.setStyleSheet("color: #4caf50; font-weight: bold;")
+        else:
+            self._lbl_eval_mode.setText("未接続（評価関数を設定してください）")
+            self._lbl_eval_mode.setStyleSheet("color: #f44336; font-weight: bold;")
+        eval_layout.addWidget(self._lbl_eval_mode, stretch=1)
+        root.addLayout(eval_layout)
 
         # 実行 + プログレス
         exec_layout = QHBoxLayout()
@@ -294,9 +308,10 @@ class MinimizerDialog(QDialog):
         self._btn_run.setEnabled(True)
 
         feasible_text = "OK" if result.is_feasible else "NG"
+        eval_tag = "[SNAP]" if self._is_snap else "[モック]"
         self._lbl_status.setText("完了")
         self._lbl_summary.setText(
-            f"戦略: {result.strategy}　|　"
+            f"{eval_tag} 戦略: {result.strategy}　|　"
             f"最終本数: {result.final_count}　|　"
             f"基準充足: {feasible_text}　|　"
             f"マージン: {result.final_margin:+.4f}　|　"

@@ -1748,6 +1748,13 @@ class OptimizerDialog(QDialog):
                     summary_text += (
                         f"  |  キャッシュ: {cache_hits}hit"
                     )
+            # ロバスト摂動統計を表示
+            if result.robustness_stats:
+                rs = result.robustness_stats
+                rate = rs.get("success_rate", 1.0) * 100
+                summary_text += f"  |  ロバスト摂動: {rate:.0f}%成功"
+                if rate < 80:
+                    summary_text += " ⚠ 信頼性低"
             if stagnation:
                 stag_pct = stagnation["stagnation_length"] / stagnation["total_evals"] * 100
                 summary_text += (

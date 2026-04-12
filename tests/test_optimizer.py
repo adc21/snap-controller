@@ -3342,3 +3342,121 @@ class TestSobolSensitivity:
         assert ranked[0].key == "x"  # x が最も感度が高い
 
 
+class TestRobustnessStats:
+    """ロバスト摂動統計のテスト群。"""
+
+    @staticmethod
+    def _eval_fn(params: Dict[str, float]) -> Dict[str, float]:
+        cd = params.get("Cd", 500)
+        drift = 0.003 + 0.00001 * (cd - 500) ** 2
+        return {"max_drift": drift, "max_acc": 1.0}
+
+    def test_robustness_stats_tracked(self):
+        """ロバスト摂動の成功/失敗がOptimizationResultに記録されること。"""
+        config = OptimizationConfig(
+            objective_key="max_drift",
+            parameters=[
+                ParameterRange(key="Cd", min_val=100, max_val=1000, step=0),
+            ],
+            method="random",
+            max_iterations=10,
+            robustness_samples=3,
+            robustness_delta=0.05,
+        )
+        worker = _OptimizationWorker(config, evaluate_fn=self._eval_fn)
+        results = []
+        worker.finished_signal.connect(lambda r: results.append(r))
+        worker.run()
+
+        assert len(results) == 1
+        result = results[0]
+        assert result.robustness_stats is not None
+        assert result.robustness_stats["total"] == 30  # 10 iterations * 3 samples
+        assert result.robustness_stats["success"] == 30
+        assert result.robustness_stats["failed"] == 0
+        assert result.robustness_stats["success_rate"] == 1.0
+
+    def test_robustness_stats_with_failures(self):
+        """_robust_evaluate_with で摂動失敗がカウントされること。"""
+        config = OptimizationConfig(
+            objective_key="max_drift",
+            parameters=[
+                ParameterRange(key="Cd", min_val=100, max_val=1000, step=0),
+            ],
+            robustness_samples=10,
+            robustness_delta=0.05,
+        )
+        worker = _OptimizationWorker(config, evaluate_fn=self._eval_fn)
+
+        call_count = [0]
+        def failing_perturbation_fn(params):
+            call_count[0] += 1
+            if call_count[0] > 1:  # 中心値評価以降は半分失敗
+                if call_count[0] % 2 == 0:
+                    raise RuntimeError("perturbation fail")
+            return self._eval_fn(params)
+
+        worker._robust_evaluate_with({"Cd": 500}, config, failing_perturbation_fn)
+        assert worker._robustness_failed > 0
+        assert worker._robustness_success > 0
+        assert worker._robustness_success + worker._robustness_failed == 10
+
+    def test_robustness_stats_none_when_disabled(self):
+        """ロバスト最適化無効時はstatsがNoneであること。"""
+        config = OptimizationConfig(
+            objective_key="max_drift",
+            parameters=[
+                ParameterRange(key="Cd", min_val=100, max_val=1000, step=0),
+            ],
+            method="random",
+            max_iterations=5,
+        )
+        worker = _OptimizationWorker(config, evaluate_fn=self._eval_fn)
+        results = []
+        worker.finished_signal.connect(lambda r: results.append(r))
+        worker.run()
+
+        assert results[0].robustness_stats is None
+
+    def test_robustness_stats_in_summary_text(self):
+        """ロバスト統計がサマリーテキストに表示されること。"""
+        result = OptimizationResult(
+            config=OptimizationConfig(objective_key="max_drift"),
+            robustness_stats={
+                "success": 8,
+                "failed": 2,
+                "total": 10,
+                "success_rate": 0.8,
+            },
+        )
+        summary = result.get_summary_text()
+        assert "ロバスト摂動" in summary
+        assert "80%" in summary
+
+    def test_robustness_low_rate_warning(self):
+        """成功率80%未満で警告がサマリーに含まれること。"""
+        result = OptimizationResult(
+            config=OptimizationConfig(objective_key="max_drift"),
+            robustness_stats={
+                "success": 5,
+                "failed": 5,
+                "total": 10,
+                "success_rate": 0.5,
+            },
+        )
+        summary = result.get_summary_text()
+        assert "信頼性" in summary
+
+    def test_robustness_stats_serialization(self):
+        """robustness_statsがto_dict/from_dictでシリアライズされること。"""
+        stats = {"success": 10, "failed": 2, "total": 12, "success_rate": 10 / 12}
+        result = OptimizationResult(
+            config=OptimizationConfig(objective_key="max_drift"),
+            robustness_stats=stats,
+        )
+        d = result.to_dict()
+        assert d["robustness_stats"] == stats
+        restored = OptimizationResult.from_dict(d)
+        assert restored.robustness_stats == stats
+
+

@@ -259,6 +259,29 @@ class TestDialogInteractions:
         for i in range(dlg._combo_strategy.count()):
             dlg._combo_strategy.setCurrentIndex(i)
 
+    def test_minimizer_eval_mode_no_fn(self, qapp):
+        """評価関数なしで未接続ラベルが表示されること。"""
+        from app.ui.minimizer_dialog import MinimizerDialog
+        dlg = MinimizerDialog(
+            n_positions=3,
+            position_labels=["1F", "2F", "3F"],
+        )
+        assert not dlg._is_snap
+        assert "未接続" in dlg._lbl_eval_mode.text()
+
+    def test_minimizer_eval_mode_with_fn(self, qapp):
+        """評価関数ありでSNAP実解析ラベルが表示されること���"""
+        from app.ui.minimizer_dialog import MinimizerDialog
+        def dummy_eval(placement):
+            return {"max_drift": 0.003}, True, 0.1
+        dlg = MinimizerDialog(
+            n_positions=3,
+            position_labels=["1F", "2F", "3F"],
+            evaluate_fn=dummy_eval,
+        )
+        assert dlg._is_snap
+        assert "SNAP" in dlg._lbl_eval_mode.text()
+
     def test_sweep_add_remove_params(self, qapp):
         from app.ui.sweep_dialog import SweepDialog
         dlg = SweepDialog()
