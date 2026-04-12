@@ -197,7 +197,11 @@ class SnapEvaluator:
             # RD 配置の変更（固定オーバーライド）
             if self.rd_overrides:
                 for row_str, changes in self.rd_overrides.items():
-                    row_idx = int(row_str)
+                    try:
+                        row_idx = int(row_str)
+                    except (ValueError, TypeError):
+                        self.log_callback(f"[WARN] rd_overrides の行番号が不正: {row_str}")
+                        continue
                     model.update_damper_element(
                         row_idx,
                         node_i=changes.get("node_i"),
@@ -253,8 +257,8 @@ class SnapEvaluator:
                             d_folder = model_dir / dyc.folder_name
                             if d_folder.exists() and list(d_folder.glob("Floor*.txt")):
                                 return d_folder
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug("DYCケース解析に失敗（フォールバック使用）: %s", e)
 
                 # フォールバック: D* フォルダの最大番号を使用
                 d_folders = sorted(
@@ -275,24 +279,7 @@ class SnapEvaluator:
         Result オブジェクトから応答値辞書を生成。
         AnalysisService._store_summary と同じ形式。
         """
-        response: Dict[str, float] = {}
-
-        if res.max_story_drift:
-            response["max_drift"] = max(res.max_story_drift.values())
-        if res.max_acc:
-            response["max_acc"] = max(res.max_acc.values())
-        if res.max_disp:
-            response["max_disp"] = max(res.max_disp.values())
-        if res.max_vel:
-            response["max_vel"] = max(res.max_vel.values())
-        if res.shear_coeff:
-            response["shear_coeff"] = max(res.shear_coeff.values())
-        if res.max_otm:
-            response["max_otm"] = max(res.max_otm.values())
-        if res.max_story_disp:
-            response["max_story_disp"] = max(res.max_story_disp.values())
-
-        return response
+        return _extract_minimizer_response(res)
 
     def _error_response(self) -> Dict[str, float]:
         """エラー時に返すデフォルト応答値（全て inf）。"""
@@ -871,8 +858,8 @@ def _find_minimizer_result_dir(
                         d_folder = model_dir / dyc.folder_name
                         if d_folder.exists() and list(d_folder.glob("Floor*.txt")):
                             return d_folder
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("DYCケース解析に失敗（フォールバック使用）: %s", e)
             d_folders = sorted(
                 [d for d in model_dir.iterdir()
                  if d.is_dir() and d.name.startswith("D") and d.name[1:].isdigit()],
@@ -885,23 +872,30 @@ def _find_minimizer_result_dir(
     return tmp_path
 
 
+def _safe_dict_max(d: Optional[Dict]) -> Optional[float]:
+    """辞書の値の最大値を安全に取得。空辞書・Noneはスキップ。"""
+    if d and d.values():
+        vals = [v for v in d.values() if v is not None]
+        return max(vals) if vals else None
+    return None
+
+
 def _extract_minimizer_response(res: Result) -> Dict[str, float]:
     """Result から応答値辞書を生成（SnapEvaluator._extract_response と同等）。"""
     response: Dict[str, float] = {}
-    if res.max_story_drift:
-        response["max_drift"] = max(res.max_story_drift.values())
-    if res.max_acc:
-        response["max_acc"] = max(res.max_acc.values())
-    if res.max_disp:
-        response["max_disp"] = max(res.max_disp.values())
-    if res.max_vel:
-        response["max_vel"] = max(res.max_vel.values())
-    if res.shear_coeff:
-        response["shear_coeff"] = max(res.shear_coeff.values())
-    if res.max_otm:
-        response["max_otm"] = max(res.max_otm.values())
-    if res.max_story_disp:
-        response["max_story_disp"] = max(res.max_story_disp.values())
+    _fields = [
+        ("max_drift", res.max_story_drift),
+        ("max_acc", res.max_acc),
+        ("max_disp", res.max_disp),
+        ("max_vel", res.max_vel),
+        ("shear_coeff", res.shear_coeff),
+        ("max_otm", res.max_otm),
+        ("max_story_disp", res.max_story_disp),
+    ]
+    for key, d in _fields:
+        val = _safe_dict_max(d)
+        if val is not None:
+            response[key] = val
     return response
 
 

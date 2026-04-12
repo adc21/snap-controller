@@ -17,6 +17,7 @@ from app.services.snap_evaluator import (
     build_floor_rd_map,
     _compute_margin,
     _extract_minimizer_response,
+    _safe_dict_max,
 )
 from app.models.analysis_case import AnalysisCase
 from app.models.performance_criteria import PerformanceCriteria, CriterionItem
@@ -438,3 +439,28 @@ class TestDycRunFlagReset:
 
         assert changed is False
         assert all(d.run_flag == 1 for d in model.dyc_cases)
+
+
+class TestSafeDictMax:
+    """_safe_dict_max のエッジケーステスト。"""
+
+    def test_normal_dict(self):
+        assert _safe_dict_max({"a": 1.0, "b": 3.0, "c": 2.0}) == 3.0
+
+    def test_empty_dict(self):
+        """空辞書でValueErrorが出ないこと。"""
+        assert _safe_dict_max({}) is None
+
+    def test_none_input(self):
+        assert _safe_dict_max(None) is None
+
+    def test_dict_with_none_values(self):
+        """None値を含む辞書でも正常動作。"""
+        assert _safe_dict_max({"a": None, "b": 5.0}) == 5.0
+
+    def test_dict_with_all_none_values(self):
+        """全てNone値の辞書はNoneを返す。"""
+        assert _safe_dict_max({"a": None, "b": None}) is None
+
+    def test_single_value(self):
+        assert _safe_dict_max({"a": 42.0}) == 42.0
