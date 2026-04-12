@@ -6,76 +6,76 @@ app/services/damper_count_minimizer.py
 
 目的
 ----
-性能基準 (PerformanceCriteria) を満たしつつ、ダンパー本数を最小化する
-配置を自動探索します。
+性能基準を満たしつつ、ダンパー合計本数を最小化する配置を自動探索します。
 
-アルゴリズム
-------------
-本モジュールは「評価関数注入型」の設計で、SNAP 解析の実行自体は
-呼び出し側 (AnalysisService / SnapEvaluator) に委ね、本モジュールでは
-**配置の選択論理のみ** を担当します。
+設計思想
+--------
+- 各階のダンパー本数 (quantity) をパラメータとして変更
+- SNAP解析をループ実行し、層ごとの応答結果に基づいて判断
+- 12種のアルゴリズムから選択可能
 
-探索戦略は次の 3 つから選択できます:
-
-1. **greedy_remove** (推奨、既定)
-   - 全候補位置に配置した「満載」配置から開始。
-   - 各反復で、除去しても基準を満たせる配置の中から、
-     性能マージンの減少が最小となる位置を 1 本ずつ除去。
-   - 基準を破る直前で停止し、その配置を最小配置として返す。
-   - 呼出回数: 最悪 O(N²) 回の評価、実用上 N*k 程度。
-
-2. **greedy_add**
-   - 空配置から開始。基準が満たされるまで 1 本ずつ追加。
-   - 追加位置は「追加による基準マージン改善が最大」となる位置を選ぶ。
-   - 呼出回数: 最悪 O(N²) 回の評価。
-
-3. **exhaustive**
-   - N ≤ 10 程度の小規模問題向け、全 2^N 通りを総当り。
-   - 基準を満たす配置のうち最小本数を返す。
-
-評価関数 (``evaluate_fn``) のシグネチャ:
-    ``evaluate_fn(placement: List[bool]) -> Tuple[Dict[str, float], bool, float]``
-  - placement: 各候補位置に配置するか否かの bool リスト
-  - 戻り値:
-      * result_summary : 基準評価に使う数値辞書
-        (例: {"max_drift_angle": 0.005, "max_acc": 200.0, ...})
-      * is_feasible    : 基準を満たすか (True/False)
-      * margin         : 性能マージン (大きいほど余裕。負なら違反)
-        通常は「(許容値 - 実値) / 許容値」の最小値を用いる。
+評価関数
+--------
+``evaluate_fn(quantities: Dict[str, int]) -> EvaluationResult``
+  - quantities: 各階のダンパー本数 (例: {"F1": 3, "F2": 5})
+  - 戻り値: EvaluationResult (層ごとの応答 + 制約判定)
 """
 
 from __future__ import annotations
 
-import itertools
+import logging
 import math
+import random
 from dataclasses import dataclass, field
 from typing import Callable, Dict, List, Optional, Tuple
 
-EvaluateFn = Callable[[List[bool]], Tuple[Dict[str, float], bool, float]]
+import numpy as np
 
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# 結果データクラス
+# データクラス
 # ---------------------------------------------------------------------------
+
+
+@dataclass
+class FloorResponse:
+    """1階分の応答結果。"""
+    floor_key: str        # "F1", "F2", ...
+    values: Dict[str, float] = field(default_factory=dict)  # {"max_drift": 0.005, ...}
+    damper_count: int = 0
+
+
+@dataclass
+class EvaluationResult:
+    """1回の評価結果。"""
+    floor_responses: List[FloorResponse] = field(default_factory=list)
+    total_count: int = 0
+    is_feasible: bool = False
+    worst_margin: float = -1.0
+    summary: Dict[str, float] = field(default_factory=dict)
 
 
 @dataclass
 class MinimizationStep:
+    """最適化ステップの記録。"""
     iteration: int
-    action: str                        # "remove" / "add" / "init" / "final"
-    position_index: Optional[int]      # 操作対象の候補位置
-    placement: List[bool]              # その時点の配置
-    count: int                         # ダンパー本数
+    quantities: Dict[str, int]
+    total_count: int
     is_feasible: bool
-    margin: float
+    worst_margin: float
+    changed_floor: Optional[str] = None
+    action: str = ""          # "add"/"remove"/"init"/"eval"/"final"
     note: str = ""
+    summary: Dict[str, float] = field(default_factory=dict)
 
 
 @dataclass
 class MinimizationResult:
+    """最小化の最終結果。"""
     strategy: str
-    initial_placement: List[bool]
-    final_placement: List[bool]
+    initial_quantities: Dict[str, int]
+    final_quantities: Dict[str, int]
     final_count: int
     is_feasible: bool
     final_margin: float
@@ -85,341 +85,1066 @@ class MinimizationResult:
 
     def summary_text(self) -> str:
         lines = [
-            f"=== ダンパー本数最小化結果 ===",
+            "=== ダンパー本数最小化結果 ===",
             f"戦略         : {self.strategy}",
-            f"初期本数     : {sum(self.initial_placement)}",
-            f"最終本数     : {self.final_count}",
+            f"初期合計本数 : {sum(self.initial_quantities.values())}",
+            f"最終合計本数 : {self.final_count}",
             f"基準充足     : {'OK' if self.is_feasible else 'NG'}",
             f"最終マージン : {self.final_margin:+.4f}",
             f"評価回数     : {self.evaluations}",
             "",
-            "最終配置 (1=設置 / 0=撤去):",
-            " ".join("1" if x else "0" for x in self.final_placement),
+            "最終配置:",
         ]
+        for k, v in sorted(self.final_quantities.items()):
+            lines.append(f"  {k}: {v}本")
         if self.note:
             lines.append(f"備考: {self.note}")
         return "\n".join(lines)
 
 
+# 評価関数型
+EvaluateFn = Callable[[Dict[str, int]], EvaluationResult]
+ProgressCb = Callable[[MinimizationStep], None]
+
+
 # ---------------------------------------------------------------------------
-# Greedy Remove
+# ヘルパー
 # ---------------------------------------------------------------------------
 
 
-def minimize_greedy_remove(
-    num_positions: int,
-    evaluate_fn: EvaluateFn,
-    initial_placement: Optional[List[bool]] = None,
-    required_positions: Optional[List[int]] = None,
-    progress_cb: Optional[Callable[[MinimizationStep], None]] = None,
-) -> MinimizationResult:
-    """
-    満載配置から 1 本ずつ撤去していく貪欲法。
-
-    Parameters
-    ----------
-    num_positions : int
-        ダンパー配置候補位置の数
-    evaluate_fn : EvaluateFn
-        placement -> (summary, is_feasible, margin)
-    initial_placement : Optional[List[bool]]
-        初期配置。None なら全 True (満載)
-    required_positions : Optional[List[int]]
-        必ず残す位置（撤去不可）
-    progress_cb : Optional[Callable]
-        各ステップごとに呼ばれるコールバック
-    """
-    if initial_placement is None:
-        placement = [True] * num_positions
-    else:
-        if len(initial_placement) != num_positions:
-            raise ValueError("initial_placement length mismatch")
-        placement = list(initial_placement)
-
-    required = set(required_positions or [])
-
-    evaluations = 0
-    history: List[MinimizationStep] = []
-
-    # --- 初期評価 ---
-    summary, feasible, margin = evaluate_fn(placement)
-    evaluations += 1
-    step = MinimizationStep(
-        iteration=0,
-        action="init",
-        position_index=None,
-        placement=list(placement),
-        count=sum(placement),
-        is_feasible=feasible,
-        margin=margin,
-        note="初期満載配置",
+def _make_step(
+    iteration: int,
+    quantities: Dict[str, int],
+    result: EvaluationResult,
+    action: str = "eval",
+    changed_floor: Optional[str] = None,
+    note: str = "",
+) -> MinimizationStep:
+    return MinimizationStep(
+        iteration=iteration,
+        quantities=dict(quantities),
+        total_count=sum(quantities.values()),
+        is_feasible=result.is_feasible,
+        worst_margin=result.worst_margin,
+        changed_floor=changed_floor,
+        action=action,
+        note=note,
+        summary=dict(result.summary),
     )
-    history.append(step)
-    if progress_cb:
-        progress_cb(step)
 
-    if not feasible:
-        return MinimizationResult(
-            strategy="greedy_remove",
-            initial_placement=list(placement),
-            final_placement=list(placement),
-            final_count=sum(placement),
-            is_feasible=False,
-            final_margin=margin,
-            history=history,
-            evaluations=evaluations,
-            note="満載配置でも基準を満たせない（基準が厳しすぎるか、ダンパー種が不足）。",
-        )
 
-    iteration = 0
-    while True:
-        iteration += 1
-        # 現在 True の位置のうち、required 以外を 1 本ずつ試しに撤去
-        candidates = [i for i, on in enumerate(placement) if on and i not in required]
-        if not candidates:
-            break
+def _clamp_quantities(
+    quantities: Dict[str, int],
+    max_quantities: Dict[str, int],
+) -> Dict[str, int]:
+    """本数を [0, max] にクランプ。"""
+    return {
+        k: max(0, min(v, max_quantities.get(k, v)))
+        for k, v in quantities.items()
+    }
 
-        best_i: Optional[int] = None
-        best_margin = -math.inf
-        best_summary: Optional[Dict[str, float]] = None
 
-        for i in candidates:
-            trial = list(placement)
-            trial[i] = False
-            s, feas, m = evaluate_fn(trial)
-            evaluations += 1
-            if feas and m > best_margin:
-                best_margin = m
-                best_i = i
-                best_summary = s
+# ---------------------------------------------------------------------------
+# 1. 層別追加法
+# ---------------------------------------------------------------------------
 
-        if best_i is None:
-            # 撤去候補が全て基準違反となる -> 停止
-            break
 
-        placement[best_i] = False
-        margin = best_margin
-        step = MinimizationStep(
-            iteration=iteration,
-            action="remove",
-            position_index=best_i,
-            placement=list(placement),
-            count=sum(placement),
-            is_feasible=True,
-            margin=margin,
-            note=f"位置 {best_i} を撤去",
-        )
+def minimize_floor_add(
+    floor_keys: List[str],
+    max_quantities: Dict[str, int],
+    evaluate_fn: EvaluateFn,
+    progress_cb: Optional[ProgressCb] = None,
+    max_iterations: int = 500,
+) -> MinimizationResult:
+    """基準超過の階にダンパーを追加していく。"""
+    quantities = {k: 0 for k in floor_keys}
+    history: List[MinimizationStep] = []
+    evaluations = 0
+
+    for iteration in range(max_iterations):
+        result = evaluate_fn(quantities)
+        evaluations += 1
+
+        action = "init" if iteration == 0 else "eval"
+        step = _make_step(iteration, quantities, result, action=action)
         history.append(step)
         if progress_cb:
             progress_cb(step)
 
-    # --- 最終確認 ---
-    summary, feasible, margin = evaluate_fn(placement)
-    evaluations += 1
-    final_step = MinimizationStep(
-        iteration=iteration + 1,
-        action="final",
-        position_index=None,
-        placement=list(placement),
-        count=sum(placement),
-        is_feasible=feasible,
-        margin=margin,
-        note="最終配置",
-    )
-    history.append(final_step)
-    if progress_cb:
-        progress_cb(final_step)
-
-    return MinimizationResult(
-        strategy="greedy_remove",
-        initial_placement=[True] * num_positions if initial_placement is None else list(initial_placement),
-        final_placement=list(placement),
-        final_count=sum(placement),
-        is_feasible=feasible,
-        final_margin=margin,
-        history=history,
-        evaluations=evaluations,
-    )
-
-
-# ---------------------------------------------------------------------------
-# Greedy Add
-# ---------------------------------------------------------------------------
-
-
-def minimize_greedy_add(
-    num_positions: int,
-    evaluate_fn: EvaluateFn,
-    required_positions: Optional[List[int]] = None,
-    progress_cb: Optional[Callable[[MinimizationStep], None]] = None,
-) -> MinimizationResult:
-    """
-    空配置から 1 本ずつ追加していく貪欲法。基準を満たした瞬間に停止する。
-    """
-    required = set(required_positions or [])
-    placement = [i in required for i in range(num_positions)]
-
-    history: List[MinimizationStep] = []
-    evaluations = 0
-
-    summary, feasible, margin = evaluate_fn(placement)
-    evaluations += 1
-    step = MinimizationStep(
-        iteration=0,
-        action="init",
-        position_index=None,
-        placement=list(placement),
-        count=sum(placement),
-        is_feasible=feasible,
-        margin=margin,
-        note="必須位置のみの初期配置" if required else "空配置",
-    )
-    history.append(step)
-    if progress_cb:
-        progress_cb(step)
-
-    if feasible:
-        return MinimizationResult(
-            strategy="greedy_add",
-            initial_placement=list(placement),
-            final_placement=list(placement),
-            final_count=sum(placement),
-            is_feasible=True,
-            final_margin=margin,
-            history=history,
-            evaluations=evaluations,
-            note="初期配置で既に基準を満たす。",
-        )
-
-    iteration = 0
-    while True:
-        iteration += 1
-        off_positions = [i for i, on in enumerate(placement) if not on]
-        if not off_positions:
+        if result.is_feasible:
             break
 
-        best_i: Optional[int] = None
-        best_margin = -math.inf
+        # 基準超過の階を特定し、最もマージンが悪い階に+1
+        worst_floor = None
+        worst_margin = float("inf")
+        for fr in result.floor_responses:
+            for key, val in fr.values.items():
+                if key.startswith("margin_"):
+                    criterion = key[len("margin_"):]
+                    if val < worst_margin and fr.damper_count < max_quantities.get(fr.floor_key, 999):
+                        worst_margin = val
+                        worst_floor = fr.floor_key
 
-        for i in off_positions:
-            trial = list(placement)
-            trial[i] = True
-            s, feas, m = evaluate_fn(trial)
-            evaluations += 1
-            if m > best_margin:
-                best_margin = m
-                best_i = i
-                if feas:
-                    # 基準達成ならその時点で即採用
+        if worst_floor is None:
+            # マージン情報がない場合、未満載の階を順に追加
+            for k in floor_keys:
+                if quantities[k] < max_quantities.get(k, 999):
+                    worst_floor = k
                     break
 
-        if best_i is None:
-            break
+        if worst_floor is None:
+            break  # 全階が上限
 
-        placement[best_i] = True
-        margin = best_margin
-        step = MinimizationStep(
-            iteration=iteration,
-            action="add",
-            position_index=best_i,
-            placement=list(placement),
-            count=sum(placement),
-            is_feasible=best_margin >= 0.0,
-            margin=margin,
-            note=f"位置 {best_i} を追加",
-        )
-        history.append(step)
-        if progress_cb:
-            progress_cb(step)
-        if margin >= 0.0:
-            break
+        quantities[worst_floor] = quantities.get(worst_floor, 0) + 1
 
-    summary, feasible, margin = evaluate_fn(placement)
+    # 最終評価
+    result = evaluate_fn(quantities)
     evaluations += 1
-    final_step = MinimizationStep(
-        iteration=iteration + 1,
-        action="final",
-        position_index=None,
-        placement=list(placement),
-        count=sum(placement),
-        is_feasible=feasible,
-        margin=margin,
-        note="最終配置",
-    )
+    final_step = _make_step(evaluations, quantities, result, action="final")
     history.append(final_step)
     if progress_cb:
         progress_cb(final_step)
 
     return MinimizationResult(
-        strategy="greedy_add",
-        initial_placement=[i in required for i in range(num_positions)],
-        final_placement=list(placement),
-        final_count=sum(placement),
-        is_feasible=feasible,
-        final_margin=margin,
+        strategy="floor_add",
+        initial_quantities={k: 0 for k in floor_keys},
+        final_quantities=dict(quantities),
+        final_count=sum(quantities.values()),
+        is_feasible=result.is_feasible,
+        final_margin=result.worst_margin,
         history=history,
         evaluations=evaluations,
     )
 
 
 # ---------------------------------------------------------------------------
-# Exhaustive (小規模問題)
+# 2. 層別削減法
 # ---------------------------------------------------------------------------
 
 
-def minimize_exhaustive(
-    num_positions: int,
+def minimize_floor_remove(
+    floor_keys: List[str],
+    initial_quantities: Dict[str, int],
     evaluate_fn: EvaluateFn,
-    required_positions: Optional[List[int]] = None,
-    max_positions: int = 12,
+    progress_cb: Optional[ProgressCb] = None,
+    max_iterations: int = 500,
 ) -> MinimizationResult:
-    """
-    全探索。候補数 ≤ max_positions の場合のみ動作。
-    """
-    if num_positions > max_positions:
-        raise ValueError(
-            f"exhaustive search limited to {max_positions} positions, got {num_positions}"
-        )
-    required = set(required_positions or [])
-    best_placement: Optional[List[bool]] = None
-    best_count = num_positions + 1
-    best_margin = -math.inf
+    """余裕のある階から1本ずつ削減。"""
+    quantities = dict(initial_quantities)
+    history: List[MinimizationStep] = []
     evaluations = 0
 
-    for mask in range(1 << num_positions):
-        placement = [bool((mask >> i) & 1) for i in range(num_positions)]
-        if any((i in required) and not placement[i] for i in range(num_positions)):
-            continue
-        count = sum(placement)
-        # 同じ本数でもマージンがより大きい解に更新し得るため、厳密な > で剪定する
-        if count > best_count:
-            continue
-        _, feas, m = evaluate_fn(placement)
-        evaluations += 1
-        if feas and (count < best_count or (count == best_count and m > best_margin)):
-            best_placement = placement
-            best_count = count
-            best_margin = m
+    # 初期評価
+    result = evaluate_fn(quantities)
+    evaluations += 1
+    step = _make_step(0, quantities, result, action="init")
+    history.append(step)
+    if progress_cb:
+        progress_cb(step)
 
-    if best_placement is None:
+    if not result.is_feasible:
         return MinimizationResult(
-            strategy="exhaustive",
-            initial_placement=[True] * num_positions,
-            final_placement=[True] * num_positions,
-            final_count=num_positions,
+            strategy="floor_remove",
+            initial_quantities=dict(initial_quantities),
+            final_quantities=dict(quantities),
+            final_count=sum(quantities.values()),
             is_feasible=False,
-            final_margin=-math.inf,
+            final_margin=result.worst_margin,
+            history=history,
             evaluations=evaluations,
-            note="どの組合せでも基準を満たす配置が存在しない。",
+            note="初期配置で基準を満たしていません。",
         )
 
+    for iteration in range(1, max_iterations + 1):
+        # 余裕が最大の階を探す（本数>0の階から）
+        best_floor = None
+        best_margin = -math.inf
+
+        removable = [k for k in floor_keys if quantities.get(k, 0) > 0]
+        if not removable:
+            break
+
+        for k in removable:
+            trial = dict(quantities)
+            trial[k] -= 1
+            trial_result = evaluate_fn(trial)
+            evaluations += 1
+            if trial_result.is_feasible and trial_result.worst_margin > best_margin:
+                best_margin = trial_result.worst_margin
+                best_floor = k
+
+        if best_floor is None:
+            break  # どの階を減らしてもNG
+
+        quantities[best_floor] -= 1
+        result = evaluate_fn(quantities)
+        evaluations += 1
+        step = _make_step(iteration, quantities, result, action="remove",
+                          changed_floor=best_floor, note=f"{best_floor} -1")
+        history.append(step)
+        if progress_cb:
+            progress_cb(step)
+
+    final_step = _make_step(len(history), quantities, result, action="final")
+    history.append(final_step)
+    if progress_cb:
+        progress_cb(final_step)
+
     return MinimizationResult(
-        strategy="exhaustive",
-        initial_placement=[True] * num_positions,
-        final_placement=best_placement,
-        final_count=best_count,
+        strategy="floor_remove",
+        initial_quantities=dict(initial_quantities),
+        final_quantities=dict(quantities),
+        final_count=sum(quantities.values()),
+        is_feasible=result.is_feasible,
+        final_margin=result.worst_margin,
+        history=history,
+        evaluations=evaluations,
+    )
+
+
+# ---------------------------------------------------------------------------
+# 3. 一律二分探索
+# ---------------------------------------------------------------------------
+
+
+def minimize_binary_search(
+    floor_keys: List[str],
+    max_quantity: int,
+    evaluate_fn: EvaluateFn,
+    progress_cb: Optional[ProgressCb] = None,
+) -> MinimizationResult:
+    """全階一律にN本で二分探索。"""
+    history: List[MinimizationStep] = []
+    evaluations = 0
+
+    lo, hi = 0, max_quantity
+    best_feasible_n: Optional[int] = None
+    best_result: Optional[EvaluationResult] = None
+
+    while lo <= hi:
+        mid = (lo + hi) // 2
+        quantities = {k: mid for k in floor_keys}
+        result = evaluate_fn(quantities)
+        evaluations += 1
+
+        step = _make_step(evaluations, quantities, result, action="eval",
+                          note=f"N={mid} [{lo},{hi}]")
+        history.append(step)
+        if progress_cb:
+            progress_cb(step)
+
+        if result.is_feasible:
+            best_feasible_n = mid
+            best_result = result
+            hi = mid - 1
+        else:
+            lo = mid + 1
+
+    if best_feasible_n is None:
+        quantities = {k: max_quantity for k in floor_keys}
+        result = evaluate_fn(quantities)
+        evaluations += 1
+        return MinimizationResult(
+            strategy="binary_search",
+            initial_quantities={k: max_quantity for k in floor_keys},
+            final_quantities=quantities,
+            final_count=sum(quantities.values()),
+            is_feasible=result.is_feasible,
+            final_margin=result.worst_margin,
+            history=history,
+            evaluations=evaluations,
+            note="最大本数でも基準を満たせません。",
+        )
+
+    final_q = {k: best_feasible_n for k in floor_keys}
+    final_step = _make_step(evaluations + 1, final_q, best_result, action="final")
+    history.append(final_step)
+    if progress_cb:
+        progress_cb(final_step)
+
+    return MinimizationResult(
+        strategy="binary_search",
+        initial_quantities={k: max_quantity for k in floor_keys},
+        final_quantities=final_q,
+        final_count=sum(final_q.values()),
         is_feasible=True,
-        final_margin=best_margin,
+        final_margin=best_result.worst_margin,
+        history=history,
+        evaluations=evaluations,
+    )
+
+
+# ---------------------------------------------------------------------------
+# 4. 一律線形探索
+# ---------------------------------------------------------------------------
+
+
+def minimize_linear_search(
+    floor_keys: List[str],
+    max_quantity: int,
+    evaluate_fn: EvaluateFn,
+    progress_cb: Optional[ProgressCb] = None,
+) -> MinimizationResult:
+    """全階一律にN本、上から下へ線形探索。"""
+    history: List[MinimizationStep] = []
+    evaluations = 0
+    last_feasible_n = None
+    last_feasible_result = None
+
+    for n in range(max_quantity, -1, -1):
+        quantities = {k: n for k in floor_keys}
+        result = evaluate_fn(quantities)
+        evaluations += 1
+
+        step = _make_step(evaluations, quantities, result, action="eval",
+                          note=f"N={n}")
+        history.append(step)
+        if progress_cb:
+            progress_cb(step)
+
+        if result.is_feasible:
+            last_feasible_n = n
+            last_feasible_result = result
+        else:
+            if last_feasible_n is not None:
+                break  # 直前がfeasibleの最小
+
+    if last_feasible_n is None:
+        quantities = {k: max_quantity for k in floor_keys}
+        return MinimizationResult(
+            strategy="linear_search",
+            initial_quantities={k: max_quantity for k in floor_keys},
+            final_quantities=quantities,
+            final_count=sum(quantities.values()),
+            is_feasible=False,
+            final_margin=-1.0,
+            history=history,
+            evaluations=evaluations,
+            note="どの本数でも基準を満たせません。",
+        )
+
+    final_q = {k: last_feasible_n for k in floor_keys}
+    final_step = _make_step(evaluations + 1, final_q, last_feasible_result,
+                            action="final")
+    history.append(final_step)
+    if progress_cb:
+        progress_cb(final_step)
+
+    return MinimizationResult(
+        strategy="linear_search",
+        initial_quantities={k: max_quantity for k in floor_keys},
+        final_quantities=final_q,
+        final_count=sum(final_q.values()),
+        is_feasible=True,
+        final_margin=last_feasible_result.worst_margin,
+        history=history,
+        evaluations=evaluations,
+    )
+
+
+# ---------------------------------------------------------------------------
+# 5. 遺伝的アルゴリズム (GA)
+# ---------------------------------------------------------------------------
+
+
+def minimize_ga(
+    floor_keys: List[str],
+    max_quantities: Dict[str, int],
+    evaluate_fn: EvaluateFn,
+    progress_cb: Optional[ProgressCb] = None,
+    population_size: int = 30,
+    generations: int = 50,
+    penalty_weight: float = 1000.0,
+) -> MinimizationResult:
+    """整数GAで合計本数を最小化。"""
+    n = len(floor_keys)
+    maxes = [max_quantities.get(k, 10) for k in floor_keys]
+    history: List[MinimizationStep] = []
+    evaluations = 0
+    best_solution: Optional[Dict[str, int]] = None
+    best_obj = float("inf")
+    best_result: Optional[EvaluationResult] = None
+
+    def to_dict(arr):
+        return {floor_keys[i]: int(arr[i]) for i in range(n)}
+
+    def objective(arr):
+        nonlocal evaluations, best_solution, best_obj, best_result
+        q = to_dict(arr)
+        result = evaluate_fn(q)
+        evaluations += 1
+        total = sum(q.values())
+        penalty = 0.0 if result.is_feasible else penalty_weight * abs(result.worst_margin)
+        obj = total + penalty
+        if obj < best_obj:
+            best_obj = obj
+            best_solution = q
+            best_result = result
+        return obj, result
+
+    # 初期集団
+    pop = []
+    for _ in range(population_size):
+        ind = [random.randint(0, m) for m in maxes]
+        pop.append(ind)
+
+    for gen in range(generations):
+        # 評価
+        fitnesses = []
+        for ind in pop:
+            obj, result = objective(ind)
+            fitnesses.append(obj)
+
+        step = _make_step(gen, best_solution or to_dict(pop[0]),
+                          best_result or EvaluationResult(),
+                          action="eval", note=f"世代{gen} best={best_obj:.1f}")
+        history.append(step)
+        if progress_cb:
+            progress_cb(step)
+
+        # エリート
+        sorted_idx = sorted(range(len(pop)), key=lambda i: fitnesses[i])
+        elite_count = max(2, population_size // 10)
+        new_pop = [list(pop[i]) for i in sorted_idx[:elite_count]]
+
+        # 交叉 + 突然変異
+        while len(new_pop) < population_size:
+            p1 = pop[random.choice(sorted_idx[:population_size // 2])]
+            p2 = pop[random.choice(sorted_idx[:population_size // 2])]
+            child = []
+            for i in range(n):
+                # BLX-α交叉 → 整数丸め
+                lo_val = min(p1[i], p2[i])
+                hi_val = max(p1[i], p2[i])
+                alpha = 0.5
+                rng = hi_val - lo_val
+                c = random.uniform(lo_val - alpha * rng, hi_val + alpha * rng)
+                c = max(0, min(maxes[i], round(c)))
+                child.append(c)
+            # 突然変異
+            mut_rate = max(0.05, 0.3 * (1 - gen / max(1, generations)))
+            for i in range(n):
+                if random.random() < mut_rate:
+                    child[i] = random.randint(0, maxes[i])
+            new_pop.append(child)
+
+        pop = new_pop
+
+    if best_solution is None:
+        best_solution = {k: max_quantities.get(k, 0) for k in floor_keys}
+        best_result = evaluate_fn(best_solution)
+        evaluations += 1
+
+    final_step = _make_step(generations, best_solution, best_result, action="final")
+    history.append(final_step)
+    if progress_cb:
+        progress_cb(final_step)
+
+    return MinimizationResult(
+        strategy="ga",
+        initial_quantities={k: max_quantities.get(k, 0) for k in floor_keys},
+        final_quantities=best_solution,
+        final_count=sum(best_solution.values()),
+        is_feasible=best_result.is_feasible,
+        final_margin=best_result.worst_margin,
+        history=history,
+        evaluations=evaluations,
+    )
+
+
+# ---------------------------------------------------------------------------
+# 6. 焼きなまし法 (SA)
+# ---------------------------------------------------------------------------
+
+
+def minimize_sa(
+    floor_keys: List[str],
+    max_quantities: Dict[str, int],
+    evaluate_fn: EvaluateFn,
+    progress_cb: Optional[ProgressCb] = None,
+    max_iterations: int = 200,
+    initial_temp: float = 100.0,
+    penalty_weight: float = 1000.0,
+) -> MinimizationResult:
+    """焼きなまし法。"""
+    n = len(floor_keys)
+    maxes = [max_quantities.get(k, 10) for k in floor_keys]
+    history: List[MinimizationStep] = []
+    evaluations = 0
+
+    # 初期解: 最大本数から開始
+    current = [max_quantities.get(k, 0) for k in floor_keys]
+    current_result = evaluate_fn({floor_keys[i]: current[i] for i in range(n)})
+    evaluations += 1
+
+    def obj(arr, result):
+        total = sum(arr)
+        penalty = 0.0 if result.is_feasible else penalty_weight * abs(result.worst_margin)
+        return total + penalty
+
+    current_obj = obj(current, current_result)
+    best = list(current)
+    best_obj = current_obj
+    best_result = current_result
+
+    step = _make_step(0, {floor_keys[i]: current[i] for i in range(n)},
+                      current_result, action="init")
+    history.append(step)
+    if progress_cb:
+        progress_cb(step)
+
+    for it in range(1, max_iterations + 1):
+        temp = initial_temp * (1 - it / max_iterations)
+        if temp <= 0:
+            break
+
+        # 近傍: ランダムな1階の本数を±1〜2
+        neighbor = list(current)
+        idx = random.randint(0, n - 1)
+        delta = random.choice([-2, -1, 1, 2])
+        neighbor[idx] = max(0, min(maxes[idx], neighbor[idx] + delta))
+
+        q = {floor_keys[i]: neighbor[i] for i in range(n)}
+        result = evaluate_fn(q)
+        evaluations += 1
+        neighbor_obj = obj(neighbor, result)
+
+        # メトロポリス基準
+        if neighbor_obj < current_obj or random.random() < math.exp(
+            -(neighbor_obj - current_obj) / max(temp, 1e-10)
+        ):
+            current = neighbor
+            current_obj = neighbor_obj
+            current_result = result
+
+        if current_obj < best_obj:
+            best = list(current)
+            best_obj = current_obj
+            best_result = current_result
+
+        if it % max(1, max_iterations // 20) == 0:
+            step = _make_step(it, {floor_keys[i]: current[i] for i in range(n)},
+                              current_result, action="eval",
+                              note=f"T={temp:.1f} obj={current_obj:.1f}")
+            history.append(step)
+            if progress_cb:
+                progress_cb(step)
+
+    final_q = {floor_keys[i]: best[i] for i in range(n)}
+    final_step = _make_step(max_iterations, final_q, best_result, action="final")
+    history.append(final_step)
+    if progress_cb:
+        progress_cb(final_step)
+
+    return MinimizationResult(
+        strategy="sa",
+        initial_quantities={k: max_quantities.get(k, 0) for k in floor_keys},
+        final_quantities=final_q,
+        final_count=sum(final_q.values()),
+        is_feasible=best_result.is_feasible,
+        final_margin=best_result.worst_margin,
+        history=history,
+        evaluations=evaluations,
+    )
+
+
+# ---------------------------------------------------------------------------
+# 7. 粒子群最適化 (PSO)
+# ---------------------------------------------------------------------------
+
+
+def minimize_pso(
+    floor_keys: List[str],
+    max_quantities: Dict[str, int],
+    evaluate_fn: EvaluateFn,
+    progress_cb: Optional[ProgressCb] = None,
+    n_particles: int = 20,
+    max_iterations: int = 50,
+    penalty_weight: float = 1000.0,
+) -> MinimizationResult:
+    """粒子群最適化 (PSO)。"""
+    n = len(floor_keys)
+    maxes = np.array([max_quantities.get(k, 10) for k in floor_keys], dtype=float)
+    history: List[MinimizationStep] = []
+    evaluations = 0
+
+    def obj_fn(arr):
+        nonlocal evaluations
+        q = {floor_keys[i]: int(arr[i]) for i in range(n)}
+        result = evaluate_fn(q)
+        evaluations += 1
+        total = sum(q.values())
+        penalty = 0.0 if result.is_feasible else penalty_weight * abs(result.worst_margin)
+        return total + penalty, result
+
+    # 初期化
+    positions = np.array([[random.randint(0, int(m)) for m in maxes]
+                          for _ in range(n_particles)], dtype=float)
+    velocities = np.zeros((n_particles, n))
+    p_best = positions.copy()
+    p_best_obj = np.full(n_particles, float("inf"))
+    g_best = positions[0].copy()
+    g_best_obj = float("inf")
+    g_best_result = EvaluationResult()
+
+    w = 0.7  # 慣性
+    c1, c2 = 1.5, 1.5  # 認知・社会係数
+
+    for it in range(max_iterations):
+        for i in range(n_particles):
+            clamped = np.clip(np.round(positions[i]), 0, maxes).astype(int)
+            obj_val, result = obj_fn(clamped)
+
+            if obj_val < p_best_obj[i]:
+                p_best_obj[i] = obj_val
+                p_best[i] = clamped.astype(float)
+
+            if obj_val < g_best_obj:
+                g_best_obj = obj_val
+                g_best = clamped.astype(float)
+                g_best_result = result
+
+        step = _make_step(it, {floor_keys[i]: int(g_best[i]) for i in range(n)},
+                          g_best_result, action="eval",
+                          note=f"PSO iter={it} best={g_best_obj:.1f}")
+        history.append(step)
+        if progress_cb:
+            progress_cb(step)
+
+        # 速度・位置更新
+        r1 = np.random.random((n_particles, n))
+        r2 = np.random.random((n_particles, n))
+        velocities = (w * velocities
+                      + c1 * r1 * (p_best - positions)
+                      + c2 * r2 * (g_best - positions))
+        positions = positions + velocities
+
+    final_q = {floor_keys[i]: int(g_best[i]) for i in range(n)}
+    final_step = _make_step(max_iterations, final_q, g_best_result, action="final")
+    history.append(final_step)
+    if progress_cb:
+        progress_cb(final_step)
+
+    return MinimizationResult(
+        strategy="pso",
+        initial_quantities={k: max_quantities.get(k, 0) for k in floor_keys},
+        final_quantities=final_q,
+        final_count=sum(final_q.values()),
+        is_feasible=g_best_result.is_feasible,
+        final_margin=g_best_result.worst_margin,
+        history=history,
+        evaluations=evaluations,
+    )
+
+
+# ---------------------------------------------------------------------------
+# 8. 差分進化 (DE)
+# ---------------------------------------------------------------------------
+
+
+def minimize_de(
+    floor_keys: List[str],
+    max_quantities: Dict[str, int],
+    evaluate_fn: EvaluateFn,
+    progress_cb: Optional[ProgressCb] = None,
+    population_size: int = 30,
+    max_iterations: int = 50,
+    penalty_weight: float = 1000.0,
+    F: float = 0.8,
+    CR: float = 0.9,
+) -> MinimizationResult:
+    """差分進化 (DE/rand/1/bin)。"""
+    n = len(floor_keys)
+    maxes = [max_quantities.get(k, 10) for k in floor_keys]
+    history: List[MinimizationStep] = []
+    evaluations = 0
+    best_solution: Optional[Dict[str, int]] = None
+    best_obj = float("inf")
+    best_result = EvaluationResult()
+
+    def obj_fn(arr):
+        nonlocal evaluations, best_solution, best_obj, best_result
+        q = {floor_keys[i]: max(0, min(maxes[i], int(round(arr[i])))) for i in range(n)}
+        result = evaluate_fn(q)
+        evaluations += 1
+        total = sum(q.values())
+        penalty = 0.0 if result.is_feasible else penalty_weight * abs(result.worst_margin)
+        obj = total + penalty
+        if obj < best_obj:
+            best_obj = obj
+            best_solution = q
+            best_result = result
+        return obj
+
+    # 初期集団
+    pop = np.array([[random.randint(0, m) for m in maxes]
+                     for _ in range(population_size)], dtype=float)
+    pop_obj = np.array([obj_fn(ind) for ind in pop])
+
+    for gen in range(max_iterations):
+        for i in range(population_size):
+            # 突然変異: DE/rand/1
+            candidates = [j for j in range(population_size) if j != i]
+            a, b, c = random.sample(candidates, 3)
+            mutant = pop[a] + F * (pop[b] - pop[c])
+
+            # 交叉
+            trial = np.copy(pop[i])
+            j_rand = random.randint(0, n - 1)
+            for j in range(n):
+                if random.random() < CR or j == j_rand:
+                    trial[j] = mutant[j]
+            # クランプ
+            trial = np.clip(np.round(trial), 0, [float(m) for m in maxes])
+
+            trial_obj = obj_fn(trial)
+            if trial_obj <= pop_obj[i]:
+                pop[i] = trial
+                pop_obj[i] = trial_obj
+
+        step = _make_step(gen, best_solution or {},
+                          best_result, action="eval",
+                          note=f"DE gen={gen} best={best_obj:.1f}")
+        history.append(step)
+        if progress_cb:
+            progress_cb(step)
+
+    final_q = best_solution or {k: max_quantities.get(k, 0) for k in floor_keys}
+    final_step = _make_step(max_iterations, final_q, best_result, action="final")
+    history.append(final_step)
+    if progress_cb:
+        progress_cb(final_step)
+
+    return MinimizationResult(
+        strategy="de",
+        initial_quantities={k: max_quantities.get(k, 0) for k in floor_keys},
+        final_quantities=final_q,
+        final_count=sum(final_q.values()),
+        is_feasible=best_result.is_feasible,
+        final_margin=best_result.worst_margin,
+        history=history,
+        evaluations=evaluations,
+    )
+
+
+# ---------------------------------------------------------------------------
+# 9. SQP法
+# ---------------------------------------------------------------------------
+
+
+def minimize_sqp(
+    floor_keys: List[str],
+    max_quantities: Dict[str, int],
+    evaluate_fn: EvaluateFn,
+    progress_cb: Optional[ProgressCb] = None,
+    penalty_weight: float = 1000.0,
+) -> MinimizationResult:
+    """SQP法 (SLSQP) — 連続緩和+整数丸め。"""
+    from scipy.optimize import minimize as sp_minimize
+
+    n = len(floor_keys)
+    maxes = [max_quantities.get(k, 10) for k in floor_keys]
+    history: List[MinimizationStep] = []
+    evaluations = 0
+    best_solution: Optional[Dict[str, int]] = None
+    best_obj = float("inf")
+    best_result = EvaluationResult()
+
+    def obj_fn(x):
+        nonlocal evaluations, best_solution, best_obj, best_result
+        q = {floor_keys[i]: max(0, min(maxes[i], int(round(x[i])))) for i in range(n)}
+        result = evaluate_fn(q)
+        evaluations += 1
+        total = sum(q.values())
+        penalty = 0.0 if result.is_feasible else penalty_weight * abs(result.worst_margin)
+        obj = total + penalty
+
+        step = _make_step(evaluations, q, result, action="eval")
+        history.append(step)
+        if progress_cb:
+            progress_cb(step)
+
+        if obj < best_obj:
+            best_obj = obj
+            best_solution = q
+            best_result = result
+        return obj
+
+    bounds = [(0, m) for m in maxes]
+    x0 = [m / 2.0 for m in maxes]
+
+    try:
+        sp_minimize(obj_fn, x0, method="SLSQP", bounds=bounds,
+                    options={"maxiter": 100, "ftol": 0.1})
+    except Exception as e:
+        logger.warning("SQP最適化でエラー: %s", e)
+
+    if best_solution is None:
+        best_solution = {k: max_quantities.get(k, 0) for k in floor_keys}
+        best_result = evaluate_fn(best_solution)
+        evaluations += 1
+
+    # 整数丸め後に最終検証
+    final_result = evaluate_fn(best_solution)
+    evaluations += 1
+    final_step = _make_step(evaluations, best_solution, final_result, action="final")
+    history.append(final_step)
+    if progress_cb:
+        progress_cb(final_step)
+
+    return MinimizationResult(
+        strategy="sqp",
+        initial_quantities={k: max_quantities.get(k, 0) for k in floor_keys},
+        final_quantities=best_solution,
+        final_count=sum(best_solution.values()),
+        is_feasible=final_result.is_feasible,
+        final_margin=final_result.worst_margin,
+        history=history,
+        evaluations=evaluations,
+    )
+
+
+# ---------------------------------------------------------------------------
+# 10. Nelder-Mead法
+# ---------------------------------------------------------------------------
+
+
+def minimize_nelder_mead(
+    floor_keys: List[str],
+    max_quantities: Dict[str, int],
+    evaluate_fn: EvaluateFn,
+    progress_cb: Optional[ProgressCb] = None,
+    penalty_weight: float = 1000.0,
+) -> MinimizationResult:
+    """Nelder-Mead法 — 微分不要シンプレックス、連続緩和+整数丸め。"""
+    from scipy.optimize import minimize as sp_minimize
+
+    n = len(floor_keys)
+    maxes = [max_quantities.get(k, 10) for k in floor_keys]
+    history: List[MinimizationStep] = []
+    evaluations = 0
+    best_solution: Optional[Dict[str, int]] = None
+    best_obj = float("inf")
+    best_result = EvaluationResult()
+
+    def obj_fn(x):
+        nonlocal evaluations, best_solution, best_obj, best_result
+        q = {floor_keys[i]: max(0, min(maxes[i], int(round(x[i])))) for i in range(n)}
+        result = evaluate_fn(q)
+        evaluations += 1
+        total = sum(q.values())
+        penalty = 0.0 if result.is_feasible else penalty_weight * abs(result.worst_margin)
+        obj = total + penalty
+
+        if evaluations % 5 == 0:
+            step = _make_step(evaluations, q, result, action="eval")
+            history.append(step)
+            if progress_cb:
+                progress_cb(step)
+
+        if obj < best_obj:
+            best_obj = obj
+            best_solution = q
+            best_result = result
+        return obj
+
+    x0 = [m / 2.0 for m in maxes]
+
+    try:
+        sp_minimize(obj_fn, x0, method="Nelder-Mead",
+                    options={"maxiter": 200, "xatol": 0.5, "fatol": 0.5})
+    except Exception as e:
+        logger.warning("Nelder-Mead最適化でエラー: %s", e)
+
+    if best_solution is None:
+        best_solution = {k: max_quantities.get(k, 0) for k in floor_keys}
+        best_result = evaluate_fn(best_solution)
+        evaluations += 1
+
+    final_result = evaluate_fn(best_solution)
+    evaluations += 1
+    final_step = _make_step(evaluations, best_solution, final_result, action="final")
+    history.append(final_step)
+    if progress_cb:
+        progress_cb(final_step)
+
+    return MinimizationResult(
+        strategy="nelder_mead",
+        initial_quantities={k: max_quantities.get(k, 0) for k in floor_keys},
+        final_quantities=best_solution,
+        final_count=sum(best_solution.values()),
+        is_feasible=final_result.is_feasible,
+        final_margin=final_result.worst_margin,
+        history=history,
+        evaluations=evaluations,
+    )
+
+
+# ---------------------------------------------------------------------------
+# 11. ベイズ最適化
+# ---------------------------------------------------------------------------
+
+
+def minimize_bayesian(
+    floor_keys: List[str],
+    max_quantities: Dict[str, int],
+    evaluate_fn: EvaluateFn,
+    progress_cb: Optional[ProgressCb] = None,
+    max_iterations: int = 50,
+    n_initial: int = 10,
+    penalty_weight: float = 1000.0,
+) -> MinimizationResult:
+    """ガウス過程回帰 + EI獲得関数。"""
+    from scipy.stats import norm
+
+    n = len(floor_keys)
+    maxes = [max_quantities.get(k, 10) for k in floor_keys]
+    history: List[MinimizationStep] = []
+    evaluations = 0
+    best_solution: Optional[Dict[str, int]] = None
+    best_obj = float("inf")
+    best_result = EvaluationResult()
+
+    X_observed: List[List[int]] = []
+    y_observed: List[float] = []
+
+    def eval_point(arr):
+        nonlocal evaluations, best_solution, best_obj, best_result
+        q = {floor_keys[i]: max(0, min(maxes[i], int(arr[i]))) for i in range(n)}
+        result = evaluate_fn(q)
+        evaluations += 1
+        total = sum(q.values())
+        penalty = 0.0 if result.is_feasible else penalty_weight * abs(result.worst_margin)
+        obj = total + penalty
+        X_observed.append([int(arr[i]) for i in range(n)])
+        y_observed.append(obj)
+        if obj < best_obj:
+            best_obj = obj
+            best_solution = q
+            best_result = result
+
+        step = _make_step(evaluations, q, result, action="eval",
+                          note=f"obj={obj:.1f}")
+        history.append(step)
+        if progress_cb:
+            progress_cb(step)
+        return obj
+
+    # ランダム初期サンプル
+    for _ in range(n_initial):
+        x = [random.randint(0, m) for m in maxes]
+        eval_point(x)
+
+    # ベイズ反復
+    for it in range(max_iterations - n_initial):
+        X = np.array(X_observed, dtype=float)
+        y = np.array(y_observed)
+
+        # 簡易GP: RBFカーネル + 予測
+        try:
+            from sklearn.gaussian_process import GaussianProcessRegressor
+            from sklearn.gaussian_process.kernels import Matern
+            gp = GaussianProcessRegressor(kernel=Matern(nu=2.5), n_restarts_optimizer=2)
+            gp.fit(X, y)
+
+            # EI獲得関数をランダム候補で評価
+            n_candidates = min(500, max(100, 10 ** n))
+            candidates = np.array([[random.randint(0, m) for m in maxes]
+                                   for _ in range(n_candidates)], dtype=float)
+            mu, sigma = gp.predict(candidates, return_std=True)
+            sigma = np.maximum(sigma, 1e-10)
+            best_y = min(y_observed)
+            z_val = (best_y - mu) / sigma
+            ei = (best_y - mu) * norm.cdf(z_val) + sigma * norm.pdf(z_val)
+            best_idx = np.argmax(ei)
+            next_x = candidates[best_idx].astype(int).tolist()
+        except Exception:
+            # sklearn未インストール時はランダム
+            next_x = [random.randint(0, m) for m in maxes]
+
+        eval_point(next_x)
+
+    if best_solution is None:
+        best_solution = {k: max_quantities.get(k, 0) for k in floor_keys}
+        best_result = evaluate_fn(best_solution)
+        evaluations += 1
+
+    final_step = _make_step(evaluations, best_solution, best_result, action="final")
+    history.append(final_step)
+    if progress_cb:
+        progress_cb(final_step)
+
+    return MinimizationResult(
+        strategy="bayesian",
+        initial_quantities={k: max_quantities.get(k, 0) for k in floor_keys},
+        final_quantities=best_solution,
+        final_count=sum(best_solution.values()),
+        is_feasible=best_result.is_feasible,
+        final_margin=best_result.worst_margin,
+        history=history,
+        evaluations=evaluations,
+    )
+
+
+# ---------------------------------------------------------------------------
+# 12. ランダムサーチ
+# ---------------------------------------------------------------------------
+
+
+def minimize_random(
+    floor_keys: List[str],
+    max_quantities: Dict[str, int],
+    evaluate_fn: EvaluateFn,
+    progress_cb: Optional[ProgressCb] = None,
+    max_iterations: int = 100,
+    penalty_weight: float = 1000.0,
+) -> MinimizationResult:
+    """ランダムサーチ（ベースライン）。"""
+    n = len(floor_keys)
+    maxes = [max_quantities.get(k, 10) for k in floor_keys]
+    history: List[MinimizationStep] = []
+    evaluations = 0
+    best_solution: Optional[Dict[str, int]] = None
+    best_obj = float("inf")
+    best_result = EvaluationResult()
+
+    for it in range(max_iterations):
+        arr = [random.randint(0, m) for m in maxes]
+        q = {floor_keys[i]: arr[i] for i in range(n)}
+        result = evaluate_fn(q)
+        evaluations += 1
+        total = sum(q.values())
+        penalty = 0.0 if result.is_feasible else penalty_weight * abs(result.worst_margin)
+        obj = total + penalty
+
+        if obj < best_obj:
+            best_obj = obj
+            best_solution = q
+            best_result = result
+
+        step = _make_step(it, q, result, action="eval",
+                          note=f"obj={obj:.1f}")
+        history.append(step)
+        if progress_cb:
+            progress_cb(step)
+
+    if best_solution is None:
+        best_solution = {k: 0 for k in floor_keys}
+        best_result = EvaluationResult()
+
+    final_step = _make_step(max_iterations, best_solution, best_result, action="final")
+    history.append(final_step)
+    if progress_cb:
+        progress_cb(final_step)
+
+    return MinimizationResult(
+        strategy="random",
+        initial_quantities={k: max_quantities.get(k, 0) for k in floor_keys},
+        final_quantities=best_solution,
+        final_count=sum(best_solution.values()),
+        is_feasible=best_result.is_feasible,
+        final_margin=best_result.worst_margin,
+        history=history,
         evaluations=evaluations,
     )
 
@@ -429,34 +1154,121 @@ def minimize_exhaustive(
 # ---------------------------------------------------------------------------
 
 
+# アルゴリズム定義
+STRATEGIES = {
+    "floor_add": "層別追加法",
+    "floor_remove": "層別削減法",
+    "binary_search": "一律二分探索",
+    "linear_search": "一律線形探索",
+    "ga": "遺伝的アルゴリズム (GA)",
+    "sa": "焼きなまし法 (SA)",
+    "pso": "粒子群最適化 (PSO)",
+    "de": "差分進化 (DE)",
+    "sqp": "SQP法",
+    "nelder_mead": "Nelder-Mead法",
+    "bayesian": "ベイズ最適化",
+    "random": "ランダムサーチ",
+}
+
+STRATEGY_CATEGORIES = {
+    "ドメイン特化": ["floor_add", "floor_remove", "binary_search", "linear_search"],
+    "メタヒューリスティクス": ["ga", "sa", "pso", "de"],
+    "数理最適化": ["sqp", "nelder_mead"],
+    "サンプリング": ["bayesian", "random"],
+}
+
+
 def minimize_damper_count(
-    num_positions: int,
+    floor_keys: List[str],
+    max_quantities: Dict[str, int],
     evaluate_fn: EvaluateFn,
-    strategy: str = "greedy_remove",
+    strategy: str = "floor_add",
+    initial_quantities: Optional[Dict[str, int]] = None,
+    progress_cb: Optional[ProgressCb] = None,
     **kwargs,
 ) -> MinimizationResult:
     """
     戦略を指定してダンパー本数最小化を実行するエントリーポイント。
 
-    strategy: "greedy_remove" | "greedy_add" | "exhaustive"
+    Parameters
+    ----------
+    floor_keys : List[str]
+        階のキーリスト (例: ["F1", "F2", "F3"])
+    max_quantities : Dict[str, int]
+        各階の最大ダンパー本数
+    evaluate_fn : EvaluateFn
+        評価関数: Dict[str, int] → EvaluationResult
+    strategy : str
+        アルゴリズム名 (STRATEGIES のキー)
+    initial_quantities : Optional[Dict[str, int]]
+        初期本数（floor_remove で使用）
+    progress_cb : Optional[ProgressCb]
+        進捗コールバック
     """
     strategy = strategy.lower()
-    if strategy == "greedy_remove":
-        return minimize_greedy_remove(num_positions, evaluate_fn, **kwargs)
-    elif strategy == "greedy_add":
-        return minimize_greedy_add(num_positions, evaluate_fn, **kwargs)
-    elif strategy == "exhaustive":
-        return minimize_exhaustive(num_positions, evaluate_fn, **kwargs)
+    max_q = max(max_quantities.values()) if max_quantities else 10
+
+    if strategy == "floor_add":
+        return minimize_floor_add(floor_keys, max_quantities, evaluate_fn,
+                                  progress_cb, **kwargs)
+    elif strategy == "floor_remove":
+        init_q = initial_quantities or max_quantities
+        return minimize_floor_remove(floor_keys, init_q, evaluate_fn,
+                                     progress_cb, **kwargs)
+    elif strategy == "binary_search":
+        return minimize_binary_search(floor_keys, max_q, evaluate_fn,
+                                      progress_cb)
+    elif strategy == "linear_search":
+        return minimize_linear_search(floor_keys, max_q, evaluate_fn,
+                                      progress_cb)
+    elif strategy == "ga":
+        return minimize_ga(floor_keys, max_quantities, evaluate_fn,
+                           progress_cb, **kwargs)
+    elif strategy == "sa":
+        return minimize_sa(floor_keys, max_quantities, evaluate_fn,
+                           progress_cb, **kwargs)
+    elif strategy == "pso":
+        return minimize_pso(floor_keys, max_quantities, evaluate_fn,
+                            progress_cb, **kwargs)
+    elif strategy == "de":
+        return minimize_de(floor_keys, max_quantities, evaluate_fn,
+                           progress_cb, **kwargs)
+    elif strategy == "sqp":
+        return minimize_sqp(floor_keys, max_quantities, evaluate_fn,
+                            progress_cb, **kwargs)
+    elif strategy == "nelder_mead":
+        return minimize_nelder_mead(floor_keys, max_quantities, evaluate_fn,
+                                    progress_cb, **kwargs)
+    elif strategy == "bayesian":
+        return minimize_bayesian(floor_keys, max_quantities, evaluate_fn,
+                                 progress_cb, **kwargs)
+    elif strategy == "random":
+        return minimize_random(floor_keys, max_quantities, evaluate_fn,
+                               progress_cb, **kwargs)
     else:
-        raise ValueError(f"unknown strategy: {strategy}")
+        raise ValueError(f"未知の戦略: {strategy}。有効な戦略: {list(STRATEGIES.keys())}")
 
 
 __all__ = [
-    "EvaluateFn",
+    "FloorResponse",
+    "EvaluationResult",
     "MinimizationStep",
     "MinimizationResult",
-    "minimize_greedy_remove",
-    "minimize_greedy_add",
-    "minimize_exhaustive",
+    "EvaluateFn",
+    "ProgressCb",
+    "STRATEGIES",
+    "STRATEGY_CATEGORIES",
     "minimize_damper_count",
+    "minimize_floor_add",
+    "minimize_floor_remove",
+    "minimize_binary_search",
+    "minimize_linear_search",
+    "minimize_ga",
+    "minimize_sa",
+    "minimize_pso",
+    "minimize_de",
+    "minimize_sqp",
+    "minimize_nelder_mead",
+    "minimize_bayesian",
+    "minimize_random",
 ]

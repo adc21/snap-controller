@@ -1,16 +1,19 @@
-"""ダンパー本数最小化ダイアログ。"""
+"""ダンパー本数最小化ダイアログ。
+
+.s8iファイルのダンパー本数(quantity)を自動的に変更しながら
+SNAPをループ実行し、性能基準を満たす最小本数を探索する。
+12種のアルゴリズムから選択可能。
+"""
 
 from __future__ import annotations
 
 import csv
-import io
 import logging
-from typing import Callable, List, Optional, Tuple, Dict
+from typing import Callable, Dict, List, Optional
 
 from PySide6.QtCore import Qt, QThread, Signal
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
-    QCheckBox,
     QComboBox,
     QDialog,
     QFileDialog,
@@ -21,8 +24,9 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QProgressBar,
     QPushButton,
-    QScrollArea,
+    QSpinBox,
     QSplitter,
+    QTabWidget,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
@@ -32,74 +36,77 @@ from PySide6.QtWidgets import (
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
 
-logger = logging.getLogger(__name__)
-
 from app.services.damper_count_minimizer import (
     EvaluateFn,
+    EvaluationResult,
     MinimizationResult,
     MinimizationStep,
+    STRATEGIES,
+    STRATEGY_CATEGORIES,
     minimize_damper_count,
 )
+
+logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# ワーカースレッド
+# ---------------------------------------------------------------------------
 
 
 class _MinimizerWorker(QThread):
     """バックグラウンドで最小化を実行するワーカースレッド。"""
 
-    stepCompleted = Signal(object)
-    finished_ = Signal(object)
+    stepCompleted = Signal(object)  # MinimizationStep
+    finished_ = Signal(object)     # MinimizationResult
     errorOccurred = Signal(str)
 
     def __init__(
         self,
-        num_positions: int,
+        floor_keys: List[str],
+        max_quantities: Dict[str, int],
+        initial_quantities: Dict[str, int],
         evaluate_fn: EvaluateFn,
         strategy: str,
-        candidate_mask: List[bool],
-        required_indices: List[int],
+        max_iterations: int = 200,
         parent: Optional[QThread] = None,
     ) -> None:
         super().__init__(parent)
-        self._num_positions = num_positions
+        self._floor_keys = floor_keys
+        self._max_quantities = max_quantities
+        self._initial_quantities = initial_quantities
         self._evaluate_fn = evaluate_fn
         self._strategy = strategy
-        self._candidate_mask = candidate_mask
-        self._required_indices = required_indices
-
-    def _expand(self, active_pl: List[bool], active_indices: List[int]) -> List[bool]:
-        full = [False] * self._num_positions
-        for idx, ai in enumerate(active_indices):
-            full[ai] = active_pl[idx]
-        return full
+        self._max_iterations = max_iterations
 
     def run(self) -> None:
         try:
-            ai = [i for i, c in enumerate(self._candidate_mask) if c]
-            n_active = len(ai)
-            active_req = [ai.index(r) for r in self._required_indices if r in ai]
-
-            def wrapped_eval(pl: List[bool]) -> Tuple[Dict[str, float], bool, float]:
-                return self._evaluate_fn(self._expand(pl, ai))
-
-            def _on_step(step: MinimizationStep) -> None:
-                step.placement = self._expand(step.placement, ai)
-                self.stepCompleted.emit(step)
-
-            kwargs: dict = {"required_positions": active_req}
-            if self._strategy != "exhaustive":
-                kwargs["progress_cb"] = _on_step
+            kwargs: dict = {}
+            if self._strategy in ("ga", "sa", "pso", "de", "random"):
+                kwargs["max_iterations"] = self._max_iterations
+            if self._strategy in ("ga", "pso", "de"):
+                kwargs["population_size"] = min(30, max(10, self._max_iterations // 3))
+            if self._strategy == "bayesian":
+                kwargs["max_iterations"] = self._max_iterations
+                kwargs["n_initial"] = min(10, self._max_iterations // 3)
 
             result = minimize_damper_count(
-                num_positions=n_active, evaluate_fn=wrapped_eval,
-                strategy=self._strategy, **kwargs,
+                floor_keys=self._floor_keys,
+                max_quantities=self._max_quantities,
+                evaluate_fn=self._evaluate_fn,
+                strategy=self._strategy,
+                initial_quantities=self._initial_quantities,
+                progress_cb=lambda step: self.stepCompleted.emit(step),
+                **kwargs,
             )
-            result.initial_placement = self._expand(result.initial_placement, ai)
-            result.final_placement = self._expand(result.final_placement, ai)
-            for step in result.history:
-                if len(step.placement) == n_active:
-                    step.placement = self._expand(step.placement, ai)
             self.finished_.emit(result)
         except Exception as exc:
             self.errorOccurred.emit(str(exc))
+
+
+# ---------------------------------------------------------------------------
+# メインダイアログ
+# ---------------------------------------------------------------------------
 
 
 class MinimizerDialog(QDialog):
@@ -109,87 +116,86 @@ class MinimizerDialog(QDialog):
 
     def __init__(
         self,
-        n_positions: int,
-        position_labels: List[str],
+        floor_keys: List[str],
+        current_quantities: Dict[str, int],
+        max_quantities: Dict[str, int],
         evaluate_fn: Optional[EvaluateFn] = None,
         parent: Optional[QWidget] = None,
     ) -> None:
         super().__init__(parent)
-        self._n_positions = n_positions
-        self._position_labels = position_labels
+        self._floor_keys = floor_keys
+        self._current_quantities = current_quantities
+        self._max_quantities = max_quantities
         self._evaluate_fn = evaluate_fn
         self._is_snap = evaluate_fn is not None
         self._worker: Optional[_MinimizerWorker] = None
         self._result: Optional[MinimizationResult] = None
 
+        # リアルタイムプロット用データ
+        self._plot_counts: List[int] = []
+        self._plot_margins: List[float] = []
+        self._plot_feasible: List[bool] = []
+        self._plot_summaries: List[Dict[str, float]] = []
+
         self.setWindowTitle("ダンパー本数最小化")
-        self.setMinimumSize(720, 580)
+        self.setMinimumSize(900, 650)
         self._build_ui()
 
     def _build_ui(self) -> None:
         root = QVBoxLayout(self)
 
-        # --- 配置候補リスト ---
-        cand_group = QGroupBox("配置候補リスト")
-        cand_layout = QVBoxLayout(cand_group)
+        # === 上部: 設定パネル ===
+        settings_layout = QHBoxLayout()
 
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll_widget = QWidget()
-        scroll_layout = QVBoxLayout(scroll_widget)
-        scroll_layout.setContentsMargins(4, 4, 4, 4)
+        # 左: 階別現在本数テーブル
+        floor_group = QGroupBox("ダンパー配置（.s8iから読取）")
+        floor_layout = QVBoxLayout(floor_group)
+        self._floor_table = QTableWidget()
+        self._floor_table.setColumnCount(3)
+        self._floor_table.setHorizontalHeaderLabels(["階", "現在本数", "上限"])
+        self._floor_table.setRowCount(len(self._floor_keys))
+        self._floor_table.horizontalHeader().setStretchLastSection(True)
+        self._floor_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self._floor_table.setMaximumHeight(180)
 
-        header = QHBoxLayout()
-        header.addWidget(QLabel("候補"), stretch=1)
-        header.addWidget(QLabel("必須"), stretch=1)
-        header.addWidget(QLabel("位置名"), stretch=3)
-        scroll_layout.addLayout(header)
+        for i, fk in enumerate(self._floor_keys):
+            self._floor_table.setItem(i, 0, QTableWidgetItem(fk))
+            qty = self._current_quantities.get(fk, 0)
+            self._floor_table.setItem(i, 1, QTableWidgetItem(str(qty)))
+            max_q = self._max_quantities.get(fk, qty)
+            self._floor_table.setItem(i, 2, QTableWidgetItem(str(max_q)))
 
-        self._cb_candidate: List[QCheckBox] = []
-        self._cb_required: List[QCheckBox] = []
+        floor_layout.addWidget(self._floor_table)
+        total_label = QLabel(
+            f"合計: {sum(self._current_quantities.values())}本  "
+            f"（{len(self._floor_keys)}階）"
+        )
+        total_label.setStyleSheet("font-weight: bold;")
+        floor_layout.addWidget(total_label)
+        settings_layout.addWidget(floor_group, stretch=1)
 
-        for i in range(self._n_positions):
-            row = QHBoxLayout()
-            cb_cand = QCheckBox()
-            cb_cand.setChecked(True)
-            cb_req = QCheckBox()
-            cb_req.setChecked(False)
-            label = QLabel(self._position_labels[i] if i < len(self._position_labels) else f"位置{i}")
-            row.addWidget(cb_cand, stretch=1)
-            row.addWidget(cb_req, stretch=1)
-            row.addWidget(label, stretch=3)
-            scroll_layout.addLayout(row)
-            self._cb_candidate.append(cb_cand)
-            self._cb_required.append(cb_req)
+        # 右: アルゴリズム選択 + パラメータ
+        algo_group = QGroupBox("探索設定")
+        algo_layout = QVBoxLayout(algo_group)
 
-        scroll_layout.addStretch()
-        scroll.setWidget(scroll_widget)
-        scroll.setMaximumHeight(200)
-        cand_layout.addWidget(scroll)
-
-        # 全選択/全解除ボタン
-        btn_row = QHBoxLayout()
-        btn_all = QPushButton("全選択")
-        btn_none = QPushButton("全解除")
-        btn_all.clicked.connect(lambda: self._set_all_candidates(True))
-        btn_none.clicked.connect(lambda: self._set_all_candidates(False))
-        btn_row.addWidget(btn_all)
-        btn_row.addWidget(btn_none)
-        btn_row.addStretch()
-        cand_layout.addLayout(btn_row)
-
-        root.addWidget(cand_group)
-
-        # 戦略選択
-        strat_group = QGroupBox("戦略選択")
-        strat_layout = QHBoxLayout(strat_group)
-        strat_layout.addWidget(QLabel("探索戦略:"))
+        # アルゴリズム選択
+        algo_layout.addWidget(QLabel("探索戦略:"))
         self._combo_strategy = QComboBox()
-        self._combo_strategy.addItem("greedy_remove (推奨)", "greedy_remove")
-        self._combo_strategy.addItem("greedy_add", "greedy_add")
-        self._combo_strategy.addItem("exhaustive (小規模向け)", "exhaustive")
-        strat_layout.addWidget(self._combo_strategy, stretch=1)
-        root.addWidget(strat_group)
+        for cat_name, cat_keys in STRATEGY_CATEGORIES.items():
+            for key in cat_keys:
+                label = STRATEGIES[key]
+                self._combo_strategy.addItem(f"[{cat_name}] {label}", key)
+        self._combo_strategy.setCurrentIndex(0)
+        algo_layout.addWidget(self._combo_strategy)
+
+        # 反復回数
+        iter_layout = QHBoxLayout()
+        iter_layout.addWidget(QLabel("最大反復数:"))
+        self._iter_spin = QSpinBox()
+        self._iter_spin.setRange(10, 5000)
+        self._iter_spin.setValue(100)
+        iter_layout.addWidget(self._iter_spin)
+        algo_layout.addLayout(iter_layout)
 
         # 評価方式表示
         eval_layout = QHBoxLayout()
@@ -199,12 +205,16 @@ class MinimizerDialog(QDialog):
             self._lbl_eval_mode.setText("SNAP実解析")
             self._lbl_eval_mode.setStyleSheet("color: #4caf50; font-weight: bold;")
         else:
-            self._lbl_eval_mode.setText("未接続（評価関数を設定してください）")
+            self._lbl_eval_mode.setText("未接続")
             self._lbl_eval_mode.setStyleSheet("color: #f44336; font-weight: bold;")
-        eval_layout.addWidget(self._lbl_eval_mode, stretch=1)
-        root.addLayout(eval_layout)
+        eval_layout.addWidget(self._lbl_eval_mode)
+        algo_layout.addLayout(eval_layout)
 
-        # 実行 + プログレス
+        algo_layout.addStretch()
+        settings_layout.addWidget(algo_group, stretch=1)
+        root.addLayout(settings_layout)
+
+        # === 実行ボタン + プログレス ===
         exec_layout = QHBoxLayout()
         self._btn_run = QPushButton("実行")
         self._btn_run.setFont(QFont("", -1, QFont.Weight.Bold))
@@ -212,7 +222,7 @@ class MinimizerDialog(QDialog):
         exec_layout.addWidget(self._btn_run)
 
         self._progress = QProgressBar()
-        self._progress.setRange(0, 0)  # indeterminate
+        self._progress.setRange(0, 0)
         self._progress.setVisible(False)
         exec_layout.addWidget(self._progress, stretch=1)
 
@@ -220,38 +230,42 @@ class MinimizerDialog(QDialog):
         exec_layout.addWidget(self._lbl_status)
         root.addLayout(exec_layout)
 
-        # 結果表示 (スプリッター: 左=テーブル, 右=チャート)
+        # === 結果エリア（タブ: チャート / テーブル） ===
         result_group = QGroupBox("結果")
         result_layout = QVBoxLayout(result_group)
+
         self._lbl_summary = QLabel("")
         self._lbl_summary.setWordWrap(True)
         result_layout.addWidget(self._lbl_summary)
 
-        splitter = QSplitter(Qt.Orientation.Horizontal)
+        self._tabs = QTabWidget()
 
+        # タブ1: リアルタイムチャート
+        chart_widget = QWidget()
+        chart_layout = QVBoxLayout(chart_widget)
+        self._fig = Figure(figsize=(8, 4))
+        self._canvas = FigureCanvas(self._fig)
+        chart_layout.addWidget(self._canvas)
+        self._tabs.addTab(chart_widget, "本数 vs 応答")
+
+        # タブ2: 層別応答チャート
+        floor_chart_widget = QWidget()
+        floor_chart_layout = QVBoxLayout(floor_chart_widget)
+        self._fig_floor = Figure(figsize=(8, 4))
+        self._canvas_floor = FigureCanvas(self._fig_floor)
+        floor_chart_layout.addWidget(self._canvas_floor)
+        self._tabs.addTab(floor_chart_widget, "層別応答")
+
+        # タブ3: 結果テーブル
         self._table = QTableWidget()
-        self._table.setColumnCount(3)
-        self._table.setHorizontalHeaderLabels(["位置名", "配置", "必須"])
-        self._table.horizontalHeader().setStretchLastSection(True)
-        self._table.horizontalHeader().setSectionResizeMode(
-            0, QHeaderView.ResizeMode.Stretch
-        )
         self._table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self._table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
-        splitter.addWidget(self._table)
+        self._tabs.addTab(self._table, "最終配置")
 
-        # ステップ履歴チャート
-        self._fig = Figure(figsize=(4, 3))
-        self._canvas = FigureCanvas(self._fig)
-        self._canvas.setMinimumWidth(280)
-        splitter.addWidget(self._canvas)
-        splitter.setStretchFactor(0, 1)
-        splitter.setStretchFactor(1, 1)
-
-        result_layout.addWidget(splitter)
+        result_layout.addWidget(self._tabs)
         root.addWidget(result_group, stretch=1)
 
-        # ボタン行
+        # === ボタン行 ===
         bottom = QHBoxLayout()
         self._btn_csv = QPushButton("CSV出力")
         self._btn_csv.setEnabled(False)
@@ -267,42 +281,20 @@ class MinimizerDialog(QDialog):
         bottom.addWidget(self._btn_close)
         root.addLayout(bottom)
 
-    def _set_all_candidates(self, checked: bool) -> None:
-        for cb in self._cb_candidate:
-            cb.setChecked(checked)
+    # -------------------------------------------------------------------
+    # 実行
+    # -------------------------------------------------------------------
 
     def _on_run(self) -> None:
         if self._evaluate_fn is None:
             QMessageBox.warning(
-                self,
-                "評価関数未接続",
+                self, "評価関数未接続",
                 "評価関数が接続されていません。\n"
                 "解析ケースを設定してから実行してください。",
             )
             return
 
-        candidate_mask = [cb.isChecked() for cb in self._cb_candidate]
-        if not any(candidate_mask):
-            QMessageBox.warning(self, "候補なし", "候補位置を1つ以上選択してください。")
-            return
-
-        required_indices = [
-            i
-            for i in range(self._n_positions)
-            if self._cb_required[i].isChecked() and candidate_mask[i]
-        ]
-
         strategy = self._combo_strategy.currentData()
-
-        # exhaustive のサイズチェック
-        n_active = sum(candidate_mask)
-        if strategy == "exhaustive" and n_active > 12:
-            QMessageBox.warning(
-                self,
-                "候補数超過",
-                f"exhaustive 戦略は候補数12以下で使用してください（現在 {n_active}）。",
-            )
-            return
 
         self._btn_run.setEnabled(False)
         self._progress.setVisible(True)
@@ -310,12 +302,23 @@ class MinimizerDialog(QDialog):
         self._lbl_summary.setText("")
         self._table.setRowCount(0)
 
+        # プロットデータリセット
+        self._plot_counts.clear()
+        self._plot_margins.clear()
+        self._plot_feasible.clear()
+        self._plot_summaries.clear()
+        self._fig.clear()
+        self._fig_floor.clear()
+        self._canvas.draw()
+        self._canvas_floor.draw()
+
         self._worker = _MinimizerWorker(
-            num_positions=self._n_positions,
+            floor_keys=self._floor_keys,
+            max_quantities=self._max_quantities,
+            initial_quantities=self._current_quantities,
             evaluate_fn=self._evaluate_fn,
             strategy=strategy,
-            candidate_mask=candidate_mask,
-            required_indices=required_indices,
+            max_iterations=self._iter_spin.value(),
             parent=self,
         )
         self._worker.stepCompleted.connect(self._on_step)
@@ -324,110 +327,178 @@ class MinimizerDialog(QDialog):
         self._worker.start()
 
     def _on_step(self, step: MinimizationStep) -> None:
-        count = step.count
-        action = step.action
-        feasible = "OK" if step.is_feasible else "NG"
-        margin = f"{step.margin:+.4f}"
+        """各ステップのリアルタイム更新。"""
+        feasible_text = "OK" if step.is_feasible else "NG"
         self._lbl_status.setText(
-            f"[{action}] 本数={count}  基準={feasible}  余裕={margin}"
+            f"[{step.action}] 合計={step.total_count}本  "
+            f"基準={feasible_text}  マージン={step.worst_margin:+.4f}"
         )
+
+        # プロットデータ蓄積
+        self._plot_counts.append(step.total_count)
+        self._plot_margins.append(step.worst_margin)
+        self._plot_feasible.append(step.is_feasible)
+        self._plot_summaries.append(dict(step.summary))
+
+        # リアルタイムチャート更新（10ステップごと or 少ないデータ）
+        if len(self._plot_counts) <= 20 or len(self._plot_counts) % 5 == 0:
+            self._update_realtime_chart()
 
     def _on_finished(self, result: MinimizationResult) -> None:
         self._result = result
         self._progress.setVisible(False)
         self._btn_run.setEnabled(True)
+        self._btn_csv.setEnabled(True)
+        self._btn_copy.setEnabled(True)
 
         feasible_text = "OK" if result.is_feasible else "NG"
         eval_tag = "[SNAP]" if self._is_snap else "[モック]"
         self._lbl_status.setText("完了")
         self._lbl_summary.setText(
-            f"{eval_tag} 戦略: {result.strategy}　|　"
-            f"最終本数: {result.final_count}　|　"
-            f"基準充足: {feasible_text}　|　"
-            f"マージン: {result.final_margin:+.4f}　|　"
+            f"{eval_tag} 戦略: {STRATEGIES.get(result.strategy, result.strategy)}  |  "
+            f"最終合計: {result.final_count}本  |  "
+            f"基準充足: {feasible_text}  |  "
+            f"マージン: {result.final_margin:+.4f}  |  "
             f"評価回数: {result.evaluations}"
         )
 
-        # テーブル更新
-        self._table.setRowCount(self._n_positions)
-        required_set = {
-            i
-            for i in range(self._n_positions)
-            if self._cb_required[i].isChecked()
-        }
-        for i in range(self._n_positions):
-            label = (
-                self._position_labels[i]
-                if i < len(self._position_labels)
-                else f"位置{i}"
-            )
-            placed = result.final_placement[i]
-
-            item_name = QTableWidgetItem(label)
-            item_placed = QTableWidgetItem("\u2713" if placed else "\u2717")
-            item_placed.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-            item_req = QTableWidgetItem(
-                "\u2713" if (placed and i in required_set) else ""
-            )
-            item_req.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-
-            self._table.setItem(i, 0, item_name)
-            self._table.setItem(i, 1, item_placed)
-            self._table.setItem(i, 2, item_req)
-
-        self._btn_csv.setEnabled(True)
-        self._btn_copy.setEnabled(True)
-        self._draw_history_chart(result)
+        # 最終チャート更新
+        self._update_realtime_chart()
+        self._update_floor_chart(result)
+        self._populate_result_table(result)
 
         self.minimizationCompleted.emit(result)
         self._worker = None
 
-    def _draw_history_chart(self, result: MinimizationResult) -> None:
-        """ステップ履歴チャート: 本数推移 + マージン推移の2段表示。"""
+    def _on_error(self, msg: str) -> None:
+        self._progress.setVisible(False)
+        self._btn_run.setEnabled(True)
+        self._lbl_status.setText("エラー")
+        QMessageBox.critical(self, "実行エラー", msg)
+        self._worker = None
+
+    # -------------------------------------------------------------------
+    # チャート描画
+    # -------------------------------------------------------------------
+
+    def _update_realtime_chart(self) -> None:
+        """本数 vs マージンのリアルタイムチャート。"""
         self._fig.clear()
-        history = result.history
-        if not history:
-            self._canvas.draw()
+        if not self._plot_counts:
+            self._canvas.draw_idle()
             return
 
-        iterations = [s.iteration for s in history]
-        counts = [s.count for s in history]
-        margins = [s.margin for s in history]
-        feasibles = [s.is_feasible for s in history]
-
         try:
-            ax1, ax2 = self._fig.subplots(2, 1, sharex=True)
+            ax1, ax2 = self._fig.subplots(1, 2)
 
-            # 上段: ダンパー本数推移
-            ax1.step(iterations, counts, where="post", color="#1976d2", linewidth=2)
-            for it, c, f in zip(iterations, counts, feasibles):
+            # 左: 合計本数 vs 評価番号
+            iters = list(range(len(self._plot_counts)))
+            ax1.plot(iters, self._plot_counts, "-", color="#1976d2", linewidth=1.5)
+            for i, (it, c, f) in enumerate(zip(iters, self._plot_counts, self._plot_feasible)):
                 color = "#4caf50" if f else "#f44336"
-                ax1.plot(it, c, "o", color=color, markersize=6)
-            ax1.set_ylabel("本数")
-            ax1.set_title("ステップ履歴", fontsize=10)
+                marker = "o" if f else "x"
+                ax1.plot(it, c, marker, color=color, markersize=4)
+            ax1.set_xlabel("評価番号")
+            ax1.set_ylabel("合計本数")
+            ax1.set_title("本数推移", fontsize=10)
             ax1.grid(True, alpha=0.3)
-            ax1.yaxis.set_major_locator(
-                __import__("matplotlib.ticker", fromlist=["MaxNLocator"]).MaxNLocator(integer=True)
-            )
 
-            # 下段: マージン推移
-            ax2.plot(iterations, margins, "s-", color="#ff9800", linewidth=1.5, markersize=5)
+            # 右: マージン推移
+            ax2.plot(iters, self._plot_margins, "s-", color="#ff9800",
+                     linewidth=1.2, markersize=3)
             ax2.axhline(0, color="#888", linestyle="--", linewidth=0.8)
-            ax2.fill_between(iterations, margins, 0, alpha=0.15,
-                             where=[m >= 0 for m in margins], color="#4caf50")
-            ax2.fill_between(iterations, margins, 0, alpha=0.15,
-                             where=[m < 0 for m in margins], color="#f44336")
-            ax2.set_xlabel("ステップ")
+            ax2.fill_between(iters, self._plot_margins, 0, alpha=0.1,
+                             where=[m >= 0 for m in self._plot_margins], color="#4caf50")
+            ax2.fill_between(iters, self._plot_margins, 0, alpha=0.1,
+                             where=[m < 0 for m in self._plot_margins], color="#f44336")
+            ax2.set_xlabel("評価番号")
             ax2.set_ylabel("マージン")
+            ax2.set_title("マージン推移", fontsize=10)
             ax2.grid(True, alpha=0.3)
 
             self._fig.tight_layout()
         except Exception:
-            logger.warning("ステップ履歴チャートの描画に失敗", exc_info=True)
-        self._canvas.draw()
+            logger.warning("リアルタイムチャートの描画に失敗", exc_info=True)
+        self._canvas.draw_idle()
+
+    def _update_floor_chart(self, result: MinimizationResult) -> None:
+        """層別応答チャート（最終結果）。"""
+        self._fig_floor.clear()
+        if not result.history:
+            self._canvas_floor.draw()
+            return
+
+        # 最終ステップの応答値を取得
+        final_step = result.history[-1]
+        if not final_step.summary:
+            self._canvas_floor.draw()
+            return
+
+        try:
+            ax = self._fig_floor.add_subplot(111)
+
+            # 各階の本数を棒グラフ
+            floors = list(result.final_quantities.keys())
+            counts = [result.final_quantities.get(f, 0) for f in floors]
+            colors = ["#1976d2" if c > 0 else "#ccc" for c in counts]
+
+            x = range(len(floors))
+            ax.bar(x, counts, color=colors, edgecolor="#333", linewidth=0.5)
+            ax.set_xticks(list(x))
+            ax.set_xticklabels(floors, fontsize=8)
+            ax.set_ylabel("ダンパー本数")
+            ax.set_title("最終配置（階別）", fontsize=10)
+            ax.grid(True, alpha=0.3, axis="y")
+
+            from matplotlib.ticker import MaxNLocator
+            ax.yaxis.set_major_locator(MaxNLocator(integer=True))
+
+            self._fig_floor.tight_layout()
+        except Exception:
+            logger.warning("層別チャートの描画に失敗", exc_info=True)
+        self._canvas_floor.draw()
+
+    def _populate_result_table(self, result: MinimizationResult) -> None:
+        """結果テーブル: 各階の本数 + 変化量。"""
+        floors = sorted(result.final_quantities.keys(),
+                        key=lambda k: int("".join(c for c in k if c.isdigit()) or "0"))
+
+        self._table.setColumnCount(4)
+        self._table.setHorizontalHeaderLabels(["階", "最終本数", "初期本数", "変化"])
+        self._table.setRowCount(len(floors))
+        self._table.horizontalHeader().setStretchLastSection(True)
+
+        for i, fk in enumerate(floors):
+            final = result.final_quantities.get(fk, 0)
+            initial = result.initial_quantities.get(fk, 0)
+            diff = final - initial
+
+            self._table.setItem(i, 0, QTableWidgetItem(fk))
+            self._table.setItem(i, 1, QTableWidgetItem(str(final)))
+            self._table.setItem(i, 2, QTableWidgetItem(str(initial)))
+
+            diff_item = QTableWidgetItem(f"{diff:+d}" if diff != 0 else "0")
+            diff_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            self._table.setItem(i, 3, diff_item)
+
+        # 合計行
+        row = len(floors)
+        self._table.setRowCount(row + 1)
+        total_item = QTableWidgetItem("合計")
+        total_item.setFont(QFont("", -1, QFont.Weight.Bold))
+        self._table.setItem(row, 0, total_item)
+        self._table.setItem(row, 1, QTableWidgetItem(
+            str(sum(result.final_quantities.values()))))
+        self._table.setItem(row, 2, QTableWidgetItem(
+            str(sum(result.initial_quantities.values()))))
+        diff_total = sum(result.final_quantities.values()) - sum(result.initial_quantities.values())
+        self._table.setItem(row, 3, QTableWidgetItem(f"{diff_total:+d}"))
+
+    # -------------------------------------------------------------------
+    # エクスポート
+    # -------------------------------------------------------------------
 
     def _export_csv(self) -> None:
-        """最小化結果をCSV出力。"""
         if self._result is None:
             return
         path, _ = QFileDialog.getSaveFileName(
@@ -439,72 +510,43 @@ class MinimizerDialog(QDialog):
         try:
             with open(path, "w", newline="", encoding="utf-8-sig") as f:
                 writer = csv.writer(f)
-                # メタデータ
                 eval_tag = "SNAP" if self._is_snap else "モック"
                 writer.writerow([f"# ダンパー本数最小化結果 (評価: {eval_tag})"])
-                writer.writerow([f"# 戦略: {self._result.strategy}"])
-                writer.writerow([f"# 最終本数: {self._result.final_count}"])
+                writer.writerow([f"# 戦略: {STRATEGIES.get(self._result.strategy, self._result.strategy)}"])
+                writer.writerow([f"# 最終合計: {self._result.final_count}本"])
                 writer.writerow([f"# マージン: {self._result.final_margin:+.4f}"])
                 writer.writerow([f"# 評価回数: {self._result.evaluations}"])
                 writer.writerow([])
 
-                # 最終配置テーブル
-                writer.writerow(["位置名", "配置", "必須"])
-                required_set = {
-                    i for i in range(self._n_positions)
-                    if self._cb_required[i].isChecked()
-                }
-                for i in range(self._n_positions):
-                    label = (
-                        self._position_labels[i]
-                        if i < len(self._position_labels)
-                        else f"位置{i}"
-                    )
-                    placed = self._result.final_placement[i] if i < len(self._result.final_placement) else False
-                    writer.writerow([
-                        label,
-                        "設置" if placed else "撤去",
-                        "必須" if i in required_set and placed else "",
-                    ])
+                # 最終配置
+                writer.writerow(["階", "最終本数", "初期本数", "変化"])
+                for fk in sorted(self._result.final_quantities.keys(),
+                                 key=lambda k: int("".join(c for c in k if c.isdigit()) or "0")):
+                    final = self._result.final_quantities.get(fk, 0)
+                    initial = self._result.initial_quantities.get(fk, 0)
+                    writer.writerow([fk, final, initial, final - initial])
 
                 # ステップ履歴
                 if self._result.history:
                     writer.writerow([])
                     writer.writerow(["# ステップ履歴"])
-                    writer.writerow(["ステップ", "操作", "位置", "本数", "判定", "マージン", "備考"])
+                    writer.writerow(["ステップ", "操作", "合計本数", "判定", "マージン", "備考"])
                     for step in self._result.history:
-                        pos_label = ""
-                        if step.position_index is not None and step.position_index < len(self._position_labels):
-                            pos_label = self._position_labels[step.position_index]
                         writer.writerow([
-                            step.iteration,
-                            step.action,
-                            pos_label,
-                            step.count,
+                            step.iteration, step.action, step.total_count,
                             "OK" if step.is_feasible else "NG",
-                            f"{step.margin:+.4f}",
-                            step.note,
+                            f"{step.worst_margin:+.4f}", step.note,
                         ])
             QMessageBox.information(self, "CSV出力", f"保存しました:\n{path}")
         except Exception as exc:
             QMessageBox.critical(self, "CSV出力エラー", str(exc))
 
     def _copy_result(self) -> None:
-        """結果サマリーをクリップボードにコピー。"""
         if self._result is None:
             return
         from PySide6.QtWidgets import QApplication
-        text = self._result.summary_text()
-        QApplication.clipboard().setText(text)
+        QApplication.clipboard().setText(self._result.summary_text())
         self._lbl_status.setText("クリップボードにコピーしました")
 
-    def _on_error(self, msg: str) -> None:
-        self._progress.setVisible(False)
-        self._btn_run.setEnabled(True)
-        self._lbl_status.setText("エラー")
-        QMessageBox.critical(self, "実行エラー", msg)
-        self._worker = None
-
     def result(self) -> Optional[MinimizationResult]:
-        """最後の実行結果を返す。未実行なら None。"""
         return self._result

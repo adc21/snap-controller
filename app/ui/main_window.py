@@ -2570,48 +2570,64 @@ class MainWindow(QMainWindow):
         """ダンパー本数最小化ダイアログを開きます。"""
         if self._project is None:
             return
-        # ダンパー配置候補の位置ラベルを取得
-        n_positions = 10  # デフォルト
-        position_labels = [f"{i+1}F" for i in range(n_positions)]
 
-        # プロジェクトのモデルから層数を取得
-        if hasattr(self._project, "model") and self._project.model:
-            model = self._project.model
-            if hasattr(model, "num_floors") and model.num_floors > 0:
-                n_positions = model.num_floors
-                position_labels = [f"{i+1}F" for i in range(n_positions)]
-
-        # SnapEvaluator ベースの evaluate_fn を構築
-        evaluate_fn = None
+        # 選択中のケースから .s8i パスを取得
         base_case = None
         case_id = self._case_table.selected_case_id()
         if case_id:
             base_case = self._project.get_case(case_id)
 
-        if base_case and self._project.snap_exe_path and self._project.criteria:
+        model_path = (base_case.model_path or "") if base_case else ""
+        if not model_path:
+            QMessageBox.warning(
+                self, "モデル未選択",
+                "解析ケースを選択してからダンパー本数最小化を実行してください。",
+            )
+            return
+
+        # .s8i からフロア→RD要素マッピングを構築
+        from app.services.snap_evaluator import build_floor_rd_map
+        try:
+            floor_rd_map, current_quantities, floor_keys = build_floor_rd_map(model_path)
+        except Exception as e:
+            QMessageBox.critical(
+                self, "モデル読み込みエラー",
+                f".s8i ファイルの読み込みに失敗しました:\n{e}",
+            )
+            return
+
+        if not floor_keys:
+            QMessageBox.warning(
+                self, "ダンパーなし",
+                "選択したモデルにダンパー要素（RD行）がありません。",
+            )
+            return
+
+        # 最大本数 = 現在の本数 * 2（余裕を持たせる）
+        max_quantities = {k: max(v * 2, 10) for k, v in current_quantities.items()}
+
+        # SnapEvaluator ベースの evaluate_fn を構築
+        evaluate_fn = None
+        if self._project.snap_exe_path and self._project.criteria:
             from app.services.snap_evaluator import create_minimizer_evaluate_fn
-
-            model_path = base_case.model_path or ""
-            damper_def = ""
-            if base_case.damper_params:
-                damper_def = next(iter(base_case.damper_params), "")
-
             evaluate_fn = create_minimizer_evaluate_fn(
                 snap_exe_path=self._project.snap_exe_path,
                 base_s8i_path=model_path,
-                damper_def_name=damper_def,
                 criteria=self._project.criteria,
+                floor_rd_map=floor_rd_map,
                 log_callback=lambda msg: self._log.append_line(msg),
                 snap_work_dir=self._project.snap_work_dir,
             )
             if evaluate_fn:
                 self._log.append_line(
-                    "[INFO] SNAP実評価関数でダンパー本数最小化を実行します。"
+                    f"[INFO] SNAP実評価関数でダンパー本数最小化を実行します。"
+                    f"（{len(floor_keys)}階, 合計{sum(current_quantities.values())}本）"
                 )
 
         dlg = MinimizerDialog(
-            n_positions=n_positions,
-            position_labels=position_labels,
+            floor_keys=floor_keys,
+            current_quantities=current_quantities,
+            max_quantities=max_quantities,
             evaluate_fn=evaluate_fn,
             parent=self,
         )
@@ -2620,9 +2636,8 @@ class MainWindow(QMainWindow):
 
     def _on_minimizer_completed(self, result) -> None:
         """ダンパー本数最小化結果を受け取ります。"""
-        placed = sum(1 for p in result.final_placement if p)
         self._log.append_line(
-            f"=== ダンパー最小化完了: {placed}/{len(result.final_placement)}本配置, "
+            f"=== ダンパー最小化完了: 合計{result.final_count}本, "
             f"マージン={result.final_margin:.4f} ==="
         )
         self.statusBar().showMessage(

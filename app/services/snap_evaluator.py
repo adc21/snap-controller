@@ -568,22 +568,69 @@ def create_snap_evaluator(
         return None
 
 
+def _normalize_floor_key(z_grid: str) -> str:
+    """z_grid をフロアキーに正規化 (例: "2" → "F2", "Z3" → "F3")。"""
+    z = str(z_grid).strip()
+    try:
+        return f"F{int(z)}"
+    except (ValueError, TypeError):
+        digits = "".join(c for c in z if c.isdigit())
+        return f"F{digits}" if digits else f"F{z}"
+
+
+def build_floor_rd_map(
+    base_s8i_path: str,
+) -> "Tuple[Dict[str, List[int]], Dict[str, int], List[str]]":
+    """
+    .s8i ファイルからフロアキー→RD要素インデックスのマッピングを構築する。
+
+    Returns
+    -------
+    floor_rd_map : Dict[str, List[int]]
+        フロアキー → RD要素インデックスリスト
+    current_quantities : Dict[str, int]
+        各フロアの現在のダンパー合計本数
+    floor_keys : List[str]
+        フロアキーの昇順リスト
+    """
+    from collections import defaultdict
+
+    model = parse_s8i(base_s8i_path)
+    floor_rd_map: Dict[str, List[int]] = defaultdict(list)
+    floor_qty: Dict[str, int] = defaultdict(int)
+
+    for idx, elem in enumerate(model.damper_elements):
+        node_j = model.nodes.get(elem.node_j)
+        if node_j and node_j.z_grid:
+            floor_key = _normalize_floor_key(node_j.z_grid)
+        else:
+            floor_key = f"RD{idx}"
+        floor_rd_map[floor_key].append(idx)
+        floor_qty[floor_key] += max(1, elem.quantity)
+
+    # フロアキーをソート（F1, F2, ... の順）
+    def sort_key(k):
+        digits = "".join(c for c in k if c.isdigit())
+        return int(digits) if digits else 0
+
+    floor_keys = sorted(floor_rd_map.keys(), key=sort_key)
+    return dict(floor_rd_map), dict(floor_qty), floor_keys
+
+
 def create_minimizer_evaluate_fn(
     snap_exe_path: str,
     base_s8i_path: str,
-    damper_def_name: str,
     criteria: "PerformanceCriteria",
-    position_node_map: Optional[Dict[int, Dict[str, Any]]] = None,
+    floor_rd_map: Dict[str, List[int]],
     timeout: int = 300,
     log_callback: Optional[Callable[[str], None]] = None,
     snap_work_dir: str = "",
-) -> Optional[Callable[[List[bool]], "Tuple[Dict[str, float], bool, float]"]]:
+) -> "Optional[Callable]":
     """
     ダンパー本数最小化用の evaluate_fn を生成するファクトリ関数。
 
-    EvaluateFn の型: (List[bool]) -> (Dict[str, float], bool, float)
-        - placement: 各位置にダンパーがあるかどうか
-        - 戻り値: (応答値辞書, 基準充足, マージン)
+    新インターフェース:
+        evaluate_fn(quantities: Dict[str, int]) -> EvaluationResult
 
     Parameters
     ----------
@@ -591,24 +638,26 @@ def create_minimizer_evaluate_fn(
         SNAP.exe のパス。
     base_s8i_path : str
         ベースとなる .s8i ファイルパス。
-    damper_def_name : str
-        ダンパー定義名。
     criteria : PerformanceCriteria
         判定に使う性能基準。
-    position_node_map : dict, optional
-        {position_index: {"node_i": ..., "node_j": ..., "quantity": ...}}
-        各位置のダンパー要素ノード情報。None の場合は quantity=0/1 で制御。
+    floor_rd_map : Dict[str, List[int]]
+        フロアキー → RD要素インデックスリスト (build_floor_rd_map() で取得)。
     timeout : int
         SNAP タイムアウト（秒）。
     log_callback : callable, optional
         ログコールバック。
+    snap_work_dir : str
+        SNAP作業ディレクトリ。
 
     Returns
     -------
     callable or None
         evaluate_fn。SNAP が利用不可の場合は None。
     """
-    from typing import Tuple
+    from app.services.damper_count_minimizer import (
+        EvaluationResult,
+        FloorResponse,
+    )
 
     if not snap_exe_path or not Path(snap_exe_path).exists():
         if log_callback:
@@ -621,36 +670,29 @@ def create_minimizer_evaluate_fn(
 
     _eval_count = [0]
 
-    def evaluate_fn(placement: List[bool]) -> Tuple[Dict[str, float], bool, float]:
+    def evaluate_fn(quantities: Dict[str, int]) -> EvaluationResult:
         _eval_count[0] += 1
-        count = sum(placement)
+        total = sum(quantities.values())
         if log_callback:
             log_callback(
-                f"  [最小化評価] #{_eval_count[0]} 配置本数={count}/{len(placement)}"
+                f"  [最小化評価] #{_eval_count[0]} 合計本数={total}"
             )
 
         try:
             model = parse_s8i(base_s8i_path)
 
-            # ダンパー要素の数量を placement に基づいて設定
-            if position_node_map:
-                for pos_idx, placed in enumerate(placement):
-                    if pos_idx in position_node_map:
-                        info = position_node_map[pos_idx]
-                        qty = info.get("quantity", 1) if placed else 0
-                        model.update_damper_element(
-                            pos_idx,
-                            quantity=qty,
-                        )
-            else:
-                # position_node_map が無い場合、RD行のインデックスに対応
-                rd_rows = model.get_damper_rows() if hasattr(model, "get_damper_rows") else []
-                for pos_idx, placed in enumerate(placement):
-                    if pos_idx < len(rd_rows):
-                        model.update_damper_element(
-                            pos_idx,
-                            quantity=1 if placed else 0,
-                        )
+            # フロアキーに基づいてRD要素のquantityを設定
+            for floor_key, rd_indices in floor_rd_map.items():
+                qty = quantities.get(floor_key, 0)
+                n_rd = len(rd_indices)
+                if n_rd == 0:
+                    continue
+                # 本数をRD要素数で分配（均等割）
+                base_qty = qty // n_rd
+                remainder = qty % n_rd
+                for i, rd_idx in enumerate(rd_indices):
+                    elem_qty = base_qty + (1 if i < remainder else 0)
+                    model.update_damper_element(rd_idx, quantity=elem_qty)
 
             # 一時ディレクトリで SNAP 実行
             tmp_dir = tempfile.mkdtemp(prefix="snap_min_")
@@ -688,15 +730,67 @@ def create_minimizer_evaluate_fn(
             is_pass = criteria.is_all_pass(summary)
             is_feasible = is_pass is True
 
-            # マージン計算（最も厳しい項目の余裕度）
+            # マージン計算
             margin = _compute_margin(summary, criteria)
 
-            return summary, is_feasible, margin
+            # 層別応答を構築
+            floor_responses = []
+            # Result の max_story_drift 等は floor_no (1-indexed) をキーとする
+            # floor_rd_map のキーとの対応を取る
+            sorted_floor_keys = sorted(
+                quantities.keys(),
+                key=lambda k: int("".join(c for c in k if c.isdigit()) or "0"),
+            )
+            for i, fk in enumerate(sorted_floor_keys):
+                floor_no = i + 1  # Result は 1-indexed
+                values: Dict[str, float] = {}
+                if res.max_story_drift:
+                    v = res.max_story_drift.get(floor_no)
+                    if v is not None:
+                        values["max_drift"] = v
+                if res.max_acc:
+                    v = res.max_acc.get(floor_no)
+                    if v is not None:
+                        values["max_acc"] = v
+                if res.max_disp:
+                    v = res.max_disp.get(floor_no)
+                    if v is not None:
+                        values["max_disp"] = v
+                if res.max_story_disp:
+                    v = res.max_story_disp.get(floor_no)
+                    if v is not None:
+                        values["max_story_disp"] = v
+                # マージン計算（各基準項目）
+                for item in criteria.items:
+                    if not item.enabled or item.limit_value is None:
+                        continue
+                    val = values.get(item.key)
+                    if val is not None and item.limit_value != 0:
+                        m = (item.limit_value - val) / abs(item.limit_value)
+                        values[f"margin_{item.key}"] = m
+
+                floor_responses.append(FloorResponse(
+                    floor_key=fk,
+                    values=values,
+                    damper_count=quantities.get(fk, 0),
+                ))
+
+            return EvaluationResult(
+                floor_responses=floor_responses,
+                total_count=total,
+                is_feasible=is_feasible,
+                worst_margin=margin,
+                summary=summary,
+            )
 
         except Exception as e:
             if log_callback:
                 log_callback(f"  [ERROR] 最小化評価エラー: {e}")
-            return {}, False, -1.0
+            return EvaluationResult(
+                total_count=total,
+                is_feasible=False,
+                worst_margin=-1.0,
+            )
 
     return evaluate_fn
 

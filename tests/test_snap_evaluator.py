@@ -14,6 +14,7 @@ from app.services.snap_evaluator import (
     SnapEvaluator,
     create_snap_evaluator,
     create_minimizer_evaluate_fn,
+    build_floor_rd_map,
     _compute_margin,
     _extract_minimizer_response,
 )
@@ -201,15 +202,15 @@ class TestComputeMargin:
 
 
 class TestCreateMinimizerEvaluateFn:
-    """create_minimizer_evaluate_fn のテスト。"""
+    """create_minimizer_evaluate_fn のテスト（新インターフェース）。"""
 
     def test_returns_none_without_exe(self):
         criteria = PerformanceCriteria(name="test")
         result = create_minimizer_evaluate_fn(
             snap_exe_path="",
             base_s8i_path="/tmp/model.s8i",
-            damper_def_name="D1",
             criteria=criteria,
+            floor_rd_map={"F1": [0]},
         )
         assert result is None
 
@@ -218,8 +219,8 @@ class TestCreateMinimizerEvaluateFn:
         result = create_minimizer_evaluate_fn(
             snap_exe_path="/nonexistent/SNAP.exe",
             base_s8i_path="/tmp/model.s8i",
-            damper_def_name="D1",
             criteria=criteria,
+            floor_rd_map={"F1": [0]},
         )
         assert result is None
 
@@ -230,8 +231,8 @@ class TestCreateMinimizerEvaluateFn:
         result = create_minimizer_evaluate_fn(
             snap_exe_path=str(exe),
             base_s8i_path=str(tmp_path / "nonexistent.s8i"),
-            damper_def_name="D1",
             criteria=criteria,
+            floor_rd_map={"F1": [0]},
         )
         assert result is None
 
@@ -245,8 +246,8 @@ class TestCreateMinimizerEvaluateFn:
         result = create_minimizer_evaluate_fn(
             snap_exe_path=str(exe),
             base_s8i_path=str(s8i),
-            damper_def_name="D1",
             criteria=criteria,
+            floor_rd_map={"F1": [0]},
         )
         assert callable(result)
 
@@ -256,8 +257,8 @@ class TestCreateMinimizerEvaluateFn:
         create_minimizer_evaluate_fn(
             snap_exe_path="/nonexistent/SNAP.exe",
             base_s8i_path="/tmp/model.s8i",
-            damper_def_name="D1",
             criteria=criteria,
+            floor_rd_map={"F1": [0]},
             log_callback=logs.append,
         )
         assert any("SNAP.exe" in msg for msg in logs)

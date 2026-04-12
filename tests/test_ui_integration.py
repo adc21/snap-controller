@@ -59,9 +59,11 @@ class TestDialogInstantiation:
 
     def test_minimizer_dialog(self, qapp):
         from app.ui.minimizer_dialog import MinimizerDialog
+        floor_keys = ["F1", "F2", "F3"]
         dlg = MinimizerDialog(
-            n_positions=5,
-            position_labels=[f"{i+1}F" for i in range(5)],
+            floor_keys=floor_keys,
+            current_quantities={"F1": 2, "F2": 3, "F3": 1},
+            max_quantities={"F1": 5, "F2": 5, "F3": 5},
         )
         assert dlg is not None
 
@@ -252,88 +254,79 @@ class TestDialogInteractions:
     def test_minimizer_strategy_switch(self, qapp):
         from app.ui.minimizer_dialog import MinimizerDialog
         dlg = MinimizerDialog(
-            n_positions=5,
-            position_labels=[f"{i+1}F" for i in range(5)],
+            floor_keys=["F1", "F2", "F3"],
+            current_quantities={"F1": 2, "F2": 3, "F3": 1},
+            max_quantities={"F1": 5, "F2": 5, "F3": 5},
         )
-        assert dlg._combo_strategy.count() >= 2
+        assert dlg._combo_strategy.count() >= 12
         for i in range(dlg._combo_strategy.count()):
             dlg._combo_strategy.setCurrentIndex(i)
 
     def test_minimizer_eval_mode_no_fn(self, qapp):
-        """評価関数なしで未接続ラベルが表示されること。"""
         from app.ui.minimizer_dialog import MinimizerDialog
         dlg = MinimizerDialog(
-            n_positions=3,
-            position_labels=["1F", "2F", "3F"],
+            floor_keys=["F1", "F2", "F3"],
+            current_quantities={"F1": 2, "F2": 3, "F3": 1},
+            max_quantities={"F1": 5, "F2": 5, "F3": 5},
         )
         assert not dlg._is_snap
         assert "未接続" in dlg._lbl_eval_mode.text()
 
     def test_minimizer_eval_mode_with_fn(self, qapp):
-        """評価関数ありでSNAP実解析ラベルが表示されること���"""
         from app.ui.minimizer_dialog import MinimizerDialog
-        def dummy_eval(placement):
-            return {"max_drift": 0.003}, True, 0.1
+        from app.services.damper_count_minimizer import EvaluationResult
+        def dummy_eval(quantities):
+            return EvaluationResult(total_count=sum(quantities.values()),
+                                    is_feasible=True, worst_margin=0.1)
         dlg = MinimizerDialog(
-            n_positions=3,
-            position_labels=["1F", "2F", "3F"],
+            floor_keys=["F1", "F2", "F3"],
+            current_quantities={"F1": 2, "F2": 3, "F3": 1},
+            max_quantities={"F1": 5, "F2": 5, "F3": 5},
             evaluate_fn=dummy_eval,
         )
         assert dlg._is_snap
         assert "SNAP" in dlg._lbl_eval_mode.text()
 
     def test_minimizer_chart_and_buttons(self, qapp):
-        """チャートキャンバスとCSV/コピーボタンが存在すること。"""
         from app.ui.minimizer_dialog import MinimizerDialog
         dlg = MinimizerDialog(
-            n_positions=3,
-            position_labels=["1F", "2F", "3F"],
+            floor_keys=["F1", "F2", "F3"],
+            current_quantities={"F1": 2, "F2": 3, "F3": 1},
+            max_quantities={"F1": 5, "F2": 5, "F3": 5},
         )
         assert dlg._canvas is not None
-        assert dlg._fig is not None
         assert not dlg._btn_csv.isEnabled()
         assert not dlg._btn_copy.isEnabled()
 
-    def test_minimizer_draw_history_chart(self, qapp):
-        """ステップ履歴チャートが描画されること。"""
+    def test_minimizer_realtime_chart(self, qapp):
         from app.ui.minimizer_dialog import MinimizerDialog
-        from app.services.damper_count_minimizer import MinimizationResult, MinimizationStep
         dlg = MinimizerDialog(
-            n_positions=3,
-            position_labels=["1F", "2F", "3F"],
+            floor_keys=["F1", "F2", "F3"],
+            current_quantities={"F1": 2, "F2": 3, "F3": 1},
+            max_quantities={"F1": 5, "F2": 5, "F3": 5},
         )
-        steps = [
-            MinimizationStep(0, "init", None, [True, True, True], 3, True, 0.2),
-            MinimizationStep(1, "remove", 2, [True, True, False], 2, True, 0.1),
-            MinimizationStep(2, "final", None, [True, True, False], 2, True, 0.1),
-        ]
-        result = MinimizationResult(
-            strategy="greedy_remove",
-            initial_placement=[True, True, True],
-            final_placement=[True, True, False],
-            final_count=2, is_feasible=True, final_margin=0.1,
-            history=steps, evaluations=5,
-        )
-        dlg._draw_history_chart(result)
-        assert len(dlg._fig.axes) == 2  # 2段サブプロット
+        dlg._plot_counts = [6, 5, 4, 3]
+        dlg._plot_margins = [0.3, 0.2, 0.1, -0.05]
+        dlg._plot_feasible = [True, True, True, False]
+        dlg._update_realtime_chart()
+        assert len(dlg._fig.axes) == 2
 
     def test_minimizer_export_csv(self, qapp, tmp_path, monkeypatch):
-        """CSV出力が正しく動作すること。"""
         from app.ui.minimizer_dialog import MinimizerDialog
         from app.services.damper_count_minimizer import MinimizationResult, MinimizationStep
         dlg = MinimizerDialog(
-            n_positions=3,
-            position_labels=["1F", "2F", "3F"],
+            floor_keys=["F1", "F2", "F3"],
+            current_quantities={"F1": 2, "F2": 3, "F3": 1},
+            max_quantities={"F1": 5, "F2": 5, "F3": 5},
         )
         steps = [
-            MinimizationStep(0, "init", None, [True, True, True], 3, True, 0.2),
-            MinimizationStep(1, "remove", 2, [True, True, False], 2, True, 0.1),
+            MinimizationStep(0, {"F1": 2, "F2": 3, "F3": 1}, 6, True, 0.2, action="init"),
         ]
         dlg._result = MinimizationResult(
-            strategy="greedy_remove",
-            initial_placement=[True, True, True],
-            final_placement=[True, True, False],
-            final_count=2, is_feasible=True, final_margin=0.1,
+            strategy="floor_remove",
+            initial_quantities={"F1": 2, "F2": 3, "F3": 1},
+            final_quantities={"F1": 1, "F2": 2, "F3": 1},
+            final_count=4, is_feasible=True, final_margin=0.1,
             history=steps, evaluations=5,
         )
         csv_path = str(tmp_path / "test_min.csv")
@@ -347,49 +340,46 @@ class TestDialogInteractions:
         )
         dlg._export_csv()
         with open(csv_path, encoding="utf-8-sig") as f:
-            content = f.read()
-        assert "ダンパー本数最小化結果" in content
-        assert "greedy_remove" in content
-        assert "1F" in content
-        assert "ステップ履歴" in content
+            csv_content = f.read()
+        assert "F1" in csv_content
+        assert "F2" in csv_content  # floor keys present
 
     def test_minimizer_copy_result(self, qapp):
-        """結果コピーがクリップボードに設定されること。"""
         from app.ui.minimizer_dialog import MinimizerDialog
         from app.services.damper_count_minimizer import MinimizationResult
         from PySide6.QtWidgets import QApplication
         dlg = MinimizerDialog(
-            n_positions=3,
-            position_labels=["1F", "2F", "3F"],
+            floor_keys=["F1", "F2", "F3"],
+            current_quantities={"F1": 2, "F2": 3, "F3": 1},
+            max_quantities={"F1": 5, "F2": 5, "F3": 5},
         )
         dlg._result = MinimizationResult(
-            strategy="greedy_remove",
-            initial_placement=[True, True, True],
-            final_placement=[True, True, False],
-            final_count=2, is_feasible=True, final_margin=0.1,
+            strategy="floor_remove",
+            initial_quantities={"F1": 2, "F2": 3, "F3": 1},
+            final_quantities={"F1": 1, "F2": 2, "F3": 1},
+            final_count=4, is_feasible=True, final_margin=0.1,
             evaluations=5,
         )
         dlg._copy_result()
         text = QApplication.clipboard().text()
-        assert "greedy_remove" in text
-        assert "最終本数" in text
+        assert "floor_remove" in text
 
     def test_minimizer_on_finished_enables_buttons(self, qapp):
-        """_on_finished でCSV/コピーボタンが有効化されること。"""
         from app.ui.minimizer_dialog import MinimizerDialog
         from app.services.damper_count_minimizer import MinimizationResult, MinimizationStep
         dlg = MinimizerDialog(
-            n_positions=3,
-            position_labels=["1F", "2F", "3F"],
+            floor_keys=["F1", "F2", "F3"],
+            current_quantities={"F1": 2, "F2": 3, "F3": 1},
+            max_quantities={"F1": 5, "F2": 5, "F3": 5},
         )
         assert not dlg._btn_csv.isEnabled()
         result = MinimizationResult(
-            strategy="greedy_remove",
-            initial_placement=[True, True, True],
-            final_placement=[True, True, False],
-            final_count=2, is_feasible=True, final_margin=0.1,
+            strategy="floor_remove",
+            initial_quantities={"F1": 2, "F2": 3, "F3": 1},
+            final_quantities={"F1": 1, "F2": 2, "F3": 1},
+            final_count=4, is_feasible=True, final_margin=0.1,
             history=[
-                MinimizationStep(0, "init", None, [True, True, True], 3, True, 0.2),
+                MinimizationStep(0, {"F1": 2, "F2": 3, "F3": 1}, 6, True, 0.2, action="init"),
             ],
             evaluations=3,
         )
@@ -397,6 +387,17 @@ class TestDialogInteractions:
         assert dlg._btn_csv.isEnabled()
         assert dlg._btn_copy.isEnabled()
         assert dlg._result is not None
+
+    def test_minimizer_floor_table(self, qapp):
+        from app.ui.minimizer_dialog import MinimizerDialog
+        dlg = MinimizerDialog(
+            floor_keys=["F1", "F2"],
+            current_quantities={"F1": 3, "F2": 5},
+            max_quantities={"F1": 10, "F2": 10},
+        )
+        assert dlg._floor_table.rowCount() == 2
+        assert dlg._floor_table.item(0, 0).text() == "F1"
+        assert dlg._floor_table.item(0, 1).text() == "3"
 
     def test_sweep_add_remove_params(self, qapp):
         from app.ui.sweep_dialog import SweepDialog

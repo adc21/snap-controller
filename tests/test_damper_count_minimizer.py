@@ -1,106 +1,233 @@
-"""Tests for app.services.damper_count_minimizer."""
+"""Tests for app.services.damper_count_minimizer (新インターフェース)."""
 
 from __future__ import annotations
 
-from typing import Dict, List, Tuple
+from typing import Dict
 
 import pytest
 
 from app.services.damper_count_minimizer import (
+    EvaluationResult,
+    FloorResponse,
+    MinimizationResult,
+    STRATEGIES,
+    STRATEGY_CATEGORIES,
+    minimize_binary_search,
     minimize_damper_count,
-    minimize_exhaustive,
-    minimize_greedy_add,
-    minimize_greedy_remove,
+    minimize_de,
+    minimize_floor_add,
+    minimize_floor_remove,
+    minimize_ga,
+    minimize_linear_search,
+    minimize_nelder_mead,
+    minimize_pso,
+    minimize_random,
+    minimize_sa,
+    minimize_sqp,
 )
 
 
 # ---------------------------------------------------------------------------
-# 仮想評価関数: 各位置 i のダンパーが性能を w_i だけ改善する
-# 全層の改善量合計が threshold 以上なら基準を満たす
+# モック評価関数: 各階の本数に比例して性能が改善される
 # ---------------------------------------------------------------------------
 
-def make_evaluator(weights: List[float], threshold: float):
-    def eval_fn(placement: List[bool]) -> Tuple[Dict[str, float], bool, float]:
-        total = sum(w for w, on in zip(weights, placement) if on)
-        margin = (total - threshold) / threshold
-        return {"perf": total}, total >= threshold, margin
+
+def make_evaluator(weights: Dict[str, float], threshold: float):
+    """
+    weights: 各階の1本あたりの性能改善量
+    threshold: 基準値（合計改善量がこれ以上ならOK）
+    """
+    eval_count = [0]
+
+    def eval_fn(quantities: Dict[str, int]) -> EvaluationResult:
+        eval_count[0] += 1
+        total_perf = sum(quantities.get(k, 0) * w for k, w in weights.items())
+        total_count = sum(quantities.values())
+        margin = (total_perf - threshold) / max(threshold, 1e-10)
+        is_feasible = total_perf >= threshold
+
+        floor_responses = []
+        for k in sorted(quantities.keys()):
+            perf = quantities.get(k, 0) * weights.get(k, 0)
+            fr = FloorResponse(
+                floor_key=k,
+                values={
+                    "max_drift": max(0.01 - perf * 0.001, 0.001),
+                    "margin_max_drift": margin,
+                },
+                damper_count=quantities.get(k, 0),
+            )
+            floor_responses.append(fr)
+
+        return EvaluationResult(
+            floor_responses=floor_responses,
+            total_count=total_count,
+            is_feasible=is_feasible,
+            worst_margin=margin,
+            summary={"max_drift": 0.01 - total_perf * 0.001},
+        )
     return eval_fn
 
 
-class TestGreedyRemove:
-    def test_removes_lowest_weight_dampers(self):
-        weights = [5.0, 5.0, 5.0, 0.1, 0.1]
-        evalfn = make_evaluator(weights, threshold=12.0)  # 3本で達成可能
-        result = minimize_greedy_remove(5, evalfn)
+FLOOR_KEYS = ["F1", "F2", "F3"]
+WEIGHTS = {"F1": 3.0, "F2": 5.0, "F3": 2.0}
+THRESHOLD = 10.0  # F1*3 + F2*5 + F3*2 >= 10 → 例: F1=1,F2=1,F3=1 → 10 ちょうどOK
+MAX_Q = {"F1": 5, "F2": 5, "F3": 5}
+
+
+class TestFloorAdd:
+    def test_finds_feasible_solution(self):
+        evalfn = make_evaluator(WEIGHTS, THRESHOLD)
+        result = minimize_floor_add(FLOOR_KEYS, MAX_Q, evalfn)
         assert result.is_feasible
-        # 軽い 2 本が撤去され、重い 3 本が残るはず
-        assert result.final_count == 3
-        assert result.final_placement[0] is True
-        assert result.final_placement[1] is True
-        assert result.final_placement[2] is True
+        assert result.final_count <= 15  # 最大でも全階5本
+        assert result.strategy == "floor_add"
+        assert len(result.history) > 0
+
+    def test_records_history(self):
+        evalfn = make_evaluator(WEIGHTS, THRESHOLD)
+        result = minimize_floor_add(FLOOR_KEYS, MAX_Q, evalfn)
+        assert result.evaluations > 0
+        for step in result.history:
+            assert isinstance(step.quantities, dict)
+
+
+class TestFloorRemove:
+    def test_reduces_from_initial(self):
+        initial = {"F1": 3, "F2": 3, "F3": 3}
+        evalfn = make_evaluator(WEIGHTS, THRESHOLD)
+        result = minimize_floor_remove(FLOOR_KEYS, initial, evalfn)
+        assert result.is_feasible
+        assert result.final_count <= sum(initial.values())
+        assert result.strategy == "floor_remove"
 
     def test_infeasible_initial(self):
-        weights = [0.1, 0.1, 0.1]
-        evalfn = make_evaluator(weights, threshold=100.0)
-        result = minimize_greedy_remove(3, evalfn)
-        assert not result.is_feasible
-        assert result.final_count == 3  # 撤去できず満載のまま
-
-    def test_required_positions_kept(self):
-        weights = [0.1, 5.0, 5.0, 5.0]
-        evalfn = make_evaluator(weights, threshold=10.0)
-        result = minimize_greedy_remove(4, evalfn, required_positions=[0])
-        assert result.final_placement[0] is True  # 必須位置は残る
-        assert result.is_feasible
-
-
-class TestGreedyAdd:
-    def test_adds_best_position_first(self):
-        weights = [1.0, 10.0, 1.0, 1.0]
-        evalfn = make_evaluator(weights, threshold=9.0)
-        result = minimize_greedy_add(4, evalfn)
-        assert result.is_feasible
-        # 位置 1 (weight=10) が最初に選ばれ、1 本で達成
-        assert result.final_count == 1
-        assert result.final_placement[1] is True
-
-    def test_multiple_needed(self):
-        weights = [3.0, 3.0, 3.0, 3.0]
-        evalfn = make_evaluator(weights, threshold=9.0)
-        result = minimize_greedy_add(4, evalfn)
-        assert result.is_feasible
-        assert result.final_count == 3
-
-
-class TestExhaustive:
-    def test_finds_optimal(self):
-        weights = [1.0, 2.0, 4.0, 8.0]
-        evalfn = make_evaluator(weights, threshold=10.0)
-        result = minimize_exhaustive(4, evalfn)
-        assert result.is_feasible
-        assert result.final_count == 2  # 8 + 4 = 12
-        assert result.final_placement[3] is True
-        assert result.final_placement[2] is True
-
-    def test_infeasible_returns_ng(self):
-        weights = [1.0, 1.0]
-        evalfn = make_evaluator(weights, threshold=100.0)
-        result = minimize_exhaustive(2, evalfn)
+        initial = {"F1": 0, "F2": 0, "F3": 0}
+        evalfn = make_evaluator(WEIGHTS, 100.0)
+        result = minimize_floor_remove(FLOOR_KEYS, initial, evalfn)
         assert not result.is_feasible
 
-    def test_too_large_raises(self):
-        with pytest.raises(ValueError):
-            minimize_exhaustive(20, lambda p: ({}, True, 0.0), max_positions=12)
+
+class TestBinarySearch:
+    def test_finds_minimum_uniform(self):
+        evalfn = make_evaluator(WEIGHTS, THRESHOLD)
+        result = minimize_binary_search(FLOOR_KEYS, 5, evalfn)
+        assert result.is_feasible
+        # 全階1本 → 3+5+2=10 → ちょうどOK
+        assert result.final_count <= 6  # 最大でも各2本
+        assert result.strategy == "binary_search"
+
+
+class TestLinearSearch:
+    def test_finds_minimum(self):
+        evalfn = make_evaluator(WEIGHTS, THRESHOLD)
+        result = minimize_linear_search(FLOOR_KEYS, 5, evalfn)
+        assert result.is_feasible
+        assert result.strategy == "linear_search"
+
+
+class TestGA:
+    def test_finds_solution(self):
+        evalfn = make_evaluator(WEIGHTS, THRESHOLD)
+        result = minimize_ga(FLOOR_KEYS, MAX_Q, evalfn,
+                             population_size=10, generations=10)
+        assert result.strategy == "ga"
+        assert result.evaluations > 0
+        assert len(result.history) > 0
+
+
+class TestSA:
+    def test_finds_solution(self):
+        evalfn = make_evaluator(WEIGHTS, THRESHOLD)
+        result = minimize_sa(FLOOR_KEYS, MAX_Q, evalfn, max_iterations=30)
+        assert result.strategy == "sa"
+        assert result.evaluations > 0
+
+
+class TestPSO:
+    def test_finds_solution(self):
+        evalfn = make_evaluator(WEIGHTS, THRESHOLD)
+        result = minimize_pso(FLOOR_KEYS, MAX_Q, evalfn,
+                              n_particles=8, max_iterations=10)
+        assert result.strategy == "pso"
+        assert result.evaluations > 0
+
+
+class TestDE:
+    def test_finds_solution(self):
+        evalfn = make_evaluator(WEIGHTS, THRESHOLD)
+        result = minimize_de(FLOOR_KEYS, MAX_Q, evalfn,
+                             population_size=10, max_iterations=10)
+        assert result.strategy == "de"
+        assert result.evaluations > 0
+
+
+class TestSQP:
+    def test_finds_solution(self):
+        evalfn = make_evaluator(WEIGHTS, THRESHOLD)
+        result = minimize_sqp(FLOOR_KEYS, MAX_Q, evalfn)
+        assert result.strategy == "sqp"
+        assert result.evaluations > 0
+
+
+class TestNelderMead:
+    def test_finds_solution(self):
+        evalfn = make_evaluator(WEIGHTS, THRESHOLD)
+        result = minimize_nelder_mead(FLOOR_KEYS, MAX_Q, evalfn)
+        assert result.strategy == "nelder_mead"
+        assert result.evaluations > 0
+
+
+class TestRandom:
+    def test_finds_solution(self):
+        evalfn = make_evaluator(WEIGHTS, THRESHOLD)
+        result = minimize_random(FLOOR_KEYS, MAX_Q, evalfn, max_iterations=20)
+        assert result.strategy == "random"
+        assert result.evaluations == 20
 
 
 class TestEntryPoint:
-    def test_unknown_strategy(self):
+    def test_unknown_strategy_raises(self):
+        evalfn = make_evaluator(WEIGHTS, THRESHOLD)
         with pytest.raises(ValueError):
-            minimize_damper_count(3, lambda p: ({}, True, 0.0), strategy="foo")
+            minimize_damper_count(FLOOR_KEYS, MAX_Q, evalfn, strategy="foo")
 
-    def test_greedy_remove_via_entry(self):
-        weights = [5.0, 5.0, 0.1]
-        evalfn = make_evaluator(weights, threshold=9.0)
-        result = minimize_damper_count(3, evalfn, strategy="greedy_remove")
-        assert result.strategy == "greedy_remove"
-        assert result.final_count == 2
+    def test_all_strategies_registered(self):
+        assert len(STRATEGIES) == 12
+        for cat_keys in STRATEGY_CATEGORIES.values():
+            for key in cat_keys:
+                assert key in STRATEGIES
+
+    def test_floor_add_via_entry(self):
+        evalfn = make_evaluator(WEIGHTS, THRESHOLD)
+        result = minimize_damper_count(FLOOR_KEYS, MAX_Q, evalfn,
+                                       strategy="floor_add")
+        assert result.strategy == "floor_add"
+
+    def test_binary_search_via_entry(self):
+        evalfn = make_evaluator(WEIGHTS, THRESHOLD)
+        result = minimize_damper_count(FLOOR_KEYS, MAX_Q, evalfn,
+                                       strategy="binary_search")
+        assert result.strategy == "binary_search"
+
+
+class TestSummaryText:
+    def test_summary_contains_key_info(self):
+        evalfn = make_evaluator(WEIGHTS, THRESHOLD)
+        result = minimize_floor_add(FLOOR_KEYS, MAX_Q, evalfn)
+        text = result.summary_text()
+        assert "ダンパー本数最小化結果" in text
+        assert "floor_add" in text
+        assert "最終合計本数" in text
+
+
+class TestDataClasses:
+    def test_floor_response(self):
+        fr = FloorResponse(floor_key="F1", values={"max_drift": 0.005}, damper_count=3)
+        assert fr.floor_key == "F1"
+        assert fr.damper_count == 3
+
+    def test_evaluation_result(self):
+        er = EvaluationResult(total_count=10, is_feasible=True, worst_margin=0.1)
+        assert er.total_count == 10
+        assert er.is_feasible
