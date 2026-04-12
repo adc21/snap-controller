@@ -100,6 +100,8 @@ from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
 import matplotlib.pyplot as plt
 
+from itertools import combinations
+
 from app.models import AnalysisCase
 from app.models.performance_criteria import PerformanceCriteria
 from app.services.optimizer import (
@@ -264,6 +266,29 @@ class _ConvergenceCanvas(FigureCanvas):
         super().__init__(self.fig)
         self.setParent(parent)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+
+
+class _NumericTableItem(QTableWidgetItem):
+    """数値ソート対応の QTableWidgetItem。
+
+    テキスト表示はそのまま維持しつつ、ソートでは数値を使って比較します。
+    数値にパースできない場合は +inf として末尾にソートされます。
+    """
+
+    def __init__(self, text: str, sort_value: float | None = None):
+        super().__init__(text)
+        if sort_value is not None:
+            self._sort_value = sort_value
+        else:
+            try:
+                self._sort_value = float(text)
+            except (ValueError, TypeError):
+                self._sort_value = float("inf")
+
+    def __lt__(self, other: QTableWidgetItem) -> bool:
+        if isinstance(other, _NumericTableItem):
+            return self._sort_value < other._sort_value
+        return super().__lt__(other)
 
 
 class OptimizerDialog(QDialog):
@@ -782,6 +807,8 @@ class OptimizerDialog(QDialog):
         self._result_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self._result_table.verticalHeader().setVisible(False)
         self._result_table.setAlternatingRowColors(True)
+        self._result_table.setSortingEnabled(True)
+        self._result_table.horizontalHeader().setSortIndicatorShown(True)
         table_layout.addWidget(self._result_table)
 
         self._result_summary = QLabel("")
@@ -875,6 +902,13 @@ class OptimizerDialog(QDialog):
         )
         btn_row.addWidget(self._diagnostics_btn)
 
+        self._heatmap_btn = QPushButton("空間ヒートマップ")
+        self._heatmap_btn.setEnabled(False)
+        self._heatmap_btn.setToolTip(
+            "パラメータ空間の探索密度と目的関数値を2Dヒートマップで可視化します"
+        )
+        btn_row.addWidget(self._heatmap_btn)
+
         self._copy_params_btn = QPushButton("最良パラメータコピー")
         self._copy_params_btn.setEnabled(False)
         self._copy_params_btn.setToolTip(
@@ -906,6 +940,7 @@ class OptimizerDialog(QDialog):
         self._log_export_btn.clicked.connect(self._export_log)
         self._report_btn.clicked.connect(self._export_html_report)
         self._diagnostics_btn.clicked.connect(self._show_diagnostics)
+        self._heatmap_btn.clicked.connect(self._show_heatmap)
         self._copy_params_btn.clicked.connect(self._copy_best_params)
         self._result_table.cellDoubleClicked.connect(self._show_candidate_detail)
         self._optimizer.progress.connect(self._on_progress)
@@ -1536,6 +1571,7 @@ class OptimizerDialog(QDialog):
         self._save_btn.setEnabled(False)
         self._report_btn.setEnabled(False)
         self._diagnostics_btn.setEnabled(False)
+        self._heatmap_btn.setEnabled(False)
         self._copy_params_btn.setEnabled(False)
         self._progress_bar.show()
         self._progress_bar.setValue(0)
@@ -1728,6 +1764,10 @@ class OptimizerDialog(QDialog):
             self._log_export_btn.setEnabled(True)
             self._diagnostics_btn.setEnabled(True)
             self._copy_params_btn.setEnabled(True)
+            # ヒートマップは2パラメータ以上・3候補以上のときのみ有効
+            if (result.config and len(result.config.parameters) >= 2
+                    and len(result.all_candidates) >= 3):
+                self._heatmap_btn.setEnabled(True)
             # 相関分析は2パラメータ以上・3候補以上のときのみ有効
             if (result.config and len(result.config.parameters) >= 2
                     and len(result.all_candidates) >= 3):
@@ -1751,6 +1791,7 @@ class OptimizerDialog(QDialog):
                     self._copy_params_btn.setEnabled(True)
                 if (result.config and len(result.config.parameters) >= 2
                         and len(result.all_candidates) >= 3):
+                    self._heatmap_btn.setEnabled(True)
                     self._correlation_btn.setEnabled(True)
 
     def _on_checkpoint(self, intermediate: "OptimizationResult") -> None:
@@ -1895,7 +1936,10 @@ class OptimizerDialog(QDialog):
 
         制約を満たす候補を優先表示し、残り枠に制約違反候補も表示します。
         制約違反候補は薄い背景色で視覚的に区別されます。
+        列ヘッダークリックでインタラクティブにソート可能です。
         """
+        # ソートを一時無効にしてから行を追加（挿入中のソート防止）
+        self._result_table.setSortingEnabled(False)
         self._result_table.setRowCount(0)
         ranked = result.all_ranked_candidates[:20]
 
@@ -1906,12 +1950,14 @@ class OptimizerDialog(QDialog):
             row = self._result_table.rowCount()
             self._result_table.insertRow(row)
 
-            # 順位（制約違反候補には「-」を表示）
+            # 順位（制約違反候補には「-」を表示）— 数値ソート対応
             if cand.is_feasible:
                 rank_text = str(rank + 1)
+                rank_sort = float(rank + 1)
             else:
                 rank_text = "-"
-            rank_item = QTableWidgetItem(rank_text)
+                rank_sort = float("inf")
+            rank_item = _NumericTableItem(rank_text, rank_sort)
             rank_item.setTextAlignment(Qt.AlignCenter)
             if cand.is_feasible and rank < 3:
                 font = QFont()
@@ -1925,14 +1971,18 @@ class OptimizerDialog(QDialog):
             param_strs = [f"{k}={v:.4g}" for k, v in cand.params.items()]
             self._result_table.setItem(row, 1, QTableWidgetItem(", ".join(param_strs)))
 
-            # 目的関数値
-            obj_item = QTableWidgetItem(f"{cand.objective_value:.6g}")
+            # 目的関数値 — 数値ソート対応
+            obj_item = _NumericTableItem(
+                f"{cand.objective_value:.6g}", cand.objective_value
+            )
             obj_item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
             self._result_table.setItem(row, 2, obj_item)
 
-            # 判定
+            # 判定（OK=0, NG=1 でソート）
             verdict = "OK" if cand.is_feasible else "NG"
-            verdict_item = QTableWidgetItem(verdict)
+            verdict_item = _NumericTableItem(
+                verdict, 0.0 if cand.is_feasible else 1.0
+            )
             verdict_item.setTextAlignment(Qt.AlignCenter)
             verdict_item.setForeground(
                 QColor("#2ca02c") if cand.is_feasible else QColor("#d62728")
@@ -1958,6 +2008,10 @@ class OptimizerDialog(QDialog):
                     item = self._result_table.item(row, col)
                     if item:
                         item.setBackground(bg)
+
+        # ソート再有効化（デフォルトは順位昇順）
+        self._result_table.setSortingEnabled(True)
+        self._result_table.sortByColumn(0, Qt.AscendingOrder)
 
     def _show_candidate_detail(self, row: int, _col: int) -> None:
         """結果テーブルの行をダブルクリック → 候補の全詳細を表示。"""
@@ -2446,6 +2500,19 @@ class OptimizerDialog(QDialog):
         dlg = DiagnosticsDialog(diag, parent=self)
         dlg.exec()
 
+    def _show_heatmap(self) -> None:
+        """パラメータ空間ヒートマップダイアログを表示します。"""
+        if not self._result or not self._result.config:
+            return
+        params = self._result.config.parameters
+        if len(params) < 2:
+            QMessageBox.information(
+                self, "情報", "ヒートマップには2パラメータ以上必要です。"
+            )
+            return
+        dlg = _HeatmapDialog(self._result, parent=self)
+        dlg.exec()
+
     def _save_result_json(self) -> None:
         """最適化結果をJSONファイルに保存します。"""
         if not self._result:
@@ -2508,6 +2575,7 @@ class OptimizerDialog(QDialog):
             self._pareto_btn.setEnabled(True)
         if (result.config and len(result.config.parameters) >= 2
                 and len(result.all_candidates) >= 3):
+            self._heatmap_btn.setEnabled(True)
             self._correlation_btn.setEnabled(True)
 
         obj_label = result.config.objective_label if result.config else "目的関数"
@@ -3504,3 +3572,184 @@ class SobolDialog(QDialog):
             self._fig.tight_layout()
         except (MemoryError, ValueError):
             pass
+
+
+class _HeatmapDialog(QDialog):
+    """パラメータ空間の探索ヒートマップダイアログ。
+
+    2パラメータペアごとに、探索された領域を2Dヒートマップ（ビン化平均）で
+    可視化します。色が目的関数値を表し、探索されていない領域は灰色で表示されます。
+    設計者がどの領域を重点的に探索したかを把握し、追加探索の判断に役立ちます。
+    """
+
+    def __init__(
+        self, result: OptimizationResult, *, parent: QWidget | None = None
+    ) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("パラメータ空間ヒートマップ")
+        self.resize(900, 700)
+
+        layout = QVBoxLayout(self)
+
+        # パラメータペア選択（3パラメータ以上の場合）
+        params = result.config.parameters if result.config else []
+        param_names = [p.key for p in params]
+        param_labels = {p.key: p.label for p in params}
+        pairs = list(combinations(param_names, 2))
+
+        if len(pairs) > 1:
+            selector_row = QHBoxLayout()
+            selector_row.addWidget(QLabel("パラメータペア:"))
+            self._pair_combo = QComboBox()
+            for p1, p2 in pairs:
+                self._pair_combo.addItem(
+                    f"{param_labels.get(p1, p1)} vs {param_labels.get(p2, p2)}",
+                    userData=(p1, p2),
+                )
+            selector_row.addWidget(self._pair_combo)
+            selector_row.addStretch()
+            layout.addLayout(selector_row)
+            self._pair_combo.currentIndexChanged.connect(
+                lambda: self._draw(result, param_labels)
+            )
+        else:
+            self._pair_combo = None
+
+        self._fig = Figure(figsize=(8, 6))
+        self._canvas = FigureCanvas(self._fig)
+        layout.addWidget(self._canvas)
+
+        # 情報ラベル
+        self._info_label = QLabel("")
+        self._info_label.setWordWrap(True)
+        layout.addWidget(self._info_label)
+
+        btn_box = QDialogButtonBox(QDialogButtonBox.Close)
+        btn_box.rejected.connect(self.reject)
+        layout.addWidget(btn_box)
+
+        self._result = result
+        self._pairs = pairs
+        self._draw(result, param_labels)
+
+    def _draw(
+        self,
+        result: OptimizationResult,
+        param_labels: dict[str, str],
+    ) -> None:
+        """選択されたパラメータペアのヒートマップを描画します。"""
+        self._fig.clear()
+        ax = self._fig.add_subplot(111)
+
+        if self._pair_combo is not None:
+            pair = self._pair_combo.currentData()
+        else:
+            pair = self._pairs[0] if self._pairs else None
+
+        if pair is None:
+            return
+
+        p1_name, p2_name = pair
+        p1_label = param_labels.get(p1_name, p1_name)
+        p2_label = param_labels.get(p2_name, p2_name)
+
+        # 全候補からデータ抽出
+        x_vals, y_vals, z_vals = [], [], []
+        for cand in result.all_candidates:
+            if p1_name in cand.params and p2_name in cand.params:
+                x_vals.append(cand.params[p1_name])
+                y_vals.append(cand.params[p2_name])
+                z_vals.append(cand.objective_value)
+
+        if len(x_vals) < 3:
+            ax.text(
+                0.5, 0.5, "データ不足（3点以上必要）",
+                ha="center", va="center", transform=ax.transAxes, fontsize=14,
+            )
+            self._canvas.draw()
+            return
+
+        x_arr = np.array(x_vals)
+        y_arr = np.array(y_vals)
+        z_arr = np.array(z_vals)
+
+        # inf/nan を除外
+        valid = np.isfinite(z_arr)
+        x_arr, y_arr, z_arr = x_arr[valid], y_arr[valid], z_arr[valid]
+
+        if len(x_arr) < 3:
+            ax.text(
+                0.5, 0.5, "有効データ不足",
+                ha="center", va="center", transform=ax.transAxes, fontsize=14,
+            )
+            self._canvas.draw()
+            return
+
+        # ビン数の自動決定（データ数に応じて5〜20）
+        n_bins = min(20, max(5, int(np.sqrt(len(x_arr)))))
+
+        # 2Dビン化平均
+        x_edges = np.linspace(x_arr.min(), x_arr.max(), n_bins + 1)
+        y_edges = np.linspace(y_arr.min(), y_arr.max(), n_bins + 1)
+        grid_sum = np.zeros((n_bins, n_bins))
+        grid_count = np.zeros((n_bins, n_bins))
+
+        x_idx = np.clip(
+            np.digitize(x_arr, x_edges) - 1, 0, n_bins - 1
+        )
+        y_idx = np.clip(
+            np.digitize(y_arr, y_edges) - 1, 0, n_bins - 1
+        )
+
+        for xi, yi, zi in zip(x_idx, y_idx, z_arr):
+            grid_sum[yi, xi] += zi
+            grid_count[yi, xi] += 1
+
+        grid_mean = np.full((n_bins, n_bins), np.nan)
+        mask = grid_count > 0
+        grid_mean[mask] = grid_sum[mask] / grid_count[mask]
+
+        # 未探索領域を灰色背景で表示
+        ax.set_facecolor("#e0e0e0")
+
+        im = ax.pcolormesh(
+            x_edges, y_edges, grid_mean,
+            cmap="viridis_r", shading="flat",
+        )
+        cb = self._fig.colorbar(im, ax=ax, pad=0.02)
+        obj_label = result.config.objective_label if result.config else "目的関数値"
+        cb.set_label(obj_label, fontsize=9)
+
+        # 最良解をマーカーで表示
+        if result.best and p1_name in result.best.params and p2_name in result.best.params:
+            ax.plot(
+                result.best.params[p1_name],
+                result.best.params[p2_name],
+                marker="*", markersize=18, color="#ff4444",
+                markeredgecolor="white", markeredgewidth=1.5,
+                zorder=10, label="最良解",
+            )
+            ax.legend(loc="upper right", fontsize=9)
+
+        ax.set_xlabel(p1_label, fontsize=10)
+        ax.set_ylabel(p2_label, fontsize=10)
+        ax.set_title(
+            f"探索ヒートマップ: {p1_label} × {p2_label}", fontsize=11
+        )
+
+        # 情報ラベル更新
+        explored = int(np.sum(mask))
+        total_bins = n_bins * n_bins
+        coverage_pct = explored / total_bins * 100
+        self._info_label.setText(
+            f"候補数: {len(x_arr)} | "
+            f"ビン: {n_bins}×{n_bins}={total_bins} | "
+            f"探索済み: {explored}ビン ({coverage_pct:.0f}%) | "
+            f"灰色=未探索領域"
+        )
+
+        try:
+            self._fig.tight_layout()
+        except (MemoryError, ValueError):
+            pass
+        self._canvas.draw()

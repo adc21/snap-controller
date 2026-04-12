@@ -1043,3 +1043,198 @@ class TestDiagnosticsDialog:
         assert "alpha = 0.3" in text
         assert "目的関数値" in text
         dlg.close()
+
+
+class TestResultTableSorting:
+    """結果テーブルのインタラクティブソートのテスト。"""
+
+    def test_sorting_enabled(self, qapp):
+        """結果テーブルにソートが有効化されている。"""
+        from app.ui.optimizer_dialog import OptimizerDialog
+        dlg = OptimizerDialog()
+        assert dlg._result_table.isSortingEnabled()
+        dlg.close()
+
+    def test_sort_by_objective_value(self, qapp):
+        """目的関数値列でソートすると数値順になる。"""
+        from app.ui.optimizer_dialog import OptimizerDialog
+        from app.services.optimizer import (
+            OptimizationCandidate, OptimizationConfig, OptimizationResult,
+            ParameterRange,
+        )
+        from PySide6.QtCore import Qt
+        dlg = OptimizerDialog()
+        config = OptimizationConfig(
+            parameters=[ParameterRange("Cd", "Cd", 100, 1000, 100)],
+            objective_key="max_drift",
+        )
+        result = OptimizationResult(
+            config=config,
+            all_candidates=[
+                OptimizationCandidate(
+                    params={"Cd": 300}, objective_value=0.008,
+                    response_values={"max_drift": 0.008}, is_feasible=True,
+                ),
+                OptimizationCandidate(
+                    params={"Cd": 500}, objective_value=0.002,
+                    response_values={"max_drift": 0.002}, is_feasible=True,
+                ),
+                OptimizationCandidate(
+                    params={"Cd": 400}, objective_value=0.005,
+                    response_values={"max_drift": 0.005}, is_feasible=True,
+                ),
+            ],
+        )
+        dlg._populate_result_table(result)
+        # 目的関数値列(col=2)で昇順ソート
+        dlg._result_table.sortByColumn(2, Qt.AscendingOrder)
+        # 最小値が先頭
+        assert dlg._result_table.item(0, 2).text() == "0.002"
+        assert dlg._result_table.item(2, 2).text() == "0.008"
+        dlg.close()
+
+    def test_sort_by_verdict(self, qapp):
+        """判定列でソートするとOKが先に来る。"""
+        from app.ui.optimizer_dialog import OptimizerDialog
+        from app.services.optimizer import (
+            OptimizationCandidate, OptimizationConfig, OptimizationResult,
+            ParameterRange,
+        )
+        from PySide6.QtCore import Qt
+        dlg = OptimizerDialog()
+        config = OptimizationConfig(
+            parameters=[ParameterRange("Cd", "Cd", 100, 1000, 100)],
+            objective_key="max_drift",
+        )
+        result = OptimizationResult(
+            config=config,
+            all_candidates=[
+                OptimizationCandidate(
+                    params={"Cd": 300}, objective_value=0.01,
+                    response_values={"max_drift": 0.01}, is_feasible=False,
+                ),
+                OptimizationCandidate(
+                    params={"Cd": 500}, objective_value=0.003,
+                    response_values={"max_drift": 0.003}, is_feasible=True,
+                ),
+            ],
+        )
+        dlg._populate_result_table(result)
+        # 判定列(col=3)で昇順ソート → OK(0.0)がNG(1.0)より先
+        dlg._result_table.sortByColumn(3, Qt.AscendingOrder)
+        assert dlg._result_table.item(0, 3).text() == "OK"
+        assert dlg._result_table.item(1, 3).text() == "NG"
+        dlg.close()
+
+    def test_numeric_table_item_sort_order(self, qapp):
+        """_NumericTableItemが数値順でソートされる。"""
+        from app.ui.optimizer_dialog import _NumericTableItem
+        item_a = _NumericTableItem("0.002", 0.002)
+        item_b = _NumericTableItem("0.010", 0.010)
+        item_dash = _NumericTableItem("-", float("inf"))
+        assert item_a < item_b
+        assert item_b < item_dash
+        assert not item_b < item_a
+
+
+class TestHeatmapDialog:
+    """パラメータ空間ヒートマップダイアログのテスト。"""
+
+    def test_heatmap_button_exists(self, qapp):
+        """OptimizerDialogにヒートマップボタンがある。"""
+        from app.ui.optimizer_dialog import OptimizerDialog
+        dlg = OptimizerDialog()
+        assert hasattr(dlg, "_heatmap_btn")
+        assert dlg._heatmap_btn.text() == "空間ヒートマップ"
+        assert not dlg._heatmap_btn.isEnabled()
+        dlg.close()
+
+    def test_heatmap_dialog_opens(self, qapp):
+        """ヒートマップダイアログがクラッシュせずにインスタンス化できる。"""
+        from app.ui.optimizer_dialog import _HeatmapDialog
+        from app.services.optimizer import (
+            OptimizationCandidate, OptimizationConfig, OptimizationResult,
+            ParameterRange,
+        )
+        config = OptimizationConfig(
+            parameters=[
+                ParameterRange("Cd", "減衰係数", 100, 1000, 100),
+                ParameterRange("alpha", "速度指数", 0.1, 1.0, 0.1),
+            ],
+            objective_key="max_drift",
+        )
+        candidates = [
+            OptimizationCandidate(
+                params={"Cd": 100 + i * 100, "alpha": 0.1 + i * 0.1},
+                objective_value=0.01 - i * 0.001,
+                response_values={"max_drift": 0.01 - i * 0.001},
+                is_feasible=True,
+            )
+            for i in range(5)
+        ]
+        result = OptimizationResult(config=config, all_candidates=candidates)
+        dlg = _HeatmapDialog(result)
+        assert dlg.windowTitle() == "パラメータ空間ヒートマップ"
+        dlg.close()
+
+    def test_heatmap_with_three_params(self, qapp):
+        """3パラメータ時にペア選択コンボボックスが表示される。"""
+        from app.ui.optimizer_dialog import _HeatmapDialog
+        from app.services.optimizer import (
+            OptimizationCandidate, OptimizationConfig, OptimizationResult,
+            ParameterRange,
+        )
+        config = OptimizationConfig(
+            parameters=[
+                ParameterRange("Cd", "Cd", 100, 500, 100),
+                ParameterRange("alpha", "alpha", 0.1, 0.5, 0.1),
+                ParameterRange("Qy", "Qy", 50, 200, 50),
+            ],
+            objective_key="max_drift",
+        )
+        candidates = [
+            OptimizationCandidate(
+                params={"Cd": 200 + i * 50, "alpha": 0.2 + i * 0.05, "Qy": 100 + i * 20},
+                objective_value=0.005 + i * 0.001,
+                response_values={"max_drift": 0.005 + i * 0.001},
+                is_feasible=True,
+            )
+            for i in range(5)
+        ]
+        result = OptimizationResult(config=config, all_candidates=candidates)
+        dlg = _HeatmapDialog(result)
+        # 3C2 = 3ペア
+        assert dlg._pair_combo is not None
+        assert dlg._pair_combo.count() == 3
+        dlg.close()
+
+    def test_heatmap_info_label(self, qapp):
+        """情報ラベルにカバレッジ情報が表示される。"""
+        from app.ui.optimizer_dialog import _HeatmapDialog
+        from app.services.optimizer import (
+            OptimizationCandidate, OptimizationConfig, OptimizationResult,
+            ParameterRange,
+        )
+        config = OptimizationConfig(
+            parameters=[
+                ParameterRange("Cd", "Cd", 100, 1000, 100),
+                ParameterRange("alpha", "alpha", 0.1, 1.0, 0.1),
+            ],
+            objective_key="max_drift",
+        )
+        candidates = [
+            OptimizationCandidate(
+                params={"Cd": 100 + i * 100, "alpha": 0.1 + i * 0.1},
+                objective_value=0.01 - i * 0.001,
+                response_values={"max_drift": 0.01 - i * 0.001},
+                is_feasible=True,
+            )
+            for i in range(10)
+        ]
+        result = OptimizationResult(config=config, all_candidates=candidates)
+        dlg = _HeatmapDialog(result)
+        info = dlg._info_label.text()
+        assert "候補数" in info
+        assert "ビン" in info
+        assert "探索済み" in info
+        dlg.close()
