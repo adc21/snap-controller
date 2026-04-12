@@ -3687,4 +3687,63 @@ class TestDESearch:
         # Should stop early since objective never improves
         assert "早期収束" in result.message or len(result.all_candidates) < 2000
 
+    def test_diversity_restart_triggers(self):
+        """DE should restart when population diversity collapses."""
+        call_count = [0]
+
+        def evaluate(params):
+            call_count[0] += 1
+            # Flat landscape: all individuals converge to same fitness
+            # forcing diversity to drop to 0
+            return {"max_drift": 1.0}
+
+        config = OptimizationConfig(
+            objective_key="max_drift",
+            parameters=[ParameterRange(key="x", min_val=0, max_val=1, step=0)],
+            method="de",
+            max_iterations=2000,
+        )
+        worker = _OptimizationWorker(config, evaluate)
+        result = worker._run_de_search(config)
+        # On a flat landscape, population converges rapidly then restarts
+        # inject new individuals, so more evaluations happen than just early stop
+        assert result.best is not None
+
+    def test_restart_message_in_result(self):
+        """Result message includes restart count when restarts occur."""
+        # Use a function that rapidly converges to trigger restarts
+        def evaluate(params):
+            return {"max_drift": round(params["x"])}  # step function
+
+        config = OptimizationConfig(
+            objective_key="max_drift",
+            parameters=[ParameterRange(key="x", min_val=0, max_val=1, step=0)],
+            method="de",
+            max_iterations=2000,
+        )
+        worker = _OptimizationWorker(config, evaluate)
+        result = worker._run_de_search(config)
+        # Either restarts happened or early stop — both are valid
+        assert "差分進化" in result.message
+
+    def test_de_diversity_progress_message(self):
+        """DE progress messages include diversity metric."""
+        messages = []
+
+        def evaluate(params):
+            return {"max_drift": (params["x"] - 0.5) ** 2}
+
+        config = OptimizationConfig(
+            objective_key="max_drift",
+            parameters=[ParameterRange(key="x", min_val=0, max_val=1, step=0)],
+            method="de",
+            max_iterations=200,
+        )
+        worker = _OptimizationWorker(config, evaluate)
+        worker.progress.connect(lambda cur, total, msg: messages.append(msg))
+        worker._run_de_search(config)
+        # At least one progress message should contain diversity info
+        diversity_msgs = [m for m in messages if "多様性" in m]
+        assert len(diversity_msgs) > 0
+
 

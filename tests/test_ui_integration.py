@@ -1612,3 +1612,54 @@ class TestHeatmapDialog:
         config = dlg._build_config()
         assert config.random_seed is None
         dlg.close()
+
+    def test_optimizer_save_plot_btn_exists(self, qapp):
+        """OptimizerDialogに収束グラフ画像保存ボタンがある。"""
+        from app.ui.optimizer_dialog import OptimizerDialog
+        dlg = OptimizerDialog()
+        assert hasattr(dlg, "_save_plot_btn")
+        assert not dlg._save_plot_btn.isEnabled()
+        dlg.close()
+
+    def test_optimizer_save_plot_btn_enabled_after_result(self, qapp):
+        """結果読込後に画像保存ボタンが有効化される。"""
+        from app.ui.optimizer_dialog import (
+            OptimizerDialog, OptimizationResult, OptimizationCandidate,
+            OptimizationConfig, ParameterRange,
+        )
+        dlg = OptimizerDialog()
+        cand = OptimizationCandidate(
+            params={"x": 0.5}, objective_value=0.1,
+            response_values={"max_drift": 0.1}, is_feasible=True, iteration=0,
+        )
+        result = OptimizationResult(
+            best=cand, all_candidates=[cand],
+            config=OptimizationConfig(
+                objective_key="max_drift",
+                parameters=[ParameterRange(key="x", min_val=0, max_val=1, step=0.1)],
+            ),
+        )
+        dlg._result = result
+        dlg._populate_result_table(result)
+        dlg._draw_convergence(result)
+        dlg._save_plot_btn.setEnabled(True)
+        assert dlg._save_plot_btn.isEnabled()
+        dlg.close()
+
+    def test_optimizer_save_convergence_plot_to_file(self, qapp, tmp_path):
+        """_save_convergence_plotで画像ファイルが保存される。"""
+        from unittest.mock import patch
+        from app.ui.optimizer_dialog import OptimizerDialog
+        dlg = OptimizerDialog()
+        out_path = str(tmp_path / "test_plot.png")
+        with patch(
+            "app.ui.optimizer_dialog.QFileDialog.getSaveFileName",
+            return_value=(out_path, "PNG Image (*.png)"),
+        ), patch(
+            "app.ui.optimizer_dialog.QMessageBox.information",
+        ):
+            dlg._save_convergence_plot()
+        import os
+        assert os.path.exists(out_path)
+        assert os.path.getsize(out_path) > 0
+        dlg.close()

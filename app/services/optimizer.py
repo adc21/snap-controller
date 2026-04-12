@@ -2124,6 +2124,9 @@ class _OptimizationWorker(QThread):
         total = pop_size * n_generations
         stagnation_limit = max(5, n_generations // 4)
         no_improve_gens = 0
+        n_restarts = 0
+        restart_limit = 2  # 最大リスタート回数
+        diversity_threshold = 0.01  # 集団多様性の最低閾値
 
         def _decode(vec: np.ndarray) -> Dict[str, float]:
             params = {}
@@ -2248,6 +2251,9 @@ class _OptimizationWorker(QThread):
                 if best is None or _fitness(trial_cand) < _fitness(best):
                     best = trial_cand
 
+            # 集団多様性: 各次元の標準偏差の平均（[0,1]正規化空間）
+            diversity = float(np.mean(np.std(population, axis=0)))
+
             # 停滞検出
             if (best is not None and best_before_gen is not None
                     and best.objective_value < best_before_gen.objective_value):
@@ -2259,9 +2265,46 @@ class _OptimizationWorker(QThread):
             msg = f"DE: 世代 {gen+1}/{n_generations}"
             if best:
                 msg += f" | 最良: {best.objective_value:.6g}"
+            msg += f" | 多様性: {diversity:.4f}"
             self.progress.emit(min((gen + 1) * pop_size, total), total, msg)
 
             self._maybe_checkpoint(all_candidates, best, config)
+
+            # 多様性喪失時のリスタート: 集団の下位半分を再初期化
+            if (diversity < diversity_threshold
+                    and n_restarts < restart_limit
+                    and gen < n_generations - 2):
+                n_restarts += 1
+                logger.info(
+                    "DE: 多様性低下 (%.4f < %.4f) — リスタート %d/%d",
+                    diversity, diversity_threshold, n_restarts, restart_limit,
+                )
+                # 適応度でソートし、上位半分を保持
+                ranked = sorted(range(pop_size),
+                                key=lambda k: _fitness(pop_candidates[k])
+                                if pop_candidates[k] else float("inf"))
+                n_keep = pop_size // 2
+                new_pop = self._latin_hypercube_sample(
+                    pop_size - n_keep, n_params,
+                )
+                for idx_new, idx_old in enumerate(ranked[n_keep:]):
+                    population[idx_old] = new_pop[idx_new]
+                    pop_candidates[idx_old] = None  # 次世代で再評価
+                    F_arr[idx_old] = F_init
+                    CR_arr[idx_old] = CR_init
+                # リスタート後の再評価
+                for idx_old in ranked[n_keep:]:
+                    if self._cancelled:
+                        break
+                    cand = _evaluate_vec(population[idx_old],
+                                        gen * pop_size + idx_old)
+                    pop_candidates[idx_old] = cand
+                    all_candidates.append(cand)
+                    self.candidate_found.emit(cand)
+                    if best is None or _fitness(cand) < _fitness(best):
+                        best = cand
+                no_improve_gens = 0  # リスタート後はカウントリセット
+                continue
 
             if no_improve_gens >= stagnation_limit:
                 logger.info("DE: %d世代連続で改善なし — 早期終了", no_improve_gens)
@@ -2269,11 +2312,13 @@ class _OptimizationWorker(QThread):
 
         actual_gens = gen + 1 if n_generations > 1 else 1
         early_stopped = no_improve_gens >= stagnation_limit
+        restart_msg = f", リスタート{n_restarts}回" if n_restarts > 0 else ""
         return OptimizationResult(
             best=best,
             all_candidates=all_candidates,
             converged=early_stopped,
             message=f"差分進化完了: {actual_gens}世代×{pop_size}個体 = {len(all_candidates)}点評価" +
+                    restart_msg +
                     (f" (早期収束: {no_improve_gens}世代改善なし)" if early_stopped else "") +
                     (f", 制約満足 {len([c for c in all_candidates if c.is_feasible])}点"
                      if config.constraints or config.criteria else ""),

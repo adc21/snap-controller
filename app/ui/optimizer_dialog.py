@@ -844,6 +844,12 @@ class OptimizerDialog(QDialog):
         chart_layout = QVBoxLayout(chart_group)
         self._conv_canvas = _ConvergenceCanvas(self)
         chart_layout.addWidget(self._conv_canvas)
+        self._save_plot_btn = QPushButton("画像保存")
+        self._save_plot_btn.setEnabled(False)
+        self._save_plot_btn.setToolTip(
+            "収束グラフをPNG/SVG画像として保存します"
+        )
+        chart_layout.addWidget(self._save_plot_btn)
         result_splitter.addWidget(chart_group)
 
         result_splitter.setStretchFactor(0, 2)
@@ -965,6 +971,7 @@ class OptimizerDialog(QDialog):
         self._diagnostics_btn.clicked.connect(self._show_diagnostics)
         self._heatmap_btn.clicked.connect(self._show_heatmap)
         self._copy_params_btn.clicked.connect(self._copy_best_params)
+        self._save_plot_btn.clicked.connect(self._save_convergence_plot)
         self._result_table.cellDoubleClicked.connect(self._show_candidate_detail)
         self._optimizer.progress.connect(self._on_progress)
         self._optimizer.candidate_found.connect(self._on_candidate)
@@ -1602,6 +1609,7 @@ class OptimizerDialog(QDialog):
         self._diagnostics_btn.setEnabled(False)
         self._heatmap_btn.setEnabled(False)
         self._copy_params_btn.setEnabled(False)
+        self._save_plot_btn.setEnabled(False)
         self._progress_bar.show()
         self._progress_bar.setValue(0)
         self._opt_start_time = time.time()
@@ -1800,6 +1808,7 @@ class OptimizerDialog(QDialog):
             self._log_export_btn.setEnabled(True)
             self._diagnostics_btn.setEnabled(True)
             self._copy_params_btn.setEnabled(True)
+            self._save_plot_btn.setEnabled(True)
             # ヒートマップは2パラメータ以上・3候補以上のときのみ有効
             if (result.config and len(result.config.parameters) >= 2
                     and len(result.all_candidates) >= 3):
@@ -1823,6 +1832,7 @@ class OptimizerDialog(QDialog):
                 self._report_btn.setEnabled(True)
                 self._log_export_btn.setEnabled(True)
                 self._diagnostics_btn.setEnabled(True)
+                self._save_plot_btn.setEnabled(True)
                 if result.best:
                     self._copy_params_btn.setEnabled(True)
                 if (result.config and len(result.config.parameters) >= 2
@@ -2372,6 +2382,30 @@ class OptimizerDialog(QDialog):
                 f"レポートの出力に失敗しました:\n{e}",
             )
 
+    def _save_convergence_plot(self) -> None:
+        """収束グラフをPNG/SVG画像として保存します。"""
+        path, _ = QFileDialog.getSaveFileName(
+            self, "収束グラフの保存先を選択", "convergence_plot.png",
+            "PNG Image (*.png);;SVG Image (*.svg);;PDF (*.pdf);;All Files (*)",
+        )
+        if not path:
+            return
+        try:
+            self._conv_canvas.fig.savefig(
+                path, dpi=150, bbox_inches="tight",
+                facecolor=self._conv_canvas.fig.get_facecolor(),
+            )
+            QMessageBox.information(
+                self, "画像保存完了",
+                f"収束グラフを保存しました。\n{path}",
+            )
+        except Exception as e:
+            logger.exception("収束グラフ画像保存エラー")
+            QMessageBox.warning(
+                self, "エラー",
+                f"画像の保存に失敗しました:\n{e}",
+            )
+
     def _run_sensitivity(self) -> None:
         """最適解周りのパラメータ感度解析を実行し、結果ダイアログを表示します。"""
         if not self._result or not self._result.best or not self._result.config:
@@ -2603,6 +2637,7 @@ class OptimizerDialog(QDialog):
         self._report_btn.setEnabled(True)
         self._log_export_btn.setEnabled(True)
         self._diagnostics_btn.setEnabled(True)
+        self._save_plot_btn.setEnabled(True)
         if result.best:
             self._apply_btn.setEnabled(True)
             self._sensitivity_btn.setEnabled(True)
