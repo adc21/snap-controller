@@ -1921,3 +1921,312 @@ class TestCheckpointSignal:
         assert len(emitted) == 0
 
 
+# ---------------------------------------------------------------------------
+# NSGA-II multi-objective optimization tests
+# ---------------------------------------------------------------------------
+
+class TestNSGA2:
+    """NSGA-II 多目的最適化のテスト群。"""
+
+    @staticmethod
+    def _multi_obj_evaluate(params: Dict[str, float]) -> Dict[str, float]:
+        """2目的テスト関数: max_drift と max_acc がトレードオフ関係。
+
+        Cd が大きいと drift は小さくなるが acc は大きくなる。
+        """
+        cd = params.get("Cd", 500)
+        alpha = params.get("alpha", 0.5)
+        drift = 0.01 * (1000 / max(cd, 1)) * (1 + alpha * 0.5)
+        acc = 0.5 * (cd / 1000) * (2 - alpha * 0.3)
+        return {
+            "max_drift": drift,
+            "max_acc": acc,
+            "max_disp": drift * 3.0,
+            "shear_coeff": 0.2,
+        }
+
+    def test_nsga2_basic_execution(self):
+        """NSGA-II が正常に実行を完了し、結果を返すこと。"""
+        config = OptimizationConfig(
+            objective_key="max_drift",
+            parameters=[
+                ParameterRange(key="Cd", min_val=100, max_val=1000, step=0),
+                ParameterRange(key="alpha", min_val=0.1, max_val=1.0, step=0),
+            ],
+            method="nsga2",
+            max_iterations=80,
+            objective_weights={"max_drift": 1.0, "max_acc": 1.0},
+        )
+        worker = _OptimizationWorker(config, evaluate_fn=self._multi_obj_evaluate)
+        worker.run()
+        result = worker._result if hasattr(worker, "_result") else None
+        # run() emits finished_signal — capture via attribute
+        # Actually, we need to run _run_nsga2_search directly
+        result = worker._run_nsga2_search(config)
+        assert result is not None
+        assert len(result.all_candidates) > 0
+        assert "NSGA-II" in result.message
+
+    def test_nsga2_finds_pareto_front(self):
+        """NSGA-II がパレートフロント上の多様な解を見つけること。"""
+        config = OptimizationConfig(
+            objective_key="max_drift",
+            parameters=[
+                ParameterRange(key="Cd", min_val=100, max_val=1000, step=0),
+                ParameterRange(key="alpha", min_val=0.1, max_val=1.0, step=0),
+            ],
+            method="nsga2",
+            max_iterations=200,
+            objective_weights={"max_drift": 1.0, "max_acc": 1.0},
+        )
+        worker = _OptimizationWorker(config, evaluate_fn=self._multi_obj_evaluate)
+        result = worker._run_nsga2_search(config)
+
+        assert result.best is not None
+        # パレートフロントが複数解を含むこと
+        assert "パレートフロント" in result.message
+        # best の目的関数値が有限であること
+        assert result.best.objective_value < float("inf")
+
+    def test_nsga2_with_constraints(self):
+        """NSGA-II が制約条件を考慮すること。"""
+        config = OptimizationConfig(
+            objective_key="max_drift",
+            parameters=[
+                ParameterRange(key="Cd", min_val=100, max_val=1000, step=0),
+            ],
+            method="nsga2",
+            max_iterations=80,
+            objective_weights={"max_drift": 1.0, "max_acc": 1.0},
+            constraints={"max_drift": 0.005},  # 厳しい制約
+        )
+        worker = _OptimizationWorker(config, evaluate_fn=self._multi_obj_evaluate)
+        result = worker._run_nsga2_search(config)
+
+        assert result is not None
+        assert "制約満足" in result.message
+        # 制約満足候補がある場合、best は制約を満たすはず
+        if result.feasible_candidates:
+            assert result.best.is_feasible
+
+    def test_nsga2_single_objective_fallback(self):
+        """objective_weights 未設定時は単一目的で動作すること。"""
+        config = OptimizationConfig(
+            objective_key="max_drift",
+            parameters=[
+                ParameterRange(key="Cd", min_val=100, max_val=1000, step=0),
+            ],
+            method="nsga2",
+            max_iterations=60,
+        )
+        worker = _OptimizationWorker(config, evaluate_fn=self._multi_obj_evaluate)
+        result = worker._run_nsga2_search(config)
+
+        assert result is not None
+        assert result.best is not None
+        # 単一目的でもパレートフロントのメッセージが出る
+        assert "NSGA-II" in result.message
+
+    def test_nsga2_penalty_method(self):
+        """NSGA-II でペナルティ法が機能すること。"""
+        config = OptimizationConfig(
+            objective_key="max_drift",
+            parameters=[
+                ParameterRange(key="Cd", min_val=100, max_val=1000, step=0),
+            ],
+            method="nsga2",
+            max_iterations=80,
+            objective_weights={"max_drift": 1.0, "max_acc": 1.0},
+            constraints={"max_drift": 0.005},
+            constraint_penalty_weight=50.0,
+        )
+        worker = _OptimizationWorker(config, evaluate_fn=self._multi_obj_evaluate)
+        result = worker._run_nsga2_search(config)
+
+        assert result is not None
+        assert len(result.all_candidates) > 0
+
+    def test_nsga2_cancellation(self):
+        """NSGA-II がキャンセル可能であること。"""
+        config = OptimizationConfig(
+            objective_key="max_drift",
+            parameters=[
+                ParameterRange(key="Cd", min_val=100, max_val=1000, step=0),
+            ],
+            method="nsga2",
+            max_iterations=1000,
+            objective_weights={"max_drift": 1.0, "max_acc": 1.0},
+        )
+        worker = _OptimizationWorker(config, evaluate_fn=self._multi_obj_evaluate)
+        worker._cancelled = True  # 即キャンセル
+        result = worker._run_nsga2_search(config)
+
+        # キャンセルされても結果は返る（途中まで）
+        assert result is not None
+
+    def test_nsga2_three_objectives(self):
+        """3目的での NSGA-II 実行。"""
+        config = OptimizationConfig(
+            objective_key="max_drift",
+            parameters=[
+                ParameterRange(key="Cd", min_val=100, max_val=1000, step=0),
+                ParameterRange(key="alpha", min_val=0.1, max_val=1.0, step=0),
+            ],
+            method="nsga2",
+            max_iterations=100,
+            objective_weights={"max_drift": 1.0, "max_acc": 1.0, "max_disp": 0.5},
+        )
+        worker = _OptimizationWorker(config, evaluate_fn=self._multi_obj_evaluate)
+        result = worker._run_nsga2_search(config)
+
+        assert result is not None
+        assert result.best is not None
+        assert "パレートフロント" in result.message
+
+    def test_nsga2_dispatch_via_run_method(self):
+        """method='nsga2' が _OptimizationWorker.run() から正しくディスパッチされること。"""
+        config = OptimizationConfig(
+            objective_key="max_drift",
+            parameters=[
+                ParameterRange(key="Cd", min_val=100, max_val=500, step=0),
+            ],
+            method="nsga2",
+            max_iterations=40,
+            objective_weights={"max_drift": 1.0, "max_acc": 1.0},
+        )
+        worker = _OptimizationWorker(config, evaluate_fn=self._multi_obj_evaluate)
+
+        # run() を直接呼んで finished_signal で結果をキャプチャ
+        results = []
+        worker.finished_signal.connect(lambda r: results.append(r))
+        worker.run()
+
+        assert len(results) == 1
+        assert "NSGA-II" in results[0].message
+
+    def test_nsga2_checkpoint(self):
+        """NSGA-II でチェックポイントが発火すること。"""
+        config = OptimizationConfig(
+            objective_key="max_drift",
+            parameters=[
+                ParameterRange(key="Cd", min_val=100, max_val=1000, step=0),
+            ],
+            method="nsga2",
+            max_iterations=100,
+            objective_weights={"max_drift": 1.0, "max_acc": 1.0},
+            checkpoint_interval=20,
+        )
+        worker = _OptimizationWorker(config, evaluate_fn=self._multi_obj_evaluate)
+        checkpoints = []
+        worker.checkpoint_signal.connect(lambda r: checkpoints.append(r))
+        worker._run_nsga2_search(config)
+
+        # 100点以上の評価で interval=20 なら複数チェックポイント発火
+        assert len(checkpoints) >= 1
+
+    def test_nsga2_empty_params(self):
+        """パラメータ未設定時はエラーメッセージを返すこと。"""
+        config = OptimizationConfig(
+            objective_key="max_drift",
+            parameters=[],
+            method="nsga2",
+            max_iterations=80,
+        )
+        worker = _OptimizationWorker(config, evaluate_fn=self._multi_obj_evaluate)
+        result = worker._run_nsga2_search(config)
+        assert result.message != ""
+        assert result.best is None
+        assert len(result.all_candidates) == 0
+
+
+# ---------------------------------------------------------------------------
+# Robust optimization tests
+# ---------------------------------------------------------------------------
+
+class TestRobustOptimization:
+    """ロバスト最適化のテスト群。"""
+
+    @staticmethod
+    def _sensitive_evaluate(params: Dict[str, float]) -> Dict[str, float]:
+        """パラメータに敏感な評価関数。小さな変化で結果が大きく変わる。"""
+        cd = params.get("Cd", 500)
+        # Cd=500 が最適だが、少しずれると急激に悪化
+        drift = 0.003 + 0.00001 * (cd - 500) ** 2
+        return {"max_drift": drift, "max_acc": 1.0}
+
+    def test_robust_config_serialization(self):
+        """robustness フィールドが to_dict/from_dict で正しくシリアライズされること。"""
+        config = OptimizationConfig(
+            objective_key="max_drift",
+            robustness_samples=5,
+            robustness_delta=0.10,
+        )
+        d = config.to_dict()
+        assert d["robustness_samples"] == 5
+        assert d["robustness_delta"] == 0.10
+
+        restored = OptimizationConfig.from_dict(d)
+        assert restored.robustness_samples == 5
+        assert restored.robustness_delta == 0.10
+
+    def test_robust_evaluate_worst_case(self):
+        """_robust_evaluate_with が最悪ケースを返すこと。"""
+        config = OptimizationConfig(
+            objective_key="max_drift",
+            parameters=[
+                ParameterRange(key="Cd", min_val=100, max_val=1000, step=0),
+            ],
+            robustness_samples=5,
+            robustness_delta=0.05,
+        )
+        worker = _OptimizationWorker(config, evaluate_fn=self._sensitive_evaluate)
+
+        # 最適点 Cd=500 での評価
+        result = worker._robust_evaluate_with(
+            {"Cd": 500}, config, self._sensitive_evaluate,
+        )
+        # 摂動により最悪ケースは中心値より悪い
+        center = self._sensitive_evaluate({"Cd": 500})
+        assert result["max_drift"] >= center["max_drift"]
+
+    def test_robust_optimization_via_run(self):
+        """ロバスト最適化がrun()経由で動作すること。"""
+        config = OptimizationConfig(
+            objective_key="max_drift",
+            parameters=[
+                ParameterRange(key="Cd", min_val=100, max_val=1000, step=0),
+            ],
+            method="random",
+            max_iterations=20,
+            robustness_samples=2,
+            robustness_delta=0.05,
+        )
+        worker = _OptimizationWorker(config, evaluate_fn=self._sensitive_evaluate)
+        results = []
+        worker.finished_signal.connect(lambda r: results.append(r))
+        worker.run()
+
+        assert len(results) == 1
+        assert results[0].best is not None
+
+    def test_robust_summary_text(self):
+        """ロバスト最適化の情報がサマリーテキストに含まれること。"""
+        config = OptimizationConfig(
+            objective_key="max_drift",
+            robustness_samples=3,
+            robustness_delta=0.10,
+        )
+        result = OptimizationResult(
+            config=config,
+            message="test",
+        )
+        summary = result.get_summary_text()
+        assert "3" in summary  # サンプル数
+
+    def test_robust_default_zero_samples(self):
+        """デフォルトではロバスト最適化は無効（samples=0）。"""
+        config = OptimizationConfig(objective_key="max_drift")
+        assert config.robustness_samples == 0
+        assert config.robustness_delta == 0.05
+
+

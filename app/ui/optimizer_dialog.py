@@ -361,6 +361,7 @@ class OptimizerDialog(QDialog):
         self._method_combo.addItem("ベイズ最適化 (Bayesian)", "bayesian")
         self._method_combo.addItem("遺伝的アルゴリズム (GA)", "ga")
         self._method_combo.addItem("焼きなまし法 (SA)", "sa")
+        self._method_combo.addItem("多目的最適化 (NSGA-II)", "nsga2")
         self._method_combo.currentIndexChanged.connect(self._on_method_changed)
         row1.addWidget(self._method_combo)
 
@@ -509,6 +510,34 @@ class OptimizerDialog(QDialog):
         checkpoint_row.addWidget(self._checkpoint_interval_spin)
         checkpoint_row.addStretch()
         layout.addLayout(checkpoint_row)
+
+        # ---- ロバスト最適化 ----
+        robust_row = QHBoxLayout()
+        self._robust_check = QCheckBox("ロバスト最適化")
+        self._robust_check.setChecked(False)
+        self._robust_check.setToolTip(
+            "各候補をパラメータ摂動付きで複数回評価し、最悪ケースで最適化します。\n"
+            "製造誤差やモデル不確実性に対して頑健な設計解を見つけます。\n"
+            "評価回数は (1+サンプル数) 倍になるため計算時間が増加します。"
+        )
+        robust_row.addWidget(self._robust_check)
+        robust_row.addWidget(QLabel("サンプル数:"))
+        self._robust_samples_spin = QSpinBox()
+        self._robust_samples_spin.setRange(1, 20)
+        self._robust_samples_spin.setValue(3)
+        self._robust_samples_spin.setFixedWidth(50)
+        robust_row.addWidget(self._robust_samples_spin)
+        robust_row.addWidget(QLabel("摂動幅:"))
+        self._robust_delta_spin = QDoubleSpinBox()
+        self._robust_delta_spin.setRange(0.01, 0.30)
+        self._robust_delta_spin.setValue(0.05)
+        self._robust_delta_spin.setSingleStep(0.01)
+        self._robust_delta_spin.setSuffix(" (5%)")
+        self._robust_delta_spin.setFixedWidth(90)
+        self._robust_delta_spin.setDecimals(2)
+        robust_row.addWidget(self._robust_delta_spin)
+        robust_row.addStretch()
+        layout.addLayout(robust_row)
 
         # ---- 実行ボタン + 進捗 ----
         run_row = QHBoxLayout()
@@ -744,6 +773,9 @@ class OptimizerDialog(QDialog):
         if method == "grid":
             n_runs = self._estimate_grid_runs()
             method_label = "グリッドサーチ"
+        elif method == "nsga2":
+            n_runs = self._iter_spin.value() if hasattr(self, "_iter_spin") else 200
+            method_label = "NSGA-II (多目的)"
         else:
             n_runs = self._iter_spin.value() if hasattr(self, "_iter_spin") else 200
             method_label = "ランダム/ベイズ"
@@ -901,7 +933,7 @@ class OptimizerDialog(QDialog):
 
     def _on_method_changed(self, index: int) -> None:
         method = self._method_combo.currentData()
-        self._iter_spin.setEnabled(method in ("random", "bayesian", "ga", "sa"))
+        self._iter_spin.setEnabled(method in ("random", "bayesian", "ga", "sa", "nsga2"))
 
     def _recommend_method(self) -> tuple[str, str, str]:
         """パラメータ空間に基づいて推奨手法を決定します。
@@ -916,6 +948,26 @@ class OptimizerDialog(QDialog):
 
         if n_params == 0:
             return "grid", "パラメータが未設定です。", ""
+
+        # 複合目的関数が有効な場合は NSGA-II を推奨
+        is_composite = (
+            hasattr(self, "_composite_check")
+            and self._composite_check.isChecked()
+        )
+        if is_composite:
+            n_active = sum(
+                1 for w in self._weight_spins if w["spin"].value() > 0
+            )
+            if n_active >= 2:
+                rec_iter = min(max(n_params * 80, 200), 500)
+                return (
+                    "nsga2",
+                    f"複合目的関数（{n_active}目的）が設定されています。"
+                    "NSGA-II は真の多目的最適化アルゴリズムで、"
+                    "パレートフロント（トレードオフ曲線）を直接求めます。"
+                    "重み付き和の単一解ではなく、設計者が複数の最適解から選べます。",
+                    f"推奨反復数: {rec_iter}回",
+                )
 
         if grid_runs <= 50:
             return (
@@ -1128,6 +1180,16 @@ class OptimizerDialog(QDialog):
                 self._checkpoint_interval_spin.value()
                 if self._checkpoint_check.isChecked()
                 else 0
+            ),
+            robustness_samples=(
+                self._robust_samples_spin.value()
+                if self._robust_check.isChecked()
+                else 0
+            ),
+            robustness_delta=(
+                self._robust_delta_spin.value()
+                if self._robust_check.isChecked()
+                else 0.05
             ),
         )
 
