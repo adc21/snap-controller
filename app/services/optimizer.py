@@ -334,12 +334,25 @@ class OptimizationConfig:
     robustness_delta: float = 0.05
     """ロバスト最適化のパラメータ摂動幅（比率）。デフォルト5%。
     各パラメータを [val*(1-delta), val*(1+delta)] の範囲で摂動させる。"""
+    cost_coefficients: Dict[str, float] = field(default_factory=dict)
+    """コスト係数。{param_key: cost_per_unit} の形式で指定。
+    例: {"Cd": 0.5, "Qd": 0.01} → コスト = 0.5*Cd + 0.01*Qd
+    空の場合はコスト項なし（従来動作）。"""
+    cost_weight: float = 0.0
+    """コスト重み。目的関数 = response_obj + cost_weight × コスト。
+    0の場合はコスト項なし。構造設計では 0.001〜0.1 程度で応答とコストのバランスを調整。"""
+    envelope_mode: str = ""
+    """多波エンベロープの集約モード。"max"=最大値（保守側）, "mean"=平均値。
+    空文字の場合は単一波（従来動作）。"""
+    envelope_wave_names: List[str] = field(default_factory=list)
+    """多波エンベロープ最適化で使用する波形名リスト。"""
 
-    def compute_objective(self, response: Dict[str, float]) -> float:
+    def compute_objective(self, response: Dict[str, float], params: Optional[Dict[str, float]] = None) -> float:
         """応答値辞書から目的関数値を計算する。
 
         objective_weights が空の場合は単一目的（objective_key）、
         設定されている場合は重み付き和を返す。
+        cost_coefficients と cost_weight が設定されている場合はコスト項を加算。
         """
         if self.objective_weights:
             total = 0.0
@@ -348,8 +361,22 @@ class OptimizationConfig:
                 if val == float("inf"):
                     return float("inf")
                 total += weight * val
-            return total
-        return response.get(self.objective_key, float("inf"))
+            obj = total
+        else:
+            obj = response.get(self.objective_key, float("inf"))
+
+        if obj == float("inf"):
+            return obj
+
+        # コスト項を加算
+        if self.cost_weight > 0 and self.cost_coefficients and params:
+            cost = sum(
+                coeff * params.get(key, 0.0)
+                for key, coeff in self.cost_coefficients.items()
+            )
+            obj += self.cost_weight * cost
+
+        return obj
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -366,6 +393,10 @@ class OptimizationConfig:
             "checkpoint_interval": self.checkpoint_interval,
             "robustness_samples": self.robustness_samples,
             "robustness_delta": self.robustness_delta,
+            "cost_coefficients": dict(self.cost_coefficients),
+            "cost_weight": self.cost_weight,
+            "envelope_mode": self.envelope_mode,
+            "envelope_wave_names": list(self.envelope_wave_names),
         }
 
     @classmethod
@@ -384,6 +415,10 @@ class OptimizationConfig:
             checkpoint_interval=d.get("checkpoint_interval", 10),
             robustness_samples=d.get("robustness_samples", 0),
             robustness_delta=d.get("robustness_delta", 0.05),
+            cost_coefficients=d.get("cost_coefficients", {}),
+            cost_weight=d.get("cost_weight", 0.0),
+            envelope_mode=d.get("envelope_mode", ""),
+            envelope_wave_names=d.get("envelope_wave_names", []),
         )
 
 
@@ -513,6 +548,18 @@ class OptimizationResult:
             lines.append(
                 f"ロバスト最適化: {self.config.robustness_samples}サンプル, "
                 f"摂動幅 ±{self.config.robustness_delta*100:.0f}%"
+            )
+        if self.config and self.config.cost_weight > 0:
+            lines.append(
+                f"コスト重み: {self.config.cost_weight:.4g} "
+                f"(係数: {self.config.cost_coefficients})"
+            )
+        if self.config and self.config.envelope_mode:
+            lines.append(
+                f"多波エンベロープ: {self.config.envelope_mode} "
+                f"({len(self.config.envelope_wave_names)}波: "
+                f"{', '.join(self.config.envelope_wave_names[:5])}"
+                f"{'...' if len(self.config.envelope_wave_names) > 5 else ''})"
             )
         lines.append(f"計算時間: {self.elapsed_sec:.2f} sec")
         lines.append(f"評価数: {len(self.all_candidates)}")
@@ -763,7 +810,7 @@ class _OptimizationWorker(QThread):
 
         # 中心値の評価
         center_response = base_fn(params)
-        best_worst_obj = config.compute_objective(center_response)
+        best_worst_obj = config.compute_objective(center_response, params)
         worst_response = center_response
 
         # 摂動サンプルの評価
@@ -782,7 +829,7 @@ class _OptimizationWorker(QThread):
                 perturbed[pr.key] = val
             try:
                 resp = base_fn(perturbed)
-                obj = config.compute_objective(resp)
+                obj = config.compute_objective(resp, perturbed)
                 if obj > best_worst_obj:
                     best_worst_obj = obj
                     worst_response = resp
@@ -953,7 +1000,7 @@ class _OptimizationWorker(QThread):
             except Exception as e:
                 logger.warning("並列評価エラー (iter=%d): %s", start_iter + idx, e)
                 response = {}
-            obj_val = config.compute_objective(response)
+            obj_val = config.compute_objective(response, params)
             is_feasible, margins = self._check_constraints(response, config)
             return OptimizationCandidate(
                 params=params,
@@ -1238,7 +1285,7 @@ class _OptimizationWorker(QThread):
 
             # 評価
             response = self._evaluate_fn(params)
-            obj_val = config.compute_objective(response)
+            obj_val = config.compute_objective(response, params)
             is_feasible, margins = self._check_constraints(response, config)
             y_penalized = self._penalized_objective(obj_val, margins, config)
             y_init.append(y_penalized)
@@ -1318,7 +1365,7 @@ class _OptimizationWorker(QThread):
 
                     # 評価
                     response = self._evaluate_fn(params)
-                    obj_val = config.compute_objective(response)
+                    obj_val = config.compute_objective(response, params)
                     is_feasible, margins = self._check_constraints(response, config)
 
                     candidate = OptimizationCandidate(
@@ -1360,7 +1407,7 @@ class _OptimizationWorker(QThread):
 
                     params = {pr.key: pr.random_value() for pr in config.parameters}
                     response = self._evaluate_fn(params)
-                    obj_val = config.compute_objective(response)
+                    obj_val = config.compute_objective(response, params)
                     is_feasible, margins = self._check_constraints(response, config)
 
                     candidate = OptimizationCandidate(
@@ -1446,7 +1493,7 @@ class _OptimizationWorker(QThread):
         def _evaluate_individual(chromosome: np.ndarray, iteration: int) -> OptimizationCandidate:
             params = _decode(chromosome)
             response = self._evaluate_fn(params)
-            obj_val = config.compute_objective(response)
+            obj_val = config.compute_objective(response, params)
             is_feasible, margins = self._check_constraints(response, config)
             return OptimizationCandidate(
                 params=params,
@@ -1664,7 +1711,7 @@ class _OptimizationWorker(QThread):
             current_x = np.random.rand(n_params)
         params = _decode(current_x)
         response = self._evaluate_fn(params)
-        obj_val = config.compute_objective(response)
+        obj_val = config.compute_objective(response, params)
         is_feasible, margins = self._check_constraints(response, config)
         current_cand = OptimizationCandidate(
             params=params, objective_value=obj_val,
@@ -1707,7 +1754,7 @@ class _OptimizationWorker(QThread):
 
             params = _decode(new_x)
             response = self._evaluate_fn(params)
-            obj_val = config.compute_objective(response)
+            obj_val = config.compute_objective(response, params)
             is_feasible, margins = self._check_constraints(response, config)
 
             cand = OptimizationCandidate(
@@ -1836,7 +1883,7 @@ class _OptimizationWorker(QThread):
         ) -> OptimizationCandidate:
             params = _decode(chromosome)
             response = self._evaluate_fn(params)
-            obj_val = config.compute_objective(response)
+            obj_val = config.compute_objective(response, params)
             is_feasible, margins = self._check_constraints(response, config)
             return OptimizationCandidate(
                 params=params,

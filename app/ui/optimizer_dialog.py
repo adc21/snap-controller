@@ -565,6 +565,68 @@ class OptimizerDialog(QDialog):
         robust_row.addStretch()
         layout.addLayout(robust_row)
 
+        # ---- コスト重み付き最適化 ----
+        cost_row = QHBoxLayout()
+        self._cost_check = QCheckBox("コスト重み付き")
+        self._cost_check.setChecked(False)
+        self._cost_check.setToolTip(
+            "ダンパーパラメータにコスト係数を設定し、\n"
+            "応答最小化とコスト最小化を同時に考慮します。\n"
+            "目的関数 = 応答値 + コスト重み × Σ(係数×パラメータ値)"
+        )
+        cost_row.addWidget(self._cost_check)
+        cost_row.addWidget(QLabel("重み:"))
+        self._cost_weight_spin = QDoubleSpinBox()
+        self._cost_weight_spin.setRange(0.0001, 10.0)
+        self._cost_weight_spin.setValue(0.01)
+        self._cost_weight_spin.setSingleStep(0.001)
+        self._cost_weight_spin.setDecimals(4)
+        self._cost_weight_spin.setFixedWidth(90)
+        self._cost_weight_spin.setEnabled(False)
+        self._cost_weight_spin.setToolTip(
+            "応答値に対するコスト項の重み。\n"
+            "小さい値ほど応答優先、大きい値ほどコスト優先。"
+        )
+        cost_row.addWidget(self._cost_weight_spin)
+        self._cost_edit_btn = QPushButton("係数設定...")
+        self._cost_edit_btn.setFixedWidth(90)
+        self._cost_edit_btn.setEnabled(False)
+        self._cost_edit_btn.setToolTip("各パラメータのコスト係数を設定します")
+        self._cost_edit_btn.clicked.connect(self._edit_cost_coefficients)
+        cost_row.addWidget(self._cost_edit_btn)
+        self._cost_label = QLabel("")
+        self._cost_label.setStyleSheet("color: gray; font-size: 11px;")
+        cost_row.addWidget(self._cost_label)
+        cost_row.addStretch()
+        self._cost_check.toggled.connect(self._cost_weight_spin.setEnabled)
+        self._cost_check.toggled.connect(self._cost_edit_btn.setEnabled)
+        self._cost_coefficients: Dict[str, float] = {}
+        layout.addLayout(cost_row)
+
+        # ---- 多波エンベロープ最適化 ----
+        envelope_row = QHBoxLayout()
+        self._envelope_check = QCheckBox("多波エンベロープ")
+        self._envelope_check.setChecked(False)
+        self._envelope_check.setToolTip(
+            "複数の地震波で同時に評価し、全波形の最大応答（エンベロープ）\n"
+            "を最小化します。全波形で制約を満足する解を探索します。\n"
+            "評価回数は波数倍になるため計算時間が増加します。"
+        )
+        envelope_row.addWidget(self._envelope_check)
+        self._envelope_mode_combo = QComboBox()
+        self._envelope_mode_combo.addItem("最大値（保守側）", "max")
+        self._envelope_mode_combo.addItem("平均値", "mean")
+        self._envelope_mode_combo.setFixedWidth(120)
+        self._envelope_mode_combo.setEnabled(False)
+        envelope_row.addWidget(self._envelope_mode_combo)
+        self._envelope_info_label = QLabel("(波形未設定)")
+        self._envelope_info_label.setStyleSheet("color: gray; font-size: 11px;")
+        envelope_row.addWidget(self._envelope_info_label)
+        envelope_row.addStretch()
+        self._envelope_check.toggled.connect(self._envelope_mode_combo.setEnabled)
+        self._envelope_wave_cases: List[Any] = []  # list of AnalysisCase
+        layout.addLayout(envelope_row)
+
         # ---- 実行ボタン + 進捗 ----
         run_row = QHBoxLayout()
         self._run_btn = QPushButton("最適化を開始")
@@ -1233,7 +1295,75 @@ class OptimizerDialog(QDialog):
                 if self._robust_check.isChecked()
                 else 0.05
             ),
+            cost_coefficients=(
+                dict(self._cost_coefficients)
+                if self._cost_check.isChecked() and self._cost_coefficients
+                else {}
+            ),
+            cost_weight=(
+                self._cost_weight_spin.value()
+                if self._cost_check.isChecked()
+                else 0.0
+            ),
+            envelope_mode=(
+                self._envelope_mode_combo.currentData()
+                if self._envelope_check.isChecked()
+                else ""
+            ),
+            envelope_wave_names=[
+                getattr(c, "name", f"wave_{i}")
+                for i, c in enumerate(self._envelope_wave_cases)
+            ] if self._envelope_check.isChecked() else [],
         )
+
+    def _edit_cost_coefficients(self) -> None:
+        """各パラメータのコスト係数を設定するダイアログを表示。"""
+        from PySide6.QtWidgets import QDialog, QFormLayout, QDialogButtonBox
+
+        dlg = QDialog(self)
+        dlg.setWindowTitle("コスト係数の設定")
+        dlg.setMinimumWidth(300)
+        form = QFormLayout(dlg)
+
+        spins: Dict[str, QDoubleSpinBox] = {}
+        for w in self._param_widgets:
+            key = w["key"]
+            label = w["pr_label"]
+            spin = QDoubleSpinBox()
+            spin.setRange(0.0, 10000.0)
+            spin.setDecimals(4)
+            spin.setSingleStep(0.01)
+            spin.setValue(self._cost_coefficients.get(key, 0.0))
+            form.addRow(f"{label} ({key}):", spin)
+            spins[key] = spin
+
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        buttons.accepted.connect(dlg.accept)
+        buttons.rejected.connect(dlg.reject)
+        form.addRow(buttons)
+
+        if dlg.exec() == QDialog.DialogCode.Accepted:
+            self._cost_coefficients = {k: s.value() for k, s in spins.items() if s.value() > 0}
+            n = len(self._cost_coefficients)
+            self._cost_label.setText(f"{n}パラメータに係数設定済み" if n > 0 else "係数未設定")
+
+    def set_envelope_cases(self, cases: list) -> None:
+        """多波エンベロープ用の解析ケースリストを設定する。
+
+        Parameters
+        ----------
+        cases : list of AnalysisCase
+            各地震波に対応する解析ケースリスト。
+        """
+        self._envelope_wave_cases = list(cases)
+        n = len(cases)
+        if n > 0:
+            names = [getattr(c, "name", f"wave_{i}") for i, c in enumerate(cases)]
+            self._envelope_info_label.setText(f"({n}波: {', '.join(names[:3])}{'...' if n > 3 else ''})")
+        else:
+            self._envelope_info_label.setText("(波形未設定)")
 
     def _start_optimization(self) -> None:
         config = self._build_config()
@@ -1328,19 +1458,47 @@ class OptimizerDialog(QDialog):
         # SNAP評価が利用可能か試みる
         evaluate_fn = None
         if self._base_case and self._snap_exe_path:
-            snap_evaluator = create_snap_evaluator(
-                snap_exe_path=self._snap_exe_path,
-                base_case=self._base_case,
-                param_ranges=config.parameters,
-                log_callback=lambda msg: self._result_summary.setText(msg),
-                snap_work_dir=self._snap_work_dir,
-            )
-            if snap_evaluator:
-                evaluate_fn = snap_evaluator
-                self._result_summary.setText(
-                    "SNAP実行モードで最適化を実行中..."
+            # 多波エンベロープモード
+            if config.envelope_mode and self._envelope_wave_cases:
+                from app.services.snap_evaluator import MultiWaveEvaluator
+                evaluators = []
+                for i, wave_case in enumerate(self._envelope_wave_cases):
+                    wave_name = getattr(wave_case, "name", f"wave_{i}")
+                    ev = create_snap_evaluator(
+                        snap_exe_path=self._snap_exe_path,
+                        base_case=wave_case,
+                        param_ranges=config.parameters,
+                        log_callback=lambda msg: self._result_summary.setText(msg),
+                        snap_work_dir=self._snap_work_dir,
+                    )
+                    if ev:
+                        evaluators.append((wave_name, ev))
+                if evaluators:
+                    evaluate_fn = MultiWaveEvaluator(
+                        evaluators=evaluators,
+                        aggregation=config.envelope_mode,
+                        log_callback=lambda msg: self._result_summary.setText(msg),
+                    )
+                    n_waves = len(evaluators)
+                    self._result_summary.setText(
+                        f"多波SNAP実行モード（{n_waves}波, {config.envelope_mode}）で最適化を実行中..."
+                    )
+
+            # 単一波モード（エンベロープが無効 or 構築失敗時）
+            if evaluate_fn is None:
+                snap_evaluator = create_snap_evaluator(
+                    snap_exe_path=self._snap_exe_path,
+                    base_case=self._base_case,
+                    param_ranges=config.parameters,
+                    log_callback=lambda msg: self._result_summary.setText(msg),
+                    snap_work_dir=self._snap_work_dir,
                 )
-            else:
+                if snap_evaluator:
+                    evaluate_fn = snap_evaluator
+                    self._result_summary.setText(
+                        "SNAP実行モードで最適化を実行中..."
+                    )
+            if evaluate_fn is None:
                 # 具体的な原因を特定してログ + UI表示
                 from pathlib import Path
                 reasons: list[str] = []
@@ -2277,6 +2435,30 @@ class OptimizerDialog(QDialog):
             self._robust_delta_spin.setValue(preset.get("robustness_delta", 0.05))
         else:
             self._robust_check.setChecked(False)
+
+        # コスト重み付き最適化
+        cost_weight = preset.get("cost_weight", 0.0)
+        cost_coeffs = preset.get("cost_coefficients", {})
+        if cost_weight > 0 and cost_coeffs:
+            self._cost_check.setChecked(True)
+            self._cost_weight_spin.setValue(cost_weight)
+            self._cost_coefficients = dict(cost_coeffs)
+            n = len(self._cost_coefficients)
+            self._cost_label.setText(f"{n}パラメータに係数設定済み")
+        else:
+            self._cost_check.setChecked(False)
+            self._cost_coefficients = {}
+            self._cost_label.setText("")
+
+        # 多波エンベロープ
+        envelope_mode = preset.get("envelope_mode", "")
+        if envelope_mode:
+            self._envelope_check.setChecked(True)
+            idx = self._envelope_mode_combo.findData(envelope_mode)
+            if idx >= 0:
+                self._envelope_mode_combo.setCurrentIndex(idx)
+        else:
+            self._envelope_check.setChecked(False)
 
         self._update_est_run_label()
 

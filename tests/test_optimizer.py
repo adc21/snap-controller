@@ -2454,3 +2454,166 @@ class TestExportOptimizationLog:
         assert "SNAP実解析" in content
 
 
+# ---------------------------------------------------------------------------
+# U-1: 多波エンベロープ / U-2: コスト重み付き目的関数 テスト
+# ---------------------------------------------------------------------------
+
+class TestCostWeightedObjective:
+    """コスト重み付き目的関数のテスト。"""
+
+    def test_no_cost_when_weight_zero(self):
+        """cost_weight=0 のときはコスト項なし��"""
+        config = OptimizationConfig(
+            objective_key="max_drift",
+            cost_coefficients={"Cd": 0.01},
+            cost_weight=0.0,
+        )
+        response = {"max_drift": 0.005}
+        params = {"Cd": 500.0}
+        obj = config.compute_objective(response, params)
+        assert obj == 0.005
+
+    def test_cost_added_to_objective(self):
+        """cost_weight > 0 のときコスト項が加算される。"""
+        config = OptimizationConfig(
+            objective_key="max_drift",
+            cost_coefficients={"Cd": 0.001},
+            cost_weight=1.0,
+        )
+        response = {"max_drift": 0.005}
+        params = {"Cd": 500.0}
+        obj = config.compute_objective(response, params)
+        # 0.005 + 1.0 * (0.001 * 500) = 0.005 + 0.5 = 0.505
+        assert abs(obj - 0.505) < 1e-10
+
+    def test_cost_with_multiple_params(self):
+        """複数パラメータにコスト係数がある場合。"""
+        config = OptimizationConfig(
+            objective_key="max_drift",
+            cost_coefficients={"Cd": 0.001, "Qd": 0.002},
+            cost_weight=0.1,
+        )
+        response = {"max_drift": 0.005}
+        params = {"Cd": 500.0, "Qd": 200.0}
+        obj = config.compute_objective(response, params)
+        # 0.005 + 0.1 * (0.001*500 + 0.002*200) = 0.005 + 0.1 * 0.9 = 0.005 + 0.09 = 0.095
+        assert abs(obj - 0.095) < 1e-10
+
+    def test_cost_with_composite_objective(self):
+        """複合目的関数 + コスト重み。"""
+        config = OptimizationConfig(
+            objective_key="max_drift",
+            objective_weights={"max_drift": 1.0, "max_acc": 0.5},
+            cost_coefficients={"Cd": 0.01},
+            cost_weight=0.1,
+        )
+        response = {"max_drift": 0.005, "max_acc": 2.0}
+        params = {"Cd": 300.0}
+        obj = config.compute_objective(response, params)
+        # composite = 1.0*0.005 + 0.5*2.0 = 1.005
+        # cost = 0.1 * 0.01 * 300 = 0.3
+        # total = 1.305
+        assert abs(obj - 1.305) < 1e-10
+
+    def test_cost_not_added_when_no_params(self):
+        """params=None のときはコスト項なし（後方互換）。"""
+        config = OptimizationConfig(
+            objective_key="max_drift",
+            cost_coefficients={"Cd": 0.01},
+            cost_weight=1.0,
+        )
+        response = {"max_drift": 0.005}
+        obj = config.compute_objective(response)
+        assert obj == 0.005
+
+    def test_cost_inf_response_returns_inf(self):
+        """応答値がinfの場合はコスト計算せずinfを返す。"""
+        config = OptimizationConfig(
+            objective_key="max_drift",
+            cost_coefficients={"Cd": 0.01},
+            cost_weight=1.0,
+        )
+        response = {"max_drift": float("inf")}
+        params = {"Cd": 500.0}
+        obj = config.compute_objective(response, params)
+        assert obj == float("inf")
+
+
+class TestEnvelopeConfigSerialization:
+    """多波エンベロープ設定のシリアライズ/デシリアライズ。"""
+
+    def test_to_dict_includes_envelope(self):
+        config = OptimizationConfig(
+            envelope_mode="max",
+            envelope_wave_names=["El Centro", "Hachinohe"],
+        )
+        d = config.to_dict()
+        assert d["envelope_mode"] == "max"
+        assert d["envelope_wave_names"] == ["El Centro", "Hachinohe"]
+
+    def test_from_dict_restores_envelope(self):
+        d = {
+            "envelope_mode": "mean",
+            "envelope_wave_names": ["Taft", "Kobe NS"],
+        }
+        config = OptimizationConfig.from_dict(d)
+        assert config.envelope_mode == "mean"
+        assert config.envelope_wave_names == ["Taft", "Kobe NS"]
+
+    def test_to_dict_includes_cost(self):
+        config = OptimizationConfig(
+            cost_coefficients={"Cd": 0.01, "Qd": 0.002},
+            cost_weight=0.05,
+        )
+        d = config.to_dict()
+        assert d["cost_coefficients"] == {"Cd": 0.01, "Qd": 0.002}
+        assert d["cost_weight"] == 0.05
+
+    def test_from_dict_restores_cost(self):
+        d = {
+            "cost_coefficients": {"K": 0.001},
+            "cost_weight": 0.1,
+        }
+        config = OptimizationConfig.from_dict(d)
+        assert config.cost_coefficients == {"K": 0.001}
+        assert config.cost_weight == 0.1
+
+    def test_roundtrip(self):
+        config = OptimizationConfig(
+            objective_key="max_acc",
+            cost_coefficients={"Cd": 0.5},
+            cost_weight=0.01,
+            envelope_mode="max",
+            envelope_wave_names=["w1", "w2", "w3"],
+        )
+        d = config.to_dict()
+        restored = OptimizationConfig.from_dict(d)
+        assert restored.cost_coefficients == config.cost_coefficients
+        assert restored.cost_weight == config.cost_weight
+        assert restored.envelope_mode == config.envelope_mode
+        assert restored.envelope_wave_names == config.envelope_wave_names
+
+
+class TestSummaryTextEnvelopeCost:
+    """get_summary_text にエンベロープ/コスト情報が含まれるか。"""
+
+    def test_envelope_in_summary(self):
+        config = OptimizationConfig(
+            envelope_mode="max",
+            envelope_wave_names=["El Centro", "Taft", "Hachinohe"],
+        )
+        result = OptimizationResult(config=config)
+        text = result.get_summary_text()
+        assert "多波エンベロープ" in text
+        assert "3波" in text
+
+    def test_cost_in_summary(self):
+        config = OptimizationConfig(
+            cost_coefficients={"Cd": 0.01},
+            cost_weight=0.05,
+        )
+        result = OptimizationResult(config=config)
+        text = result.get_summary_text()
+        assert "コスト重み" in text
+
+

@@ -330,6 +330,136 @@ class SnapEvaluator:
         )
 
 
+class MultiWaveEvaluator:
+    """
+    複数地震波のエンベロープ評価関数。
+
+    複数の SnapEvaluator（各波形に対応）を保持し、
+    全波形の応答値の最大値（エンベロープ）を返す。
+    構造設計では全波形でクリティカルな応答を制約充足する必要があるため、
+    このラッパーにより複数波同時最適化が実現できる。
+
+    Parameters
+    ----------
+    evaluators : list of (wave_name, SnapEvaluator)
+        波形名とSnapEvaluatorのペアリスト。
+    aggregation : str
+        応答集約方法。"max"=最大値（保守側）, "mean"=平均値。デフォルト "max"。
+    log_callback : callable, optional
+        ログコールバック。
+    """
+
+    def __init__(
+        self,
+        evaluators: List[tuple],
+        aggregation: str = "max",
+        log_callback: Optional[Callable[[str], None]] = None,
+    ) -> None:
+        if not evaluators:
+            raise ValueError("evaluators は1つ以上必要です")
+        self.evaluators = evaluators  # [(wave_name, SnapEvaluator), ...]
+        self.aggregation = aggregation
+        self.log_callback = log_callback or (lambda msg: logger.info(msg))
+        self._eval_count = 0
+        self._last_per_wave: Dict[str, Dict[str, float]] = {}
+
+    def __call__(self, params: Dict[str, float]) -> Dict[str, float]:
+        """全波形で評価し、エンベロープ応答を返す。"""
+        self._eval_count += 1
+        self.log_callback(
+            f"  [多波評価] #{self._eval_count} ({len(self.evaluators)}波) params={params}"
+        )
+
+        per_wave: Dict[str, Dict[str, float]] = {}
+        all_responses: List[Dict[str, float]] = []
+
+        for wave_name, evaluator in self.evaluators:
+            resp = evaluator(params)
+            per_wave[wave_name] = resp
+            all_responses.append(resp)
+
+        self._last_per_wave = per_wave
+
+        if not all_responses:
+            return self._error_response()
+
+        # エンベロープ（各応答キーごとに集約）
+        envelope: Dict[str, float] = {}
+        all_keys = set()
+        for resp in all_responses:
+            all_keys.update(resp.keys())
+
+        for key in all_keys:
+            values = [resp.get(key, float("inf")) for resp in all_responses]
+            if self.aggregation == "mean":
+                finite_vals = [v for v in values if v != float("inf")]
+                envelope[key] = sum(finite_vals) / len(finite_vals) if finite_vals else float("inf")
+            else:  # "max" (default, conservative)
+                envelope[key] = max(values)
+
+        # クリティカル波形をログ出力
+        for key in ["max_drift", "max_acc", "max_disp"]:
+            if key in envelope and envelope[key] != float("inf"):
+                critical_wave = max(
+                    per_wave.items(),
+                    key=lambda wv: wv[1].get(key, 0.0),
+                )[0]
+                self.log_callback(
+                    f"    {key}: {envelope[key]:.4g} (クリティカル: {critical_wave})"
+                )
+
+        return envelope
+
+    @property
+    def last_per_wave_results(self) -> Dict[str, Dict[str, float]]:
+        """直近の評価における各波形ごとの応答値。"""
+        return dict(self._last_per_wave)
+
+    @property
+    def stats(self) -> Dict[str, Any]:
+        """全evaluatorの統計を集約。"""
+        total_stats: Dict[str, int] = {"total": 0, "success": 0, "error": 0, "cache_hits": 0}
+        per_wave_stats: Dict[str, Dict[str, int]] = {}
+        for wave_name, evaluator in self.evaluators:
+            s = evaluator.stats
+            for k in total_stats:
+                total_stats[k] += s.get(k, 0)
+            per_wave_stats[wave_name] = s
+        return {
+            **total_stats,
+            "n_waves": len(self.evaluators),
+            "per_wave": per_wave_stats,
+            "aggregation": self.aggregation,
+        }
+
+    def get_stats_text(self) -> str:
+        """統計情報のテキスト表示。"""
+        s = self.stats
+        lines = [
+            f"多波SNAP評価 ({s['n_waves']}波, {s['aggregation']}): "
+            f"合計 {s['total']} 回, 成功 {s['success']}, エラー {s['error']}, "
+            f"キャッシュ {s['cache_hits']}",
+        ]
+        for wave_name, ws in s.get("per_wave", {}).items():
+            lines.append(
+                f"  {wave_name}: {ws['total']}回 (成功{ws['success']}, "
+                f"エラー{ws['error']}, キャッシュ{ws['cache_hits']})"
+            )
+        return "\n".join(lines)
+
+    @staticmethod
+    def _error_response() -> Dict[str, float]:
+        return {
+            "max_drift": float("inf"),
+            "max_acc": float("inf"),
+            "max_disp": float("inf"),
+            "max_vel": float("inf"),
+            "shear_coeff": float("inf"),
+            "max_otm": float("inf"),
+            "max_story_disp": float("inf"),
+        }
+
+
 def create_snap_evaluator(
     snap_exe_path: str,
     base_case: "AnalysisCase",

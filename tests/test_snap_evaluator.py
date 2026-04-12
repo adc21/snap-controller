@@ -261,3 +261,116 @@ class TestCreateMinimizerEvaluateFn:
             log_callback=logs.append,
         )
         assert any("SNAP.exe" in msg for msg in logs)
+
+
+# ---------------------------------------------------------------------------
+# MultiWaveEvaluator テスト
+# ---------------------------------------------------------------------------
+
+from app.services.snap_evaluator import MultiWaveEvaluator
+
+
+class TestMultiWaveEvaluator:
+    """MultiWaveEvaluator のテスト。"""
+
+    def _make_mock_evaluator(self, response: dict):
+        """モック SnapEvaluator を返す。stats と get_stats_text を持つ callable。"""
+        class MockEval:
+            def __init__(self, resp):
+                self._resp = resp
+                self._count = 0
+            def __call__(self, params):
+                self._count += 1
+                return dict(self._resp)
+            @property
+            def stats(self):
+                return {"total": self._count, "success": self._count, "error": 0, "cache_hits": 0}
+        return MockEval(response)
+
+    def test_max_aggregation(self):
+        """最大値集約で各応答キーの最大を返す。"""
+        ev1 = self._make_mock_evaluator({"max_drift": 0.003, "max_acc": 2.0})
+        ev2 = self._make_mock_evaluator({"max_drift": 0.005, "max_acc": 1.5})
+        mw = MultiWaveEvaluator(
+            evaluators=[("wave1", ev1), ("wave2", ev2)],
+            aggregation="max",
+        )
+        result = mw({"Cd": 100})
+        assert result["max_drift"] == 0.005
+        assert result["max_acc"] == 2.0
+
+    def test_mean_aggregation(self):
+        """平均値集約で各応答キーの平均を返す。"""
+        ev1 = self._make_mock_evaluator({"max_drift": 0.002, "max_acc": 2.0})
+        ev2 = self._make_mock_evaluator({"max_drift": 0.004, "max_acc": 4.0})
+        mw = MultiWaveEvaluator(
+            evaluators=[("wave1", ev1), ("wave2", ev2)],
+            aggregation="mean",
+        )
+        result = mw({"Cd": 100})
+        assert abs(result["max_drift"] - 0.003) < 1e-10
+        assert abs(result["max_acc"] - 3.0) < 1e-10
+
+    def test_per_wave_results_stored(self):
+        """各波形ごとの結果が保持される。"""
+        ev1 = self._make_mock_evaluator({"max_drift": 0.003})
+        ev2 = self._make_mock_evaluator({"max_drift": 0.005})
+        mw = MultiWaveEvaluator(
+            evaluators=[("El Centro", ev1), ("Hachinohe", ev2)],
+        )
+        mw({"Cd": 100})
+        per_wave = mw.last_per_wave_results
+        assert "El Centro" in per_wave
+        assert "Hachinohe" in per_wave
+        assert per_wave["El Centro"]["max_drift"] == 0.003
+        assert per_wave["Hachinohe"]["max_drift"] == 0.005
+
+    def test_stats_aggregated(self):
+        """統計が全evaluator分集約される。"""
+        ev1 = self._make_mock_evaluator({"max_drift": 0.003})
+        ev2 = self._make_mock_evaluator({"max_drift": 0.005})
+        mw = MultiWaveEvaluator(evaluators=[("w1", ev1), ("w2", ev2)])
+        mw({"Cd": 100})
+        stats = mw.stats
+        assert stats["n_waves"] == 2
+        assert stats["total"] == 2  # 1 eval each
+        assert "per_wave" in stats
+
+    def test_stats_text(self):
+        """get_stats_text が文字列を返す。"""
+        ev1 = self._make_mock_evaluator({"max_drift": 0.003})
+        mw = MultiWaveEvaluator(evaluators=[("w1", ev1)])
+        mw({"Cd": 100})
+        text = mw.get_stats_text()
+        assert "多波SNAP評価" in text
+        assert "1波" in text
+
+    def test_empty_evaluators_raises(self):
+        """evaluators が空の場合 ValueError。"""
+        with pytest.raises(ValueError):
+            MultiWaveEvaluator(evaluators=[])
+
+    def test_inf_handling_in_max(self):
+        """inf 値が含まれる場合の最大値集約。"""
+        ev1 = self._make_mock_evaluator({"max_drift": 0.003, "max_acc": float("inf")})
+        ev2 = self._make_mock_evaluator({"max_drift": 0.005, "max_acc": 2.0})
+        mw = MultiWaveEvaluator(evaluators=[("w1", ev1), ("w2", ev2)], aggregation="max")
+        result = mw({"Cd": 100})
+        assert result["max_drift"] == 0.005
+        assert result["max_acc"] == float("inf")
+
+    def test_inf_handling_in_mean(self):
+        """平均値集約でinf値はスキップされる。"""
+        ev1 = self._make_mock_evaluator({"max_acc": float("inf")})
+        ev2 = self._make_mock_evaluator({"max_acc": 2.0})
+        mw = MultiWaveEvaluator(evaluators=[("w1", ev1), ("w2", ev2)], aggregation="mean")
+        result = mw({"Cd": 100})
+        assert result["max_acc"] == 2.0
+
+    def test_eval_count_increments(self):
+        """評価回数がインクリメントされる。"""
+        ev1 = self._make_mock_evaluator({"max_drift": 0.003})
+        mw = MultiWaveEvaluator(evaluators=[("w1", ev1)])
+        mw({"Cd": 100})
+        mw({"Cd": 200})
+        assert mw._eval_count == 2
