@@ -109,9 +109,11 @@ from app.services.optimizer import (
     OptimizationResult,
     ParameterRange,
     SensitivityResult,
+    SobolResult,
     compute_convergence_diagnostics,
     compute_correlation_analysis,
     compute_sensitivity,
+    compute_sobol_sensitivity,
     export_optimization_log,
 )
 from app.services.snap_evaluator import create_snap_evaluator
@@ -363,6 +365,7 @@ class OptimizerDialog(QDialog):
         self._method_combo = QComboBox()
         self._method_combo.addItem("グリッドサーチ", "grid")
         self._method_combo.addItem("ランダムサーチ", "random")
+        self._method_combo.addItem("LHS (ラテン超方格)", "lhs")
         self._method_combo.addItem("ベイズ最適化 (Bayesian)", "bayesian")
         self._method_combo.addItem("遺伝的アルゴリズム (GA)", "ga")
         self._method_combo.addItem("焼きなまし法 (SA)", "sa")
@@ -812,6 +815,13 @@ class OptimizerDialog(QDialog):
         )
         btn_row.addWidget(self._sensitivity_btn)
 
+        self._sobol_btn = QPushButton("Sobol解析")
+        self._sobol_btn.setEnabled(False)
+        self._sobol_btn.setToolTip(
+            "Sobol分散ベースグローバル感度解析（交互作用を含む一次/全次指標）"
+        )
+        btn_row.addWidget(self._sobol_btn)
+
         self._pareto_btn = QPushButton("Pareto Front")
         self._pareto_btn.setEnabled(False)
         self._pareto_btn.setToolTip(
@@ -875,6 +885,7 @@ class OptimizerDialog(QDialog):
         self._apply_btn.clicked.connect(self._apply_best)
         self._export_csv_btn.clicked.connect(self._export_csv)
         self._sensitivity_btn.clicked.connect(self._run_sensitivity)
+        self._sobol_btn.clicked.connect(self._run_sobol)
         self._pareto_btn.clicked.connect(self._show_pareto)
         self._save_btn.clicked.connect(self._save_result_json)
         self._load_btn.clicked.connect(self._load_result_json)
@@ -1098,7 +1109,7 @@ class OptimizerDialog(QDialog):
 
     def _on_method_changed(self, index: int) -> None:
         method = self._method_combo.currentData()
-        self._iter_spin.setEnabled(method in ("random", "bayesian", "ga", "sa", "nsga2"))
+        self._iter_spin.setEnabled(method in ("random", "lhs", "bayesian", "ga", "sa", "nsga2"))
         self._acq_row_widget.setVisible(method == "bayesian")
         self._ga_row_widget.setVisible(method == "ga")
 
@@ -1150,7 +1161,8 @@ class OptimizerDialog(QDialog):
             return (
                 "bayesian",
                 f"パラメータ空間が中規模（グリッド{grid_runs}通り）です。"
-                "ベイズ最適化は少ない試行数で有望な領域を集中探索でき、効率的です。",
+                "ベイズ最適化は少ない試行数で有望な領域を集中探索でき、効率的です。"
+                "空間充填が目的ならLHS（ラテン超方格）も選択肢です。",
                 f"推奨反復数: {min(grid_runs // 2, 200)}回",
             )
         elif n_params <= 3:
@@ -1506,6 +1518,7 @@ class OptimizerDialog(QDialog):
         self._apply_btn.setEnabled(False)
         self._export_csv_btn.setEnabled(False)
         self._sensitivity_btn.setEnabled(False)
+        self._sobol_btn.setEnabled(False)
         self._pareto_btn.setEnabled(False)
         self._correlation_btn.setEnabled(False)
         self._log_export_btn.setEnabled(False)
@@ -1673,6 +1686,7 @@ class OptimizerDialog(QDialog):
             self._apply_btn.setEnabled(True)
             self._export_csv_btn.setEnabled(True)
             self._sensitivity_btn.setEnabled(True)
+            self._sobol_btn.setEnabled(True)
             self._save_btn.setEnabled(True)
             self._report_btn.setEnabled(True)
             self._log_export_btn.setEnabled(True)
@@ -2254,6 +2268,65 @@ class OptimizerDialog(QDialog):
         dlg = SensitivityDialog(sensitivity, parent=self)
         dlg.exec()
 
+    def _run_sobol(self) -> None:
+        """Sobol グローバル感度解析を実行し、結果ダイアログを表示します。"""
+        if not self._result or not self._result.config:
+            return
+
+        config = self._result.config
+        n_params = len(config.parameters)
+        # 評価回数を概算表示して確認
+        n_base = 64
+        n_evals = n_base * (2 * n_params + 2)
+        reply = QMessageBox.question(
+            self, "Sobol感度解析",
+            f"Sobol分散ベース感度解析を実行します。\n\n"
+            f"パラメータ数: {n_params}\n"
+            f"推定評価回数: {n_evals} 回\n\n"
+            f"OAT法より評価回数が多いですが、パラメータ間の\n"
+            f"交互作用を捉えることができます。\n\n実行しますか？",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+
+        # 評価関数を取得（SNAP or モック）
+        evaluate_fn = None
+        if self._base_case and self._snap_exe_path:
+            evaluate_fn = create_snap_evaluator(
+                snap_exe_path=self._snap_exe_path,
+                base_case=self._base_case,
+                param_ranges=config.parameters,
+                snap_work_dir=self._snap_work_dir,
+            )
+        if evaluate_fn is None:
+            from app.services.optimizer import _mock_evaluate
+            base = {}
+            if config.base_case and config.base_case.result_summary:
+                base = config.base_case.result_summary
+            evaluate_fn = lambda params: _mock_evaluate(
+                params, base, config.objective_key
+            )
+
+        try:
+            sobol = compute_sobol_sensitivity(
+                evaluate_fn=evaluate_fn,
+                parameters=config.parameters,
+                objective_key=config.objective_key,
+                n_samples=n_base,
+                objective_label=config.objective_label,
+            )
+        except Exception as exc:
+            logger.warning("Sobol解析に失敗しました: %s", exc, exc_info=True)
+            QMessageBox.warning(
+                self, "Sobol解析エラー",
+                f"Sobol感度解析の実行中にエラーが発生しました:\n{exc}",
+            )
+            return
+
+        dlg = SobolDialog(sobol, parent=self)
+        dlg.exec()
+
     def _show_pareto(self) -> None:
         """Pareto frontダイアログを表示します。"""
         if not self._result:
@@ -2371,6 +2444,7 @@ class OptimizerDialog(QDialog):
         if result.best:
             self._apply_btn.setEnabled(True)
             self._sensitivity_btn.setEnabled(True)
+            self._sobol_btn.setEnabled(True)
         if result.config and result.config.objective_weights:
             self._pareto_btn.setEnabled(True)
         if (result.config and len(result.config.parameters) >= 2
@@ -3256,3 +3330,118 @@ class DiagnosticsDialog(QDialog):
         btn_box = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
         btn_box.rejected.connect(self.reject)
         layout.addWidget(btn_box)
+
+
+class SobolDialog(QDialog):
+    """Sobol グローバル感度解析結果を表示するダイアログ。
+
+    - 棒グラフ: 一次指標 (S1) と全次指標 (ST) の比較
+    - 交互作用指標: ST - S1 で他パラメータとの相互作用を可視化
+    """
+
+    def __init__(
+        self,
+        result: SobolResult,
+        parent: Optional[QWidget] = None,
+    ) -> None:
+        super().__init__(parent)
+        self._result = result
+        self.setWindowTitle("Sobol グローバル感度解析")
+        self.setMinimumSize(700, 500)
+        self._build_ui()
+
+    def _build_ui(self) -> None:
+        layout = QVBoxLayout(self)
+
+        # ヘッダ
+        header = QLabel(
+            f"目的関数: {self._result.objective_label or self._result.objective_key}  |  "
+            f"サンプル数: {self._result.n_samples}  |  "
+            f"評価回数: {self._result.n_evaluations}"
+        )
+        header.setStyleSheet("font-weight: bold; font-size: 13px; padding: 4px;")
+        layout.addWidget(header)
+
+        desc = QLabel(
+            "S1 (一次): パラメータ単独の寄与  |  "
+            "ST (全次): 交互作用を含む全寄与  |  "
+            "ST - S1 > 0: 他パラメータとの交互作用が大きい"
+        )
+        desc.setStyleSheet("font-size: 11px; color: gray; padding: 2px 4px;")
+        layout.addWidget(desc)
+
+        # チャート
+        _apply_mpl_theme()
+        theme = "dark" if ThemeManager.is_dark() else "light"
+        facecolor = MPL_STYLES[theme]["figure.facecolor"]
+        ax_face = MPL_STYLES[theme]["axes.facecolor"]
+
+        self._fig = Figure(figsize=(6, 4), tight_layout=True, facecolor=facecolor)
+        self._ax = self._fig.add_subplot(111)
+        self._ax.set_facecolor(ax_face)
+        canvas = FigureCanvas(self._fig)
+        layout.addWidget(canvas, stretch=1)
+
+        # ボタン
+        btn_row = QHBoxLayout()
+        btn_row.addStretch()
+        close_btn = QPushButton("閉じる")
+        close_btn.clicked.connect(self.accept)
+        btn_row.addWidget(close_btn)
+        layout.addLayout(btn_row)
+
+        self._draw_chart()
+
+    def _draw_chart(self) -> None:
+        """S1 と ST の比較棒グラフを描画します。"""
+        ax = self._ax
+        ax.clear()
+
+        ranked = self._result.ranked_by_total
+        if not ranked:
+            ax.text(0.5, 0.5, "感度データなし", ha="center", va="center",
+                    transform=ax.transAxes, fontsize=11, color="gray")
+            return
+
+        labels = [e.label for e in ranked]
+        s1_vals = [e.s1 for e in ranked]
+        st_vals = [e.st for e in ranked]
+
+        y_pos = np.arange(len(labels))
+        bar_height = 0.35
+
+        bars_st = ax.barh(
+            y_pos - bar_height / 2, st_vals, bar_height,
+            label="ST (全次)", color="#e74c3c", alpha=0.8, edgecolor="none",
+        )
+        bars_s1 = ax.barh(
+            y_pos + bar_height / 2, s1_vals, bar_height,
+            label="S1 (一次)", color="#3498db", alpha=0.8, edgecolor="none",
+        )
+
+        ax.set_yticks(y_pos)
+        ax.set_yticklabels(labels)
+        ax.set_xlabel("感度指標")
+        ax.set_title("Sobol 感度指標（一次 S1 / 全次 ST）", fontsize=11)
+        ax.invert_yaxis()
+        ax.legend(loc="lower right", fontsize=9)
+        ax.set_xlim(0, max(max(st_vals, default=0), 0.1) * 1.2)
+
+        # 値ラベル
+        for bar, val in zip(bars_st, st_vals):
+            if val > 0.01:
+                ax.text(
+                    bar.get_width() + 0.01, bar.get_y() + bar.get_height() / 2,
+                    f"{val:.3f}", va="center", fontsize=8,
+                )
+        for bar, val in zip(bars_s1, s1_vals):
+            if val > 0.01:
+                ax.text(
+                    bar.get_width() + 0.01, bar.get_y() + bar.get_height() / 2,
+                    f"{val:.3f}", va="center", fontsize=8,
+                )
+
+        try:
+            self._fig.tight_layout()
+        except (MemoryError, ValueError):
+            pass

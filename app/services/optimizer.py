@@ -8,6 +8,7 @@ app/services/optimizer.py
 探索手法:
   - グリッドサーチ（全パラメータの直積）
   - ランダムサーチ（モンテカルロ）
+  - ラテン超方格サンプリング（LHS: 空間充填サンプリング）
   - ベイズ最適化（ガウス過程回帰 + 獲得関数による効率的探索）
   - 遺伝的アルゴリズム（GA）（BLX-α交叉 + ガウシアン突然変異 + エリート保存）
   - 焼きなまし法（SA）（指数冷却 + メトロポリス基準）
@@ -885,6 +886,8 @@ class _OptimizationWorker(QThread):
             result = self._run_grid_search(config)
         elif config.method == "random":
             result = self._run_random_search(config)
+        elif config.method == "lhs":
+            result = self._run_lhs_search(config)
         elif config.method == "bayesian":
             result = self._run_bayesian_search(config)
         elif config.method == "ga":
@@ -1302,6 +1305,80 @@ class _OptimizationWorker(QThread):
             message=f"ランダムサーチ完了: {len(all_candidates)} 点を評価" +
                     (f" (並列{n_par})" if n_par > 1 else "") +
                     (", 収束" if converged else ""),
+        )
+        return result
+
+    def _run_lhs_search(self, config: OptimizationConfig) -> OptimizationResult:
+        """ラテン超方格サンプリング (LHS) で最適化を実行します。
+
+        空間充填性に優れたサンプリング手法で、ランダムサーチより少ないサンプル数で
+        パラメータ空間を均等にカバーします。構造信頼性解析やモンテカルロシミュレーション
+        の前段として広く用いられます。
+        """
+        if not config.parameters:
+            return OptimizationResult(message="探索パラメータが設定されていません。")
+
+        total = config.max_iterations
+        n_params = len(config.parameters)
+        n_par = max(1, config.n_parallel)
+        batch_size = max(n_par, 1)
+
+        # LHS サンプル生成 ([0,1]^d)
+        lhs_samples = self._latin_hypercube_sample(total, n_params)
+
+        # [0,1] → 実パラメータ値に変換
+        all_param_sets: List[Dict[str, float]] = []
+        for i in range(total):
+            params: Dict[str, float] = {}
+            for j, pr in enumerate(config.parameters):
+                u = lhs_samples[i, j]
+                val = pr.min_val + u * (pr.max_val - pr.min_val)
+                # ステップサイズ適用
+                if pr.step > 0:
+                    val = pr.min_val + round((val - pr.min_val) / pr.step) * pr.step
+                    val = max(pr.min_val, min(pr.max_val, val))
+                if pr.is_integer:
+                    val = round(val)
+                params[pr.key] = val
+            all_param_sets.append(params)
+
+        all_candidates: List[OptimizationCandidate] = []
+        best: Optional[OptimizationCandidate] = None
+
+        i = 0
+        while i < total:
+            if self._cancelled:
+                break
+
+            batch_end = min(i + batch_size, total)
+            batch_params = all_param_sets[i:batch_end]
+            batch_results = self._evaluate_batch(batch_params, config, start_iter=i)
+
+            for cand in batch_results:
+                all_candidates.append(cand)
+                self.candidate_found.emit(cand)
+                if cand.is_feasible and (best is None or cand.objective_value < best.objective_value):
+                    best = cand
+
+            i = batch_end
+
+            msg = f"LHS探索中: {i}/{total}"
+            if n_par > 1:
+                msg += f" (並列{n_par})"
+            if best:
+                msg += f" | 暫定最良: {best.objective_value:.6g}"
+            self.progress.emit(i, total, msg)
+
+            self._maybe_checkpoint(all_candidates, best, config)
+
+        result = OptimizationResult(
+            best=best,
+            all_candidates=all_candidates,
+            converged=True,
+            message=f"LHS完了: {len(all_candidates)} 点を評価（空間充填サンプリング）" +
+                    (f" (並列{n_par})" if n_par > 1 else "") +
+                    (f", 制約満足 {len([c for c in all_candidates if c.is_feasible])} 点"
+                     if config.constraints or config.criteria else ""),
         )
         return result
 
@@ -2503,6 +2580,209 @@ def compute_sensitivity(
         entries=entries,
         base_objective=base_obj,
         objective_key=objective_key,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Sobol グローバル感度解析（分散ベース）
+# ---------------------------------------------------------------------------
+
+@dataclass
+class SobolEntry:
+    """1パラメータの Sobol 感度指標。"""
+    key: str
+    label: str
+    s1: float  # 一次感度指標 (first-order): 直接寄与
+    st: float  # 全次感度指標 (total-order): 直接 + 交互作用
+
+
+@dataclass
+class SobolResult:
+    """Sobol 感度解析の全体結果。"""
+    entries: List[SobolEntry]
+    objective_key: str
+    objective_label: str = ""
+    n_samples: int = 0
+    n_evaluations: int = 0
+
+    @property
+    def ranked_by_total(self) -> List[SobolEntry]:
+        """全次感度指標が高い順にソート。"""
+        return sorted(self.entries, key=lambda e: e.st, reverse=True)
+
+    @property
+    def interaction_indices(self) -> Dict[str, float]:
+        """交互作用指標 (S_Ti - S_i) を返す。正に大きいほど他パラメータとの交互作用が強い。"""
+        return {e.key: max(0.0, e.st - e.s1) for e in self.entries}
+
+
+def _saltelli_sample(n: int, d: int) -> Tuple[np.ndarray, np.ndarray]:
+    """Saltelli (2002) のサンプリング行列 A, B を生成する。
+
+    Parameters
+    ----------
+    n : int
+        基本サンプル数。全評価回数は n*(2d+2) 回になる。
+    d : int
+        パラメータ次元数。
+
+    Returns
+    -------
+    A, B : ndarray, shape (n, d)
+        [0, 1]^d の準ランダムサンプル行列。
+    """
+    # LHS を使用して空間充填性を向上
+    samples_all = np.zeros((2 * n, d))
+    for j in range(d):
+        perm = np.random.permutation(2 * n)
+        for i in range(2 * n):
+            samples_all[i, j] = (perm[i] + np.random.rand()) / (2 * n)
+    A = samples_all[:n]
+    B = samples_all[n:]
+    return A, B
+
+
+def compute_sobol_sensitivity(
+    evaluate_fn: Callable[[Dict[str, float]], Dict[str, float]],
+    parameters: List[ParameterRange],
+    objective_key: str,
+    n_samples: int = 64,
+    objective_label: str = "",
+) -> SobolResult:
+    """
+    Sobol 分散ベースグローバル感度解析を実行します。
+
+    Saltelli (2002) のサンプリングスキームに基づき、一次感度指標 (S1) と
+    全次感度指標 (ST) を推定します。OAT 法と異なりパラメータ間の交互作用を
+    捉えることができます。
+
+    評価回数: n_samples × (2 × n_params + 2) 回
+
+    Parameters
+    ----------
+    evaluate_fn : callable
+        パラメータ辞書 → 応答値辞書 の評価関数。
+    parameters : list of ParameterRange
+        探索パラメータ定義。
+    objective_key : str
+        目的関数のキー。
+    n_samples : int
+        基本サンプル数（デフォルト64）。推奨: 64〜256。
+    objective_label : str
+        目的関数の日本語ラベル。
+
+    Returns
+    -------
+    SobolResult
+        感度解析結果（一次指標 S1 + 全次指標 ST）。
+    """
+    d = len(parameters)
+    if d == 0:
+        return SobolResult(entries=[], objective_key=objective_key,
+                           objective_label=objective_label)
+
+    # Saltelli サンプリング行列を生成
+    A, B = _saltelli_sample(n_samples, d)
+
+    def _to_params(row: np.ndarray) -> Dict[str, float]:
+        """[0,1]^d のサンプルを実パラメータ値に変換する。"""
+        params: Dict[str, float] = {}
+        for j, pr in enumerate(parameters):
+            val = pr.min_val + row[j] * (pr.max_val - pr.min_val)
+            if pr.step > 0:
+                val = pr.min_val + round((val - pr.min_val) / pr.step) * pr.step
+                val = max(pr.min_val, min(pr.max_val, val))
+            if pr.is_integer:
+                val = round(val)
+            params[pr.key] = val
+        return params
+
+    def _eval_obj(row: np.ndarray) -> float:
+        """1行を評価して目的関数値を返す。"""
+        try:
+            resp = evaluate_fn(_to_params(row))
+            val = resp.get(objective_key, float("inf"))
+            if math.isnan(val) or math.isinf(val):
+                return float("nan")
+            return val
+        except Exception:
+            return float("nan")
+
+    # f(A), f(B) を評価
+    y_a = np.array([_eval_obj(A[i]) for i in range(n_samples)])
+    y_b = np.array([_eval_obj(B[i]) for i in range(n_samples)])
+
+    # AB_i, BA_i 行列（i番目の列のみ入れ替え）を評価
+    y_ab = np.zeros((d, n_samples))  # AB_i: A の i列を B の i列に置換
+    y_ba = np.zeros((d, n_samples))  # BA_i: B の i列を A の i列に置換
+    for j in range(d):
+        AB_j = A.copy()
+        AB_j[:, j] = B[:, j]
+        BA_j = B.copy()
+        BA_j[:, j] = A[:, j]
+        y_ab[j] = np.array([_eval_obj(AB_j[i]) for i in range(n_samples)])
+        y_ba[j] = np.array([_eval_obj(BA_j[i]) for i in range(n_samples)])
+
+    n_evaluations = n_samples * (2 * d + 2)
+
+    # NaN を除外したマスクベースの推定
+    entries: List[SobolEntry] = []
+    for j in range(d):
+        # 有効サンプルのマスク
+        mask_s1 = ~(np.isnan(y_a) | np.isnan(y_b) | np.isnan(y_ba[j]))
+        mask_st = ~(np.isnan(y_a) | np.isnan(y_ab[j]))
+
+        n_valid_s1 = mask_s1.sum()
+        n_valid_st = mask_st.sum()
+
+        if n_valid_s1 < 4 or n_valid_st < 4:
+            entries.append(SobolEntry(
+                key=parameters[j].key,
+                label=parameters[j].label or parameters[j].key,
+                s1=0.0, st=0.0,
+            ))
+            continue
+
+        # 全分散の推定: Var(Y) = E[Y^2] - E[Y]^2
+        y_all_valid = np.concatenate([y_a[~np.isnan(y_a)], y_b[~np.isnan(y_b)]])
+        f0 = np.mean(y_all_valid)
+        var_y = np.var(y_all_valid, ddof=0)
+
+        if var_y < 1e-30:
+            entries.append(SobolEntry(
+                key=parameters[j].key,
+                label=parameters[j].label or parameters[j].key,
+                s1=0.0, st=0.0,
+            ))
+            continue
+
+        # 一次感度 S1_j = V_j / V(Y)
+        # V_j = (1/n) Σ f(B) * [f(A_B^j) - f(A)]  (Jansen 1999 estimator)
+        s1_num = np.mean(y_b[mask_s1] * (y_ba[j][mask_s1] - y_a[mask_s1]))
+        s1 = s1_num / var_y
+
+        # 全次感度 ST_j = 1 - V_~j / V(Y)
+        # Jansen (1999): ST_j = (1/2n) Σ [f(A) - f(A_B^j)]^2 / V(Y)
+        diff = y_a[mask_st] - y_ab[j][mask_st]
+        st = np.mean(diff ** 2) / (2.0 * var_y)
+
+        # クランプ [0, 1] 範囲に（サンプル数が少ないと範囲外になることがある）
+        s1 = max(0.0, min(1.0, s1))
+        st = max(0.0, min(1.0, st))
+
+        entries.append(SobolEntry(
+            key=parameters[j].key,
+            label=parameters[j].label or parameters[j].key,
+            s1=s1,
+            st=st,
+        ))
+
+    return SobolResult(
+        entries=entries,
+        objective_key=objective_key,
+        objective_label=objective_label,
+        n_samples=n_samples,
+        n_evaluations=n_evaluations,
     )
 
 

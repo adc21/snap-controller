@@ -61,13 +61,17 @@ from app.services.optimizer import (
     OptimizationConfig,
     OptimizationCandidate,
     OptimizationResult,
+    SobolEntry,
+    SobolResult,
     _mock_evaluate,
     _pearson_correlation,
     compute_correlation_analysis,
+    compute_sobol_sensitivity,
     export_optimization_log,
     _GaussianProcessRegressor,
     _expected_improvement_no_scipy,
     _OptimizationWorker,
+    _saltelli_sample,
 )
 
 needs_qt = pytest.mark.skipif(not _HAS_QT, reason="PySide6 runtime not available")
@@ -3032,5 +3036,309 @@ class TestBayesianAcquisitionIntegration:
         worker = _OptimizationWorker(config, mock_eval)
         result = worker._run_bayesian_search(config)
         assert result.best is not None
+
+
+# ===================================================================
+# LHS 探索手法
+# ===================================================================
+
+
+class TestLHSSearch:
+    """LHS (ラテン超方格サンプリング) による探索のテスト。"""
+
+    def test_basic_search(self):
+        """LHS探索が候補を正しく返す。"""
+        config = OptimizationConfig(
+            objective_key="max_drift",
+            parameters=[ParameterRange(key="x", min_val=0, max_val=10, step=0)],
+            method="lhs",
+            max_iterations=30,
+        )
+        worker = _OptimizationWorker(config)
+        result = worker._run_lhs_search(config)
+        assert len(result.all_candidates) == 30
+        assert result.best is not None
+
+    def test_respects_max_iterations(self):
+        """指定したmax_iterationsの数だけ候補が生成される。"""
+        config = OptimizationConfig(
+            objective_key="max_drift",
+            parameters=[
+                ParameterRange(key="x", min_val=0, max_val=1, step=0),
+                ParameterRange(key="y", min_val=0, max_val=1, step=0),
+            ],
+            method="lhs",
+            max_iterations=50,
+        )
+        worker = _OptimizationWorker(config)
+        result = worker._run_lhs_search(config)
+        assert len(result.all_candidates) == 50
+
+    def test_step_parameter(self):
+        """step付きパラメータが正しく離散化される。"""
+        config = OptimizationConfig(
+            objective_key="max_drift",
+            parameters=[ParameterRange(key="x", min_val=0, max_val=10, step=2.0)],
+            method="lhs",
+            max_iterations=20,
+        )
+        worker = _OptimizationWorker(config)
+        result = worker._run_lhs_search(config)
+        for cand in result.all_candidates:
+            x = cand.params["x"]
+            assert x >= 0 and x <= 10
+            assert abs(x % 2.0) < 0.001 or abs(x % 2.0 - 2.0) < 0.001
+
+    def test_integer_parameter(self):
+        """整数パラメータが整数値を返す。"""
+        config = OptimizationConfig(
+            objective_key="max_drift",
+            parameters=[ParameterRange(key="n", min_val=1, max_val=10, step=0, is_integer=True)],
+            method="lhs",
+            max_iterations=20,
+        )
+        worker = _OptimizationWorker(config)
+        result = worker._run_lhs_search(config)
+        for cand in result.all_candidates:
+            assert cand.params["n"] == int(cand.params["n"])
+
+    def test_space_filling(self):
+        """LHSがランダムサーチより空間充填性に優れることを確認。"""
+        np.random.seed(42)
+        config = OptimizationConfig(
+            objective_key="max_drift",
+            parameters=[
+                ParameterRange(key="x", min_val=0, max_val=1, step=0),
+                ParameterRange(key="y", min_val=0, max_val=1, step=0),
+            ],
+            method="lhs",
+            max_iterations=20,
+        )
+        worker = _OptimizationWorker(config)
+        result = worker._run_lhs_search(config)
+        # 各パラメータの値が0〜1の各区間に均等に分布するか確認
+        x_vals = [c.params["x"] for c in result.all_candidates]
+        # 20点を10ビンに分類→大部分のビンが使われるべき
+        bins = set(int(x * 10) for x in x_vals if x < 1.0)
+        assert len(bins) >= 7  # 10ビン中7以上がカバーされるべき
+
+    def test_finds_quadratic_minimum(self):
+        """LHS探索で二次関数の最小値近傍を見つける。"""
+        def eval_fn(params):
+            x = params["x"]
+            return {"max_drift": (x - 5.0) ** 2}
+
+        config = OptimizationConfig(
+            objective_key="max_drift",
+            parameters=[ParameterRange(key="x", min_val=0, max_val=10, step=0)],
+            method="lhs",
+            max_iterations=100,
+        )
+        worker = _OptimizationWorker(config, eval_fn)
+        result = worker._run_lhs_search(config)
+        assert result.best is not None
+        assert abs(result.best.params["x"] - 5.0) < 1.5
+
+    def test_multi_param(self):
+        """多パラメータLHS探索。"""
+        config = OptimizationConfig(
+            objective_key="max_drift",
+            parameters=[
+                ParameterRange(key="a", min_val=0, max_val=10, step=0),
+                ParameterRange(key="b", min_val=0, max_val=10, step=0),
+                ParameterRange(key="c", min_val=0, max_val=10, step=0),
+            ],
+            method="lhs",
+            max_iterations=40,
+        )
+        worker = _OptimizationWorker(config)
+        result = worker._run_lhs_search(config)
+        assert len(result.all_candidates) == 40
+        assert result.best is not None
+
+    def test_message_contains_lhs(self):
+        """結果メッセージにLHSの記述が含まれる。"""
+        config = OptimizationConfig(
+            objective_key="max_drift",
+            parameters=[ParameterRange(key="x", min_val=0, max_val=1, step=0)],
+            method="lhs",
+            max_iterations=10,
+        )
+        worker = _OptimizationWorker(config)
+        result = worker._run_lhs_search(config)
+        assert "LHS" in result.message
+
+    def test_method_dispatch(self):
+        """method='lhs'でrun()から正しくディスパッチされる。"""
+        config = OptimizationConfig(
+            objective_key="max_drift",
+            parameters=[ParameterRange(key="x", min_val=0, max_val=1, step=0)],
+            method="lhs",
+            max_iterations=10,
+        )
+        worker = _OptimizationWorker(config)
+        worker.run()
+        # finished_signal emitされるはず（モック環境でも成功する）
+
+
+# ===================================================================
+# Saltelli サンプリング
+# ===================================================================
+
+
+class TestSaltelliSampling:
+    """_saltelli_sample のテスト。"""
+
+    def test_shape(self):
+        A, B = _saltelli_sample(32, 3)
+        assert A.shape == (32, 3)
+        assert B.shape == (32, 3)
+
+    def test_range(self):
+        A, B = _saltelli_sample(64, 4)
+        assert np.all(A >= 0) and np.all(A <= 1)
+        assert np.all(B >= 0) and np.all(B <= 1)
+
+    def test_different_matrices(self):
+        """AとBは異なる行列であるべき。"""
+        A, B = _saltelli_sample(32, 2)
+        assert not np.allclose(A, B)
+
+
+# ===================================================================
+# Sobol グローバル感度解析
+# ===================================================================
+
+
+class TestSobolSensitivity:
+    """compute_sobol_sensitivity のテスト。"""
+
+    def test_basic(self):
+        """基本的なSobol解析が動作する。"""
+        def eval_fn(params):
+            return {"obj": params["x"] * 2 + params["y"] * 0.5}
+
+        result = compute_sobol_sensitivity(
+            evaluate_fn=eval_fn,
+            parameters=[
+                ParameterRange(key="x", label="X", min_val=0, max_val=10, step=0),
+                ParameterRange(key="y", label="Y", min_val=0, max_val=10, step=0),
+            ],
+            objective_key="obj",
+            n_samples=128,
+        )
+        assert len(result.entries) == 2
+        assert result.n_evaluations == 128 * (2 * 2 + 2)
+        # x は y より影響が大きいはず
+        x_entry = next(e for e in result.entries if e.key == "x")
+        y_entry = next(e for e in result.entries if e.key == "y")
+        assert x_entry.st > y_entry.st
+
+    def test_single_param(self):
+        """1パラメータでもエラーにならない。"""
+        def eval_fn(params):
+            return {"obj": params["x"] ** 2}
+
+        result = compute_sobol_sensitivity(
+            evaluate_fn=eval_fn,
+            parameters=[
+                ParameterRange(key="x", label="X", min_val=0, max_val=10, step=0),
+            ],
+            objective_key="obj",
+            n_samples=64,
+        )
+        assert len(result.entries) == 1
+        assert result.entries[0].st >= 0
+
+    def test_empty_params(self):
+        """パラメータなしで空結果を返す。"""
+        result = compute_sobol_sensitivity(
+            evaluate_fn=lambda p: {},
+            parameters=[],
+            objective_key="obj",
+        )
+        assert len(result.entries) == 0
+
+    def test_interaction_indices(self):
+        """交互作用指標のプロパティが正しく計算される。"""
+        result = SobolResult(
+            entries=[
+                SobolEntry(key="a", label="A", s1=0.3, st=0.5),
+                SobolEntry(key="b", label="B", s1=0.1, st=0.4),
+            ],
+            objective_key="obj",
+        )
+        interactions = result.interaction_indices
+        assert abs(interactions["a"] - 0.2) < 1e-10
+        assert abs(interactions["b"] - 0.3) < 1e-10
+
+    def test_ranked_by_total(self):
+        """全次指標によるランキング。"""
+        result = SobolResult(
+            entries=[
+                SobolEntry(key="a", label="A", s1=0.1, st=0.2),
+                SobolEntry(key="b", label="B", s1=0.3, st=0.5),
+            ],
+            objective_key="obj",
+        )
+        ranked = result.ranked_by_total
+        assert ranked[0].key == "b"
+        assert ranked[1].key == "a"
+
+    def test_nan_handling(self):
+        """評価関数がエラーを返してもクラッシュしない。"""
+        call_count = [0]
+        def eval_fn(params):
+            call_count[0] += 1
+            if call_count[0] % 3 == 0:
+                raise ValueError("test error")
+            return {"obj": params["x"]}
+
+        result = compute_sobol_sensitivity(
+            evaluate_fn=eval_fn,
+            parameters=[
+                ParameterRange(key="x", label="X", min_val=0, max_val=1, step=0),
+            ],
+            objective_key="obj",
+            n_samples=32,
+        )
+        assert len(result.entries) == 1
+
+    def test_constant_function(self):
+        """定数関数の感度は0になるべき。"""
+        def eval_fn(params):
+            return {"obj": 42.0}
+
+        result = compute_sobol_sensitivity(
+            evaluate_fn=eval_fn,
+            parameters=[
+                ParameterRange(key="x", label="X", min_val=0, max_val=10, step=0),
+                ParameterRange(key="y", label="Y", min_val=0, max_val=10, step=0),
+            ],
+            objective_key="obj",
+            n_samples=64,
+        )
+        for e in result.entries:
+            assert e.s1 == 0.0
+            assert e.st == 0.0
+
+    def test_three_params_dominance(self):
+        """3パラメータで支配的パラメータを正しく識別。"""
+        def eval_fn(params):
+            # x が支配的、y は少し影響、z はほぼ影響なし
+            return {"obj": 10 * params["x"] + 1 * params["y"] + 0.01 * params["z"]}
+
+        result = compute_sobol_sensitivity(
+            evaluate_fn=eval_fn,
+            parameters=[
+                ParameterRange(key="x", label="X", min_val=0, max_val=1, step=0),
+                ParameterRange(key="y", label="Y", min_val=0, max_val=1, step=0),
+                ParameterRange(key="z", label="Z", min_val=0, max_val=1, step=0),
+            ],
+            objective_key="obj",
+            n_samples=128,
+        )
+        ranked = result.ranked_by_total
+        assert ranked[0].key == "x"  # x が最も感度が高い
 
 
