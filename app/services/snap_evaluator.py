@@ -159,6 +159,12 @@ class SnapEvaluator:
             # .s8i をパースしてパラメータを変更
             model = parse_s8i(str(src))
 
+            # DYC ケースの run_flag=2（解析済み）を 1（解析する）にリセット
+            for dyc in model.dyc_cases:
+                if dyc.run_flag == 2:
+                    dyc.run_flag = 1
+                    dyc.values[1] = "1"
+
             # ダンパー定義パラメータの変更
             if self.damper_def_name:
                 ddef = model.get_damper_def(self.damper_def_name)
@@ -715,6 +721,13 @@ def create_minimizer_evaluate_fn(
 
         try:
             model = parse_s8i(base_s8i_path)
+
+            # DYC ケースの run_flag=2（解析済み）を 1（解析する）にリセット
+            # → SNAP バッチ実行時の「解析済みのケースを計算しますか」ダイアログを回避
+            for dyc in model.dyc_cases:
+                if dyc.run_flag == 2:
+                    dyc.run_flag = 1
+                    dyc.values[1] = "1"
 
             # フロアキーに基づいてRD要素のquantityを設定
             for floor_key, rd_indices in floor_rd_map.items():

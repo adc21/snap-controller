@@ -10,6 +10,7 @@ from app.models.s8i_parser import (
     S8iModel,
     DamperDefinition,
     DamperElement,
+    DycCase,
 )
 
 
@@ -236,3 +237,77 @@ class TestS8iDamperElement:
         assert "damper1" in label
         assert "1" in label
         assert "2" in label
+
+
+class TestS8iDycCase:
+    """Test DycCase parsing and properties."""
+
+    def test_parse_dyc_cases(self, tmp_path):
+        """Parser extracts DYC cases with correct fields."""
+        s8i_file = tmp_path / "test.s8i"
+        content = "DYC / BCJL2-MIX,1,3,100\nDYC / ELC,0,1,50"
+        s8i_file.write_text(content, encoding="shift_jis")
+
+        model = parse_s8i(str(s8i_file))
+
+        assert len(model.dyc_cases) == 2
+        assert model.dyc_cases[0].name == "BCJL2-MIX"
+        assert model.dyc_cases[0].run_flag == 1
+        assert model.dyc_cases[0].case_no == 1
+        assert model.dyc_cases[0].is_run is True
+        assert model.dyc_cases[1].name == "ELC"
+        assert model.dyc_cases[1].run_flag == 0
+        assert model.dyc_cases[1].is_run is False
+
+    def test_dyc_run_flag_2_is_run(self, tmp_path):
+        """run_flag=2 (解析済み) も is_run=True として扱われる。"""
+        s8i_file = tmp_path / "test.s8i"
+        content = "DYC / TEST,2,1,100"
+        s8i_file.write_text(content, encoding="shift_jis")
+
+        model = parse_s8i(str(s8i_file))
+
+        assert model.dyc_cases[0].run_flag == 2
+        assert model.dyc_cases[0].is_run is True
+
+    def test_dyc_folder_name(self):
+        """DycCase.folder_name returns D{N} format."""
+        dyc = DycCase(case_no=4, name="TEST", run_flag=1, num_waves=1, values=["TEST", "1", "1"])
+        assert dyc.folder_name == "D4"
+
+
+class TestS8iWriteDyc:
+    """Test DYC write-back in S8iModel.write()."""
+
+    def test_write_preserves_dyc_changes(self, tmp_path):
+        """write() reflects DYC run_flag changes in output file."""
+        s8i_file = tmp_path / "input.s8i"
+        content = "TTL / 1,1,1,0,0,Test\nDYC / CASE1,2,3,100\nDYC / CASE2,0,1,50"
+        s8i_file.write_text(content, encoding="shift_jis")
+
+        model = parse_s8i(str(s8i_file))
+        # run_flag=2 を 1 にリセット
+        model.dyc_cases[0].run_flag = 1
+        model.dyc_cases[0].values[1] = "1"
+
+        output_file = tmp_path / "output.s8i"
+        model.write(str(output_file))
+
+        # 書き出し後のファイルを再パースして確認
+        model2 = parse_s8i(str(output_file))
+        assert model2.dyc_cases[0].run_flag == 1
+        assert model2.dyc_cases[1].run_flag == 0
+
+    def test_write_dyc_no_change_preserves_original(self, tmp_path):
+        """write() without DYC changes preserves original values."""
+        s8i_file = tmp_path / "input.s8i"
+        content = "DYC / CASE1,1,3,100"
+        s8i_file.write_text(content, encoding="shift_jis")
+
+        model = parse_s8i(str(s8i_file))
+        output_file = tmp_path / "output.s8i"
+        model.write(str(output_file))
+
+        model2 = parse_s8i(str(output_file))
+        assert model2.dyc_cases[0].run_flag == 1
+        assert model2.dyc_cases[0].name == "CASE1"

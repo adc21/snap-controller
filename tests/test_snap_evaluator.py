@@ -20,6 +20,7 @@ from app.services.snap_evaluator import (
 )
 from app.models.analysis_case import AnalysisCase
 from app.models.performance_criteria import PerformanceCriteria, CriterionItem
+from app.models.s8i_parser import parse_s8i
 
 
 class TestSnapEvaluatorCacheKey:
@@ -375,3 +376,65 @@ class TestMultiWaveEvaluator:
         mw({"Cd": 100})
         mw({"Cd": 200})
         assert mw._eval_count == 2
+
+
+class TestDycRunFlagReset:
+    """DYC run_flag=2 リセット機能のテスト。"""
+
+    def _make_s8i_with_dyc(self, tmp_path, run_flags):
+        """指定した run_flag のDYCケースを持つ.s8iファイルを作成。"""
+        lines = ["TTL / 1,1,1,0,0,Test"]
+        for i, flag in enumerate(run_flags, 1):
+            lines.append(f"DYC / CASE{i},{flag},1,100")
+        s8i_file = tmp_path / "test.s8i"
+        s8i_file.write_text("\n".join(lines), encoding="shift_jis")
+        return str(s8i_file)
+
+    def test_run_flag_2_reset_to_1_in_parsed_model(self, tmp_path):
+        """run_flag=2(解析済み)をパース後に1にリセットできることを確認。"""
+        s8i_path = self._make_s8i_with_dyc(tmp_path, [2, 1, 0])
+        model = parse_s8i(s8i_path)
+
+        # SnapEvaluator と同じリセットロジック
+        for dyc in model.dyc_cases:
+            if dyc.run_flag == 2:
+                dyc.run_flag = 1
+                dyc.values[1] = "1"
+
+        assert model.dyc_cases[0].run_flag == 1
+        assert model.dyc_cases[0].values[1] == "1"
+        assert model.dyc_cases[1].run_flag == 1  # 変更なし
+        assert model.dyc_cases[2].run_flag == 0  # 変更なし
+
+    def test_run_flag_reset_persists_through_write(self, tmp_path):
+        """リセット後のwrite()で正しくrun_flag=1が書き出される。"""
+        s8i_path = self._make_s8i_with_dyc(tmp_path, [2, 2, 0])
+        model = parse_s8i(s8i_path)
+
+        for dyc in model.dyc_cases:
+            if dyc.run_flag == 2:
+                dyc.run_flag = 1
+                dyc.values[1] = "1"
+
+        output = tmp_path / "output.s8i"
+        model.write(str(output))
+
+        model2 = parse_s8i(str(output))
+        assert model2.dyc_cases[0].run_flag == 1
+        assert model2.dyc_cases[1].run_flag == 1
+        assert model2.dyc_cases[2].run_flag == 0
+
+    def test_no_reset_needed_when_all_flag_1(self, tmp_path):
+        """全ケースがrun_flag=1の場合、リセット不要で変更なし。"""
+        s8i_path = self._make_s8i_with_dyc(tmp_path, [1, 1])
+        model = parse_s8i(s8i_path)
+
+        changed = False
+        for dyc in model.dyc_cases:
+            if dyc.run_flag == 2:
+                dyc.run_flag = 1
+                dyc.values[1] = "1"
+                changed = True
+
+        assert changed is False
+        assert all(d.run_flag == 1 for d in model.dyc_cases)

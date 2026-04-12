@@ -303,6 +303,12 @@ class S8iModel:
                 new_line = f"RD / {','.join(elem.values)}"
                 lines[elem.line_no - 1] = new_line
 
+        # DYC ケースの変更を反映
+        for dyc in self.dyc_cases:
+            if dyc.line_no > 0 and dyc.line_no <= len(lines):
+                new_line = f"DYC / {','.join(dyc.values)}"
+                lines[dyc.line_no - 1] = new_line
+
         path = Path(output_path)
         path.parent.mkdir(parents=True, exist_ok=True)
         with open(path, "w", encoding="shift_jis", errors="replace") as f:
