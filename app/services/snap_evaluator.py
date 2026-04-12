@@ -459,6 +459,7 @@ def create_snap_evaluator(
     param_ranges: List["ParameterRange"],
     log_callback: Optional[Callable[[str], None]] = None,
     snap_work_dir: str = "",
+    timeout: int = 300,
 ) -> Optional[SnapEvaluator]:
     """
     AnalysisCase と ParameterRange リストから SnapEvaluator を構築するヘルパー。
@@ -543,6 +544,7 @@ def create_snap_evaluator(
             damper_def_name=damper_def_name,
             param_field_map=param_field_map,
             rd_overrides=rd_overrides,
+            timeout=timeout,
             log_callback=log_callback,
             snap_work_dir=snap_work_dir,
         )

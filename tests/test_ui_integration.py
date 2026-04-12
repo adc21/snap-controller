@@ -1890,3 +1890,60 @@ class TestIrdtVariationControl:
         dlg = IrdtWizardDialog()
         assert dlg._variation_spin.suffix() == " %"
         dlg.close()
+
+
+class TestOptimizerDialogTimeoutAndApply:
+    """OptimizerDialog タイムアウトUI と 結果適用のテスト。"""
+
+    def test_timeout_spin_exists(self, qapp):
+        """タイムアウトスピンボックスが存在する。"""
+        from app.ui.optimizer_dialog import OptimizerDialog
+        dlg = OptimizerDialog()
+        assert hasattr(dlg, "_timeout_spin")
+        assert dlg._timeout_spin.value() == 300
+        assert dlg._timeout_spin.minimum() == 30
+        assert dlg._timeout_spin.maximum() == 3600
+        dlg.close()
+
+    def test_timeout_spin_suffix(self, qapp):
+        """タイムアウトスピンに秒サフィックスがある。"""
+        from app.ui.optimizer_dialog import OptimizerDialog
+        dlg = OptimizerDialog()
+        assert dlg._timeout_spin.suffix() == " 秒"
+        dlg.close()
+
+    def test_timeout_in_config(self, qapp):
+        """_build_configがsnap_timeoutを含む。"""
+        from app.ui.optimizer_dialog import OptimizerDialog
+        dlg = OptimizerDialog()
+        dlg._timeout_spin.setValue(600)
+        config = dlg._build_config()
+        assert config.snap_timeout == 600
+        dlg.close()
+
+    def test_apply_btn_label(self, qapp):
+        """適用ボタンのラベルが.s8i適用であること。"""
+        from app.ui.optimizer_dialog import OptimizerDialog
+        dlg = OptimizerDialog()
+        assert ".s8i" in dlg._apply_btn.text()
+        dlg.close()
+
+    def test_apply_best_no_result(self, qapp):
+        """結果なしの場合_apply_bestがダイアログを表示する。"""
+        from app.ui.optimizer_dialog import OptimizerDialog
+        from unittest.mock import patch
+        dlg = OptimizerDialog()
+        dlg._result = None
+        with patch("PySide6.QtWidgets.QMessageBox.information") as mock_info:
+            dlg._apply_best()
+            mock_info.assert_called_once()
+        dlg.close()
+
+    def test_preset_restores_timeout(self, qapp):
+        """プリセット読込でタイムアウト値が復元される。"""
+        from app.ui.optimizer_dialog import OptimizerDialog
+        dlg = OptimizerDialog()
+        preset = {"snap_timeout": 900}
+        dlg._apply_config_preset(preset)
+        assert dlg._timeout_spin.value() == 900
+        dlg.close()

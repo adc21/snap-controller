@@ -3747,3 +3747,26 @@ class TestDESearch:
         assert len(diversity_msgs) > 0
 
 
+class TestSnapTimeoutConfig:
+    """snap_timeout フィールドのシリアライズテスト。"""
+
+    def test_config_default_snap_timeout(self):
+        """デフォルトのsnap_timeoutは300秒。"""
+        config = OptimizationConfig()
+        assert config.snap_timeout == 300
+
+    def test_config_to_dict_includes_snap_timeout(self):
+        """to_dictにsnap_timeoutが含まれる。"""
+        config = OptimizationConfig(snap_timeout=600)
+        d = config.to_dict()
+        assert d["snap_timeout"] == 600
+
+    def test_config_from_dict_restores_snap_timeout(self):
+        """from_dictでsnap_timeoutが復元される。"""
+        config = OptimizationConfig.from_dict({"snap_timeout": 900})
+        assert config.snap_timeout == 900
+
+    def test_config_from_dict_defaults_snap_timeout(self):
+        """古いJSONでもsnap_timeoutデフォルト値で動作。"""
+        config = OptimizationConfig.from_dict({})
+        assert config.snap_timeout == 300

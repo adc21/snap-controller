@@ -467,6 +467,9 @@ class OptimizationConfig:
     """乱数シード。整数を指定すると全確率的手法で再現性のある結果を得られる。
     None の場合は毎回異なるランダムシードを使用（デフォルト）。
     構造設計のレビューや結果の再現性確認に有用。"""
+    snap_timeout: int = 300
+    """SNAP 1回実行あたりのタイムアウト（秒）。デフォルト300秒。
+    大規模モデルでは 600〜1200 に設定する。0の場合は制限なし。"""
 
     def compute_objective(self, response: Dict[str, float], params: Optional[Dict[str, float]] = None) -> float:
         """応答値辞書から目的関数値を計算する。
@@ -522,6 +525,7 @@ class OptimizationConfig:
             "acquisition_kappa": self.acquisition_kappa,
             "ga_adaptive_mutation": self.ga_adaptive_mutation,
             "random_seed": self.random_seed,
+            "snap_timeout": self.snap_timeout,
         }
 
     @classmethod
@@ -548,6 +552,7 @@ class OptimizationConfig:
             acquisition_kappa=d.get("acquisition_kappa", 2.0),
             ga_adaptive_mutation=d.get("ga_adaptive_mutation", False),
             random_seed=d.get("random_seed"),
+            snap_timeout=d.get("snap_timeout", 300),
         )
 
 

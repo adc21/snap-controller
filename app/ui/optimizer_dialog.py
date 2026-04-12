@@ -60,6 +60,7 @@ from __future__ import annotations
 import csv
 import json
 import time
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import numpy as np
@@ -622,6 +623,21 @@ class OptimizerDialog(QDialog):
         )
         parallel_row.addWidget(self._parallel_spin)
         parallel_row.addWidget(QLabel("（SNAP解析を並列化。1=逐次）"))
+
+        parallel_row.addWidget(QLabel("    タイムアウト:"))
+        self._timeout_spin = QSpinBox()
+        self._timeout_spin.setRange(30, 3600)
+        self._timeout_spin.setValue(300)
+        self._timeout_spin.setSuffix(" 秒")
+        self._timeout_spin.setSingleStep(30)
+        self._timeout_spin.setFixedWidth(100)
+        self._timeout_spin.setToolTip(
+            "SNAP 1回実行あたりのタイムアウト（秒）。\n"
+            "大規模モデルでは 600〜1200 に設定してください。\n"
+            "デフォルト: 300秒（5分）"
+        )
+        parallel_row.addWidget(self._timeout_spin)
+
         parallel_row.addStretch()
         layout.addLayout(parallel_row)
 
@@ -958,7 +974,7 @@ class OptimizerDialog(QDialog):
 
         # 行3: アクション
         action_row = QHBoxLayout()
-        self._apply_btn = QPushButton("最良解をケースに適用")
+        self._apply_btn = QPushButton("最良解を .s8i に適用")
         self._apply_btn.setEnabled(False)
         action_row.addWidget(self._apply_btn)
         action_row.addStretch()
@@ -1493,6 +1509,7 @@ class OptimizerDialog(QDialog):
                 if self._seed_check.isChecked()
                 else None
             ),
+            snap_timeout=self._timeout_spin.value(),
         )
 
     def _edit_cost_coefficients(self) -> None:
@@ -1655,6 +1672,7 @@ class OptimizerDialog(QDialog):
                         param_ranges=config.parameters,
                         log_callback=lambda msg: self._result_summary.setText(msg),
                         snap_work_dir=self._snap_work_dir,
+                        timeout=config.snap_timeout,
                     )
                     if ev:
                         evaluators.append((wave_name, ev))
@@ -1677,6 +1695,7 @@ class OptimizerDialog(QDialog):
                     param_ranges=config.parameters,
                     log_callback=lambda msg: self._result_summary.setText(msg),
                     snap_work_dir=self._snap_work_dir,
+                    timeout=config.snap_timeout,
                 )
                 if snap_evaluator:
                     evaluate_fn = snap_evaluator
@@ -1685,7 +1704,6 @@ class OptimizerDialog(QDialog):
                     )
             if evaluate_fn is None:
                 # 具体的な原因を特定してログ + UI表示
-                from pathlib import Path
                 reasons: list[str] = []
                 exe = self._snap_exe_path
                 if not exe:
@@ -2294,11 +2312,93 @@ class OptimizerDialog(QDialog):
     # ------------------------------------------------------------------
 
     def _apply_best(self) -> None:
-        """最良解をケースに適用して閉じます。"""
-        if self._result and self._result.best:
-            self.accept()
-        else:
+        """最良解を .s8i ファイルに書き戻してからケースに適用して閉じます。"""
+        if not self._result or not self._result.best:
             QMessageBox.information(self, "情報", "適用可能な最良解がありません。")
+            return
+
+        best = self._result.best
+        model_path = getattr(self._base_case, "model_path", "") if self._base_case else ""
+
+        if not model_path or not Path(model_path).exists():
+            # モデルファイルが無い場合はケース追加のみで閉じる
+            self.accept()
+            return
+
+        # 確認ダイアログ: パラメータ内容を表示
+        param_lines = [f"  {k} = {v:.6g}" for k, v in best.params.items()]
+        detail = "\n".join(param_lines)
+        obj_label = self._result.config.objective_label if self._result.config else "目的関数"
+        ret = QMessageBox.question(
+            self,
+            "適用確認",
+            f"以下の最良パラメータを .s8i ファイルに書き戻します:\n\n"
+            f"{detail}\n\n"
+            f"{obj_label} = {best.objective_value:.6g}\n\n"
+            f"対象: {model_path}\n\n"
+            "元のファイルが上書きされます。続行しますか？",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if ret != QMessageBox.StandardButton.Yes:
+            return
+
+        try:
+            from app.models.s8i_parser import parse_s8i
+
+            model = parse_s8i(model_path)
+
+            # ダンパー定義のパラメータを更新
+            damper_def_name = ""
+            if self._base_case and self._base_case.damper_params:
+                for key in self._base_case.damper_params:
+                    damper_def_name = key
+                    break
+
+            if damper_def_name:
+                ddef = model.get_damper_def(damper_def_name)
+                if ddef is not None:
+                    # create_snap_evaluator と同じマッピングロジック
+                    overrides = (self._base_case.damper_params or {}).get(damper_def_name, {})
+                    if isinstance(overrides, dict):
+                        override_keys = list(overrides.keys())
+                        param_field_map: dict[str, int] = {}
+                        config_params = self._result.config.parameters if self._result.config else []
+                        for pr in config_params:
+                            if pr.key in override_keys:
+                                try:
+                                    param_field_map[pr.key] = int(pr.key)
+                                except ValueError:
+                                    pass
+                            for idx_str in override_keys:
+                                try:
+                                    idx = int(idx_str)
+                                    if pr.key.lower() in str(overrides.get(idx_str, "")).lower():
+                                        param_field_map[pr.key] = idx
+                                except (ValueError, TypeError):
+                                    pass
+
+                        for param_key, field_idx in param_field_map.items():
+                            if param_key in best.params and field_idx < len(ddef.values):
+                                ddef.values[field_idx] = str(best.params[param_key])
+
+            model.write(model_path)
+            QMessageBox.information(
+                self,
+                "適用完了",
+                f"最良パラメータを .s8i ファイルに書き戻しました。\n"
+                f"対象: {Path(model_path).name}",
+            )
+            self._progress_label.setText("最良パラメータを .s8i に適用しました")
+        except Exception as exc:
+            logger.error("最良パラメータの .s8i 書き戻しに失敗", exc_info=True)
+            QMessageBox.critical(
+                self, "書き戻しエラー",
+                f".s8i ファイルへの書き戻しに失敗しました:\n{exc}",
+            )
+            return
+
+        self.accept()
 
     def _copy_best_params(self) -> None:
         """最良解のパラメータをクリップボードにコピーします。"""
@@ -2455,6 +2555,7 @@ class OptimizerDialog(QDialog):
                 base_case=self._base_case,
                 param_ranges=config.parameters,
                 snap_work_dir=self._snap_work_dir,
+                timeout=config.snap_timeout,
             )
         if evaluate_fn is None:
             from app.services.optimizer import _mock_evaluate
@@ -2514,6 +2615,7 @@ class OptimizerDialog(QDialog):
                 base_case=self._base_case,
                 param_ranges=config.parameters,
                 snap_work_dir=self._snap_work_dir,
+                timeout=config.snap_timeout,
             )
         if evaluate_fn is None:
             from app.services.optimizer import _mock_evaluate
@@ -2891,6 +2993,9 @@ class OptimizerDialog(QDialog):
             self._seed_spin.setValue(seed)
         else:
             self._seed_check.setChecked(False)
+
+        # SNAPタイムアウト
+        self._timeout_spin.setValue(preset.get("snap_timeout", 300))
 
         self._update_est_run_label()
 
