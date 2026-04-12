@@ -397,6 +397,7 @@ class OptimizerDialog(QDialog):
         self._method_combo.addItem("ベイズ最適化 (Bayesian)", "bayesian")
         self._method_combo.addItem("遺伝的アルゴリズム (GA)", "ga")
         self._method_combo.addItem("焼きなまし法 (SA)", "sa")
+        self._method_combo.addItem("差分進化 (DE)", "de")
         self._method_combo.addItem("多目的最適化 (NSGA-II)", "nsga2")
         self._method_combo.currentIndexChanged.connect(self._on_method_changed)
         row1.addWidget(self._method_combo)
@@ -1177,7 +1178,7 @@ class OptimizerDialog(QDialog):
 
     def _on_method_changed(self, index: int) -> None:
         method = self._method_combo.currentData()
-        self._iter_spin.setEnabled(method in ("random", "lhs", "bayesian", "ga", "sa", "nsga2"))
+        self._iter_spin.setEnabled(method in ("random", "lhs", "bayesian", "ga", "sa", "de", "nsga2"))
         self._acq_row_widget.setVisible(method == "bayesian")
         self._ga_row_widget.setVisible(method == "ga")
 
@@ -1243,11 +1244,12 @@ class OptimizerDialog(QDialog):
             )
         else:
             return (
-                "ga",
+                "de",
                 f"パラメータ数が多く（{n_params}個）、"
                 f"探索空間が非常に大きい（グリッド{grid_runs}通り）ため、"
-                "遺伝的アルゴリズム(GA)が適しています。"
-                "集団ベースの探索で広い空間を効率的にカバーします。",
+                "差分進化(DE)が適しています。"
+                "連続パラメータに強く、GAより少ないチューニングで安定した性能を発揮します。"
+                "離散パラメータが多い場合はGA も選択肢です。",
                 f"推奨反復数: {min(max(n_params * 50, 200), 500)}回",
             )
 

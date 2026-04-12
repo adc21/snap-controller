@@ -151,6 +151,13 @@ class TestDialogInteractions:
         for i in range(dlg._method_combo.count()):
             dlg._method_combo.setCurrentIndex(i)
 
+    def test_optimizer_de_in_method_combo(self, qapp):
+        """DE (差分進化) が手法コンボに含まれること。"""
+        from app.ui.optimizer_dialog import OptimizerDialog
+        dlg = OptimizerDialog()
+        methods = [dlg._method_combo.itemData(i) for i in range(dlg._method_combo.count())]
+        assert "de" in methods
+
     def test_optimizer_damper_type_switch(self, qapp):
         """全ダンパー種類を切り替えてもクラッシュしないこと。"""
         from app.ui.optimizer_dialog import OptimizerDialog
@@ -297,6 +304,52 @@ class TestDialogInteractions:
         assert dlg._canvas is not None
         assert not dlg._btn_csv.isEnabled()
         assert not dlg._btn_copy.isEnabled()
+
+    def test_minimizer_elevation_diagram(self, qapp):
+        """立面ダイアグラムの描画がクラッシュしないこと。"""
+        from app.ui.minimizer_dialog import MinimizerDialog
+        from app.services.damper_count_minimizer import MinimizationResult, MinimizationStep
+        dlg = MinimizerDialog(
+            floor_keys=["1F", "2F", "3F"],
+            current_quantities={"1F": 4, "2F": 3, "3F": 2},
+            max_quantities={"1F": 10, "2F": 10, "3F": 10},
+        )
+        result = MinimizationResult(
+            strategy="floor_add",
+            initial_quantities={"1F": 4, "2F": 3, "3F": 2},
+            final_quantities={"1F": 2, "2F": 1, "3F": 0},
+            final_count=3,
+            is_feasible=True,
+            final_margin=0.05,
+            history=[MinimizationStep(
+                iteration=0, quantities={"1F": 2, "2F": 1, "3F": 0},
+                total_count=3, is_feasible=True, worst_margin=0.05,
+                summary={"max_drift": 0.005},
+            )],
+        )
+        dlg._update_elevation_diagram(result)
+        assert len(dlg._fig_elev.axes) == 1
+
+    def test_minimizer_elevation_diagram_empty(self, qapp):
+        """空結果で立面ダイアグラムがクラッシュしないこと。"""
+        from app.ui.minimizer_dialog import MinimizerDialog
+        from app.services.damper_count_minimizer import MinimizationResult
+        dlg = MinimizerDialog(
+            floor_keys=["1F"],
+            current_quantities={"1F": 1},
+            max_quantities={"1F": 5},
+        )
+        result = MinimizationResult(
+            strategy="floor_add",
+            initial_quantities={},
+            final_quantities={},
+            final_count=0,
+            is_feasible=False,
+            final_margin=-1.0,
+            history=[],
+        )
+        dlg._update_elevation_diagram(result)
+        # Should not crash
 
     def test_minimizer_realtime_chart(self, qapp):
         from app.ui.minimizer_dialog import MinimizerDialog

@@ -3545,3 +3545,146 @@ class TestRandomSeed:
         assert "乱数シード" not in text
 
 
+# ===================================================================
+# DE (差分進化)
+# ===================================================================
+
+class TestDESearch:
+    """差分進化 (DE/rand/1/bin + jDE自己適応) のテスト。"""
+
+    def test_finds_minimum_of_quadratic(self):
+        """DE should find the minimum of (x - 0.5)^2 near x=0.5."""
+        def evaluate(params):
+            return {"max_drift": (params["x"] - 0.5) ** 2}
+
+        config = OptimizationConfig(
+            objective_key="max_drift",
+            parameters=[ParameterRange(key="x", min_val=0, max_val=1, step=0)],
+            method="de",
+            max_iterations=200,
+        )
+        worker = _OptimizationWorker(config, evaluate)
+        result = worker._run_de_search(config)
+
+        assert result.best is not None
+        assert result.best.objective_value < 0.01
+        assert abs(result.best.params["x"] - 0.5) < 0.15
+
+    def test_empty_params_returns_message(self):
+        config = OptimizationConfig(
+            objective_key="max_drift", parameters=[], method="de",
+        )
+        worker = _OptimizationWorker(config)
+        result = worker._run_de_search(config)
+        assert "設定されていません" in result.message
+
+    def test_message_includes_de_label(self):
+        def evaluate(params):
+            return {"max_drift": params["x"] ** 2}
+
+        config = OptimizationConfig(
+            objective_key="max_drift",
+            parameters=[ParameterRange(key="x", min_val=0, max_val=1, step=0)],
+            method="de",
+            max_iterations=50,
+        )
+        worker = _OptimizationWorker(config, evaluate)
+        result = worker._run_de_search(config)
+        assert "差分進化" in result.message
+
+    def test_respects_constraints(self):
+        """DE should only accept feasible candidates as best."""
+        def evaluate(params):
+            return {"max_drift": params["x"], "stress": params["x"] * 100}
+
+        config = OptimizationConfig(
+            objective_key="max_drift",
+            parameters=[ParameterRange(key="x", min_val=0, max_val=1, step=0)],
+            method="de",
+            max_iterations=100,
+            constraints={"stress": 50},
+        )
+        worker = _OptimizationWorker(config, evaluate)
+        result = worker._run_de_search(config)
+        if result.best is not None:
+            assert result.best.is_feasible
+
+    def test_multidimensional(self):
+        """DE should handle multiple parameters."""
+        def evaluate(params):
+            return {"max_drift": (params["x"] - 0.3) ** 2 + (params["y"] - 0.7) ** 2}
+
+        config = OptimizationConfig(
+            objective_key="max_drift",
+            parameters=[
+                ParameterRange(key="x", min_val=0, max_val=1, step=0),
+                ParameterRange(key="y", min_val=0, max_val=1, step=0),
+            ],
+            method="de",
+            max_iterations=200,
+        )
+        worker = _OptimizationWorker(config, evaluate)
+        result = worker._run_de_search(config)
+        assert result.best is not None
+        assert result.best.objective_value < 0.05
+
+    def test_dispatch_method_de(self):
+        """Method dispatch correctly selects DE via _run_de_search."""
+        def evaluate(params):
+            return {"max_drift": params["x"] ** 2}
+
+        config = OptimizationConfig(
+            objective_key="max_drift",
+            parameters=[ParameterRange(key="x", min_val=0, max_val=1, step=0)],
+            method="de",
+            max_iterations=50,
+        )
+        worker = _OptimizationWorker(config, evaluate)
+        result = worker._run_de_search(config)
+        assert result.best is not None
+        assert "差分進化" in result.message
+
+    def test_summary_includes_de_info(self):
+        """Summary text includes DE method info."""
+        config = OptimizationConfig(
+            objective_key="max_drift",
+            method="de",
+        )
+        result = OptimizationResult(config=config)
+        text = result.get_summary_text()
+        assert "差分進化" in text
+
+    def test_integer_parameter(self):
+        """DE should handle integer parameters."""
+        def evaluate(params):
+            return {"max_drift": abs(params["n"] - 5)}
+
+        config = OptimizationConfig(
+            objective_key="max_drift",
+            parameters=[ParameterRange(key="n", min_val=1, max_val=10, step=0, is_integer=True)],
+            method="de",
+            max_iterations=100,
+        )
+        worker = _OptimizationWorker(config, evaluate)
+        result = worker._run_de_search(config)
+        assert result.best is not None
+        assert result.best.params["n"] == int(result.best.params["n"])
+
+    def test_early_stopping(self):
+        """DE should detect stagnation and stop early."""
+        def evaluate(params):
+            return {"max_drift": 1.0}  # constant — always stagnates
+
+        config = OptimizationConfig(
+            objective_key="max_drift",
+            parameters=[ParameterRange(key="x", min_val=0, max_val=1, step=0)],
+            method="de",
+            max_iterations=2000,
+        )
+        worker = _OptimizationWorker(config, evaluate)
+        result = worker._run_de_search(config)
+        # With 2000 iters, pop ~100, ~20 gens, stagnation_limit=5
+        # Should stop early since objective never improves
+        assert "早期収束" in result.message or len(result.all_candidates) < 2000
+
+

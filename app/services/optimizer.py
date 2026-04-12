@@ -12,6 +12,7 @@ app/services/optimizer.py
   - ベイズ最適化（ガウス過程回帰 + 獲得関数による効率的探索）
   - 遺伝的アルゴリズム（GA）（BLX-α交叉 + ガウシアン突然変異 + エリート保存）
   - 焼きなまし法（SA）（指数冷却 + メトロポリス基準）
+  - 差分進化（DE）（DE/rand/1/bin + jDE自己適応）
   - NSGA-II（多目的最適化: 非優越ソート + クラウディング距離）
 
 使い方:
@@ -678,6 +679,8 @@ class OptimizationResult:
             if self.config.acquisition_function == "ucb":
                 acq_info += f" (κ={self.config.acquisition_kappa:.1f})"
             lines.append(acq_info)
+        if self.config and self.config.method == "de":
+            lines.append("差分進化: DE/rand/1/bin + jDE自己適応F/CR")
         if self.config and self.config.method == "ga" and self.config.ga_adaptive_mutation:
             lines.append("GA適応的突然変異: 有効（世代進行に応じてレート減衰）")
         if self.config and self.config.constraint_penalty_weight > 0:
@@ -925,6 +928,8 @@ class _OptimizationWorker(QThread):
             result = self._run_ga_search(config)
         elif config.method == "sa":
             result = self._run_sa_search(config)
+        elif config.method == "de":
+            result = self._run_de_search(config)
         elif config.method == "nsga2":
             result = self._run_nsga2_search(config)
         else:
@@ -2080,6 +2085,196 @@ class _OptimizationWorker(QThread):
             converged=early_stopped,
             message=f"焼きなまし法完了: {len(all_candidates)}点評価, 受容率 {accept_ratio:.1%}" +
                     (f" (早期収束: {no_improve_count}回改善なし)" if early_stopped else "") +
+                    (f", 制約満足 {len([c for c in all_candidates if c.is_feasible])}点"
+                     if config.constraints or config.criteria else ""),
+        )
+
+    # ------------------------------------------------------------------
+    # 差分進化 (Differential Evolution)
+    # ------------------------------------------------------------------
+
+    def _run_de_search(self, config: OptimizationConfig) -> OptimizationResult:
+        """
+        差分進化 (DE/rand/1/bin) で最適化を実行します。
+
+        Storn & Price (1997) のアルゴリズムに基づく。
+        連続パラメータ空間で高い探索能力を持ち、GAより少ないチューニングで
+        安定した性能を発揮する。
+
+        突然変異: DE/rand/1 (ランダム3個体から差分ベクトルを生成)
+        交叉: 二項交叉 (binomial crossover)
+        自己適応: jDE (Brest et al., 2006) — 個体ごとにF, CRを適応
+        """
+        if not config.parameters:
+            return OptimizationResult(message="探索パラメータが設定されていません。")
+
+        n_params = len(config.parameters)
+        # 集団サイズ: DEは5*D〜10*D が標準的な指針
+        pop_size = max(20, min(100, config.max_iterations // 5))
+        pop_size = max(pop_size, min(100, 7 * n_params))
+        n_generations = max(1, config.max_iterations // pop_size)
+
+        # jDE自己適応の初期値
+        F_init = 0.5   # スケーリング因子
+        CR_init = 0.9  # 交叉率
+        tau1, tau2 = 0.1, 0.1  # 自己適応確率
+
+        all_candidates: List[OptimizationCandidate] = []
+        best: Optional[OptimizationCandidate] = None
+        total = pop_size * n_generations
+        stagnation_limit = max(5, n_generations // 4)
+        no_improve_gens = 0
+
+        def _decode(vec: np.ndarray) -> Dict[str, float]:
+            params = {}
+            for j, pr in enumerate(config.parameters):
+                val = pr.min_val + vec[j] * (pr.max_val - pr.min_val)
+                if pr.is_integer:
+                    val = round(val)
+                elif pr.step > 0:
+                    val = round(val / pr.step) * pr.step
+                val = max(pr.min_val, min(pr.max_val, val))
+                params[pr.key] = val
+            return params
+
+        def _evaluate_vec(vec: np.ndarray, iteration: int) -> OptimizationCandidate:
+            params = _decode(vec)
+            response = self._evaluate_fn(params)
+            obj_val = config.compute_objective(response, params)
+            is_feasible, margins = self._check_constraints(response, config)
+            return OptimizationCandidate(
+                params=params,
+                objective_value=obj_val,
+                response_values=response,
+                is_feasible=is_feasible,
+                iteration=iteration,
+                constraint_margins=margins,
+            )
+
+        def _fitness(c: OptimizationCandidate) -> float:
+            if config.constraint_penalty_weight > 0:
+                return self._penalized_objective(
+                    c.objective_value, c.constraint_margins, config,
+                )
+            if not c.is_feasible:
+                return float("inf")
+            return c.objective_value
+
+        # 初期集団生成（LHS）
+        population = self._latin_hypercube_sample(pop_size, n_params)
+        pop_candidates: List[Optional[OptimizationCandidate]] = [None] * pop_size
+
+        # 個体別 F, CR (jDE)
+        F_arr = np.full(pop_size, F_init)
+        CR_arr = np.full(pop_size, CR_init)
+
+        # ウォームスタート
+        warm_injected = 0
+        if config.warm_start_candidates:
+            warm_sorted = sorted(
+                [wc for wc in config.warm_start_candidates
+                 if all(k in wc.params for k in [pr.key for pr in config.parameters])],
+                key=lambda c: c.objective_value if c.is_feasible else float("inf"),
+            )
+            for wc in warm_sorted[:pop_size // 2]:
+                chromo = np.array([
+                    (wc.params[pr.key] - pr.min_val) / max(pr.max_val - pr.min_val, 1e-12)
+                    for pr in config.parameters
+                ])
+                chromo = np.clip(chromo, 0.0, 1.0)
+                population[warm_injected] = chromo
+                warm_injected += 1
+
+        # 初期集団の評価
+        for i in range(pop_size):
+            if self._cancelled:
+                break
+            cand = _evaluate_vec(population[i], i)
+            pop_candidates[i] = cand
+            all_candidates.append(cand)
+            self.candidate_found.emit(cand)
+            if best is None or _fitness(cand) < _fitness(best):
+                best = cand
+
+        warm_msg = f" (ウォーム{warm_injected}個体)" if warm_injected > 0 else ""
+        self.progress.emit(pop_size, total, f"DE: 初期集団評価完了 ({pop_size}個体{warm_msg})")
+
+        # 世代ループ
+        best_before_gen = best
+        for gen in range(1, n_generations):
+            if self._cancelled:
+                break
+
+            for i in range(pop_size):
+                if self._cancelled:
+                    break
+
+                # jDE: F, CR の自己適応
+                if random.random() < tau1:
+                    F_i = random.uniform(0.1, 1.0)
+                else:
+                    F_i = F_arr[i]
+                if random.random() < tau2:
+                    CR_i = random.random()
+                else:
+                    CR_i = CR_arr[i]
+
+                # DE/rand/1 突然変異: v = x_r1 + F * (x_r2 - x_r3)
+                idxs = list(range(pop_size))
+                idxs.remove(i)
+                r1, r2, r3 = random.sample(idxs, 3)
+                mutant = population[r1] + F_i * (population[r2] - population[r3])
+                mutant = np.clip(mutant, 0.0, 1.0)
+
+                # 二項交叉 (binomial crossover)
+                j_rand = random.randint(0, n_params - 1)
+                trial = np.copy(population[i])
+                for j in range(n_params):
+                    if random.random() < CR_i or j == j_rand:
+                        trial[j] = mutant[j]
+
+                # 選択 (greedy selection)
+                iteration = gen * pop_size + i
+                trial_cand = _evaluate_vec(trial, iteration)
+                all_candidates.append(trial_cand)
+                self.candidate_found.emit(trial_cand)
+
+                if _fitness(trial_cand) <= _fitness(pop_candidates[i]):
+                    population[i] = trial
+                    pop_candidates[i] = trial_cand
+                    F_arr[i] = F_i
+                    CR_arr[i] = CR_i
+
+                if best is None or _fitness(trial_cand) < _fitness(best):
+                    best = trial_cand
+
+            # 停滞検出
+            if (best is not None and best_before_gen is not None
+                    and best.objective_value < best_before_gen.objective_value):
+                no_improve_gens = 0
+            else:
+                no_improve_gens += 1
+            best_before_gen = best
+
+            msg = f"DE: 世代 {gen+1}/{n_generations}"
+            if best:
+                msg += f" | 最良: {best.objective_value:.6g}"
+            self.progress.emit(min((gen + 1) * pop_size, total), total, msg)
+
+            self._maybe_checkpoint(all_candidates, best, config)
+
+            if no_improve_gens >= stagnation_limit:
+                logger.info("DE: %d世代連続で改善なし — 早期終了", no_improve_gens)
+                break
+
+        actual_gens = gen + 1 if n_generations > 1 else 1
+        early_stopped = no_improve_gens >= stagnation_limit
+        return OptimizationResult(
+            best=best,
+            all_candidates=all_candidates,
+            converged=early_stopped,
+            message=f"差分進化完了: {actual_gens}世代×{pop_size}個体 = {len(all_candidates)}点評価" +
+                    (f" (早期収束: {no_improve_gens}世代改善なし)" if early_stopped else "") +
                     (f", 制約満足 {len([c for c in all_candidates if c.is_feasible])}点"
                      if config.constraints or config.criteria else ""),
         )

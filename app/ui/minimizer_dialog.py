@@ -334,7 +334,15 @@ class MinimizerDialog(QDialog):
         floor_chart_layout.addWidget(self._canvas_floor)
         self._tabs.addTab(floor_chart_widget, "層別応答")
 
-        # タブ3: 結果テーブル
+        # タブ3: 建物立面ダイアグラム
+        elev_widget = QWidget()
+        elev_layout = QVBoxLayout(elev_widget)
+        self._fig_elev = Figure(figsize=(4, 6))
+        self._canvas_elev = FigureCanvas(self._fig_elev)
+        elev_layout.addWidget(self._canvas_elev)
+        self._tabs.addTab(elev_widget, "立面図")
+
+        # タブ4: 結果テーブル
         self._table = QTableWidget()
         self._table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self._table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
@@ -427,8 +435,10 @@ class MinimizerDialog(QDialog):
         self._plot_summaries.clear()
         self._fig.clear()
         self._fig_floor.clear()
+        self._fig_elev.clear()
         self._canvas.draw()
         self._canvas_floor.draw()
+        self._canvas_elev.draw()
 
         # 戦略固有パラメータを収集
         extra_kwargs = self._collect_extra_kwargs(strategy)
@@ -495,6 +505,7 @@ class MinimizerDialog(QDialog):
         # 最終チャート更新
         self._update_realtime_chart()
         self._update_floor_chart(result)
+        self._update_elevation_diagram(result)
         self._populate_result_table(result)
 
         self.minimizationCompleted.emit(result)
@@ -590,6 +601,138 @@ class MinimizerDialog(QDialog):
         except Exception:
             logger.warning("層別チャートの描画に失敗", exc_info=True)
         self._canvas_floor.draw()
+
+    def _update_elevation_diagram(self, result: MinimizationResult) -> None:
+        """建物立面ダイアグラム: ダンパー配置を建物断面図風に可視化。"""
+        self._fig_elev.clear()
+        if not result.final_quantities:
+            self._canvas_elev.draw()
+            return
+
+        try:
+            import matplotlib.patches as patches
+
+            ax = self._fig_elev.add_subplot(111)
+
+            # 階をソート（数値順）
+            floors = sorted(
+                result.final_quantities.keys(),
+                key=lambda k: int("".join(c for c in k if c.isdigit()) or "0"),
+            )
+            n_floors = len(floors)
+            if n_floors == 0:
+                self._canvas_elev.draw()
+                return
+
+            max_count = max(result.final_quantities.get(f, 0) for f in floors)
+            max_count = max(max_count, 1)
+
+            floor_h = 1.0  # 各階の高さ
+            bldg_w = 4.0   # 建物幅
+            x_center = 0.0
+
+            for i, fk in enumerate(floors):
+                y_base = i * floor_h
+                count = result.final_quantities.get(fk, 0)
+                initial = result.initial_quantities.get(fk, 0)
+
+                # 床スラブ（水平線）
+                ax.plot(
+                    [x_center - bldg_w / 2, x_center + bldg_w / 2],
+                    [y_base, y_base],
+                    color="#555", linewidth=1.5,
+                )
+
+                # 柱（左右の縦線）
+                ax.plot(
+                    [x_center - bldg_w / 2, x_center - bldg_w / 2],
+                    [y_base, y_base + floor_h],
+                    color="#888", linewidth=1.0,
+                )
+                ax.plot(
+                    [x_center + bldg_w / 2, x_center + bldg_w / 2],
+                    [y_base, y_base + floor_h],
+                    color="#888", linewidth=1.0,
+                )
+
+                # ダンパーを×印で表現（階の中央に横並び）
+                if count > 0:
+                    # ダンパー間隔を均等配分
+                    damper_w = bldg_w * 0.7
+                    if count == 1:
+                        x_positions = [x_center]
+                    else:
+                        x_positions = [
+                            x_center - damper_w / 2 + j * damper_w / (count - 1)
+                            for j in range(count)
+                        ]
+
+                    y_mid = y_base + floor_h / 2
+                    sz = floor_h * 0.2
+                    for xp in x_positions:
+                        # ×印でダンパー表現
+                        ax.plot(
+                            [xp - sz, xp + sz], [y_mid - sz, y_mid + sz],
+                            color="#d32f2f", linewidth=1.5,
+                        )
+                        ax.plot(
+                            [xp + sz, xp - sz], [y_mid - sz, y_mid + sz],
+                            color="#d32f2f", linewidth=1.5,
+                        )
+
+                # 階ラベル（左側）
+                ax.text(
+                    x_center - bldg_w / 2 - 0.3,
+                    y_base + floor_h / 2,
+                    fk,
+                    ha="right", va="center", fontsize=8,
+                )
+
+                # 本数ラベル（右側）
+                diff = count - initial
+                diff_str = f" ({diff:+d})" if diff != 0 else ""
+                color = "#d32f2f" if count > 0 else "#999"
+                ax.text(
+                    x_center + bldg_w / 2 + 0.3,
+                    y_base + floor_h / 2,
+                    f"{count}本{diff_str}",
+                    ha="left", va="center", fontsize=8, color=color,
+                )
+
+            # 屋上スラブ
+            ax.plot(
+                [x_center - bldg_w / 2, x_center + bldg_w / 2],
+                [n_floors * floor_h, n_floors * floor_h],
+                color="#555", linewidth=2.0,
+            )
+
+            # 地盤面
+            ax.fill_between(
+                [x_center - bldg_w / 2 - 1.0, x_center + bldg_w / 2 + 1.0],
+                -0.3, 0,
+                color="#8d6e63", alpha=0.3,
+            )
+            ax.plot(
+                [x_center - bldg_w / 2 - 1.0, x_center + bldg_w / 2 + 1.0],
+                [0, 0],
+                color="#5d4037", linewidth=2.0,
+            )
+
+            total = sum(result.final_quantities.get(f, 0) for f in floors)
+            total_init = sum(result.initial_quantities.get(f, 0) for f in floors)
+            ax.set_title(
+                f"ダンパー配置立面図 (合計 {total}本, 初期 {total_init}本)",
+                fontsize=10,
+            )
+            ax.set_xlim(x_center - bldg_w / 2 - 2.0, x_center + bldg_w / 2 + 2.5)
+            ax.set_ylim(-0.5, n_floors * floor_h + 0.5)
+            ax.set_aspect("equal")
+            ax.axis("off")
+
+            self._fig_elev.tight_layout()
+        except Exception:
+            logger.warning("立面ダイアグラムの描画に失敗", exc_info=True)
+        self._canvas_elev.draw()
 
     def _populate_result_table(self, result: MinimizationResult) -> None:
         """結果テーブル: 各階の本数 + 変化量。"""
