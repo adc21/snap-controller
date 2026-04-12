@@ -2617,3 +2617,146 @@ class TestSummaryTextEnvelopeCost:
         assert "コスト重み" in text
 
 
+class TestConvergenceDiagnostics:
+    """収束品質診断のテスト。"""
+
+    def _make_candidates(self, obj_values, feasible_flags=None):
+        """テスト用の候補リストを生成する。"""
+        candidates = []
+        for i, val in enumerate(obj_values):
+            is_feasible = True
+            if feasible_flags is not None:
+                is_feasible = feasible_flags[i]
+            candidates.append(OptimizationCandidate(
+                params={"Cd": 100 + i * 10, "alpha": 0.3 + i * 0.01},
+                objective_value=val,
+                response_values={"max_drift": val},
+                is_feasible=is_feasible,
+                iteration=i,
+            ))
+        return candidates
+
+    def test_returns_none_for_few_candidates(self):
+        from app.services.optimizer import compute_convergence_diagnostics
+        result = OptimizationResult(all_candidates=[])
+        assert compute_convergence_diagnostics(result) is None
+
+        result2 = OptimizationResult(
+            all_candidates=self._make_candidates([0.5])
+        )
+        assert compute_convergence_diagnostics(result2) is None
+
+    def test_converged_good_result(self):
+        from app.services.optimizer import compute_convergence_diagnostics
+        # 前半で収束済み（後半改善なし）
+        vals = [0.5, 0.4, 0.35, 0.33, 0.32, 0.32, 0.32, 0.32, 0.32, 0.32]
+        config = OptimizationConfig(
+            parameters=[
+                ParameterRange(key="Cd", label="減衰係数", min_val=100, max_val=500, step=50),
+                ParameterRange(key="alpha", label="速度指数", min_val=0.2, max_val=0.8, step=0.1),
+            ],
+        )
+        result = OptimizationResult(
+            all_candidates=self._make_candidates(vals),
+            best=self._make_candidates(vals)[4],
+            config=config,
+        )
+        diag = compute_convergence_diagnostics(result)
+        assert diag is not None
+        assert diag.quality_score > 0
+        assert diag.quality_label in ("優良", "良好", "要注意", "不十分")
+        assert len(diag.recommendations) > 0
+        assert diag.n_evaluations == 10
+        assert diag.n_feasible == 10
+        assert diag.feasibility_ratio == 1.0
+
+    def test_still_improving(self):
+        from app.services.optimizer import compute_convergence_diagnostics
+        # 後半でも大幅改善中
+        vals = [1.0, 0.9, 0.8, 0.7, 0.6, 0.5, 0.4, 0.3, 0.2, 0.1]
+        config = OptimizationConfig(
+            parameters=[
+                ParameterRange(key="Cd", label="減衰係数", min_val=100, max_val=500, step=50),
+            ],
+        )
+        result = OptimizationResult(
+            all_candidates=self._make_candidates(vals),
+            best=self._make_candidates(vals)[-1],
+            config=config,
+        )
+        diag = compute_convergence_diagnostics(result)
+        assert diag is not None
+        assert diag.improvement_ratio > 0.05
+        # 改善が続いている場合、再実行推奨がある
+        recs_text = " ".join(diag.recommendations)
+        assert "反復数" in recs_text or "推奨" in recs_text or "良好" in recs_text
+
+    def test_no_feasible_candidates(self):
+        from app.services.optimizer import compute_convergence_diagnostics
+        vals = [0.5, 0.4, 0.3]
+        flags = [False, False, False]
+        config = OptimizationConfig(
+            parameters=[
+                ParameterRange(key="Cd", label="減衰係数", min_val=100, max_val=500, step=50),
+            ],
+        )
+        result = OptimizationResult(
+            all_candidates=self._make_candidates(vals, flags),
+            config=config,
+        )
+        diag = compute_convergence_diagnostics(result)
+        assert diag is not None
+        assert diag.feasibility_ratio == 0.0
+        assert diag.n_feasible == 0
+        recs_text = " ".join(diag.recommendations)
+        assert "制約" in recs_text
+
+    def test_space_coverage(self):
+        from app.services.optimizer import compute_convergence_diagnostics
+        import random
+        random.seed(42)
+        # 多数のランダム候補 → 高いカバー率
+        vals = [random.random() for _ in range(100)]
+        candidates = []
+        for i, v in enumerate(vals):
+            candidates.append(OptimizationCandidate(
+                params={"Cd": 100 + i * 4, "alpha": 0.2 + i * 0.006},
+                objective_value=v,
+                response_values={"max_drift": v},
+                is_feasible=True,
+                iteration=i,
+            ))
+        config = OptimizationConfig(
+            parameters=[
+                ParameterRange(key="Cd", label="減衰係数", min_val=100, max_val=500, step=10),
+                ParameterRange(key="alpha", label="速度指数", min_val=0.2, max_val=0.8, step=0.05),
+            ],
+        )
+        result = OptimizationResult(
+            all_candidates=candidates,
+            best=min(candidates, key=lambda c: c.objective_value),
+            config=config,
+        )
+        diag = compute_convergence_diagnostics(result)
+        assert diag is not None
+        assert diag.space_coverage > 0.1
+
+    def test_quality_labels(self):
+        from app.services.optimizer import compute_convergence_diagnostics
+        # Minimal test — just ensure the label is assigned
+        vals = [0.5, 0.5]
+        config = OptimizationConfig(
+            parameters=[
+                ParameterRange(key="Cd", label="減衰係数", min_val=100, max_val=200, step=50),
+            ],
+        )
+        result = OptimizationResult(
+            all_candidates=self._make_candidates(vals),
+            best=self._make_candidates(vals)[0],
+            config=config,
+        )
+        diag = compute_convergence_diagnostics(result)
+        assert diag is not None
+        assert diag.quality_label != ""
+
+

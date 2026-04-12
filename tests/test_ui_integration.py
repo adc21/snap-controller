@@ -936,3 +936,59 @@ class TestCorrelationDialog:
         assert hasattr(dlg, "_log_export_btn")
         assert not dlg._log_export_btn.isEnabled()
         dlg.close()
+
+
+class TestDiagnosticsDialog:
+    """DiagnosticsDialog のUIテスト。"""
+
+    def test_instantiation_good_score(self, qapp):
+        """高スコアの診断結果が正常に表示される。"""
+        from app.ui.optimizer_dialog import DiagnosticsDialog
+        from app.services.optimizer import ConvergenceDiagnostics
+        diag = ConvergenceDiagnostics(
+            feasibility_ratio=0.8,
+            improvement_ratio=0.001,
+            space_coverage=0.7,
+            best_cluster_ratio=0.2,
+            stagnation_detected=False,
+            n_evaluations=100,
+            n_feasible=80,
+            quality_score=90,
+            quality_label="優良",
+            recommendations=["探索品質は良好です。結果を信頼して設計に使用できます。"],
+        )
+        dlg = DiagnosticsDialog(diag)
+        assert dlg is not None
+        assert "収束品質診断" in dlg.windowTitle()
+        dlg.close()
+
+    def test_instantiation_low_score(self, qapp):
+        """低スコアの診断結果が正常に表示される。"""
+        from app.ui.optimizer_dialog import DiagnosticsDialog
+        from app.services.optimizer import ConvergenceDiagnostics
+        diag = ConvergenceDiagnostics(
+            feasibility_ratio=0.0,
+            improvement_ratio=0.3,
+            space_coverage=0.05,
+            best_cluster_ratio=0.01,
+            stagnation_detected=True,
+            n_evaluations=5,
+            n_feasible=0,
+            quality_score=10,
+            quality_label="不十分",
+            recommendations=[
+                "制約を満たす候補が0件です。",
+                "反復数を増やして再実行を推奨します。",
+            ],
+        )
+        dlg = DiagnosticsDialog(diag)
+        assert dlg is not None
+        dlg.close()
+
+    def test_diagnostics_button_exists(self, qapp):
+        """OptimizerDialogに収束診断ボタンがある。"""
+        from app.ui.optimizer_dialog import OptimizerDialog
+        dlg = OptimizerDialog()
+        assert hasattr(dlg, "_diagnostics_btn")
+        assert not dlg._diagnostics_btn.isEnabled()
+        dlg.close()

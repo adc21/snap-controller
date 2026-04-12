@@ -2569,3 +2569,306 @@ def export_optimization_log(
             row.append("OK" if c.is_feasible else "NG")
             row.extend([c.constraint_margins.get(k, "") for k in margin_keys])
             writer.writerow(row)
+
+
+# ---------------------------------------------------------------------------
+# 収束品質診断 (Convergence Quality Diagnostics)
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class ConvergenceDiagnostics:
+    """最適化結果の収束品質を診断する結果。
+
+    設計者が「もう一度回すべきか」「結果を信頼してよいか」を
+    判断するための定量的指標と推奨テキストを提供します。
+
+    Attributes
+    ----------
+    feasibility_ratio : float
+        制約満足率 (0.0-1.0)。
+    improvement_ratio : float
+        後半の改善率。0に近いほど収束済み。
+    space_coverage : float
+        パラメータ空間のカバー率 (0.0-1.0)。
+    best_cluster_ratio : float
+        最良解近傍の候補密度。高いほど信頼性が高い。
+    stagnation_detected : bool
+        末尾で停滞が検出されたか。
+    n_evaluations : int
+        総評価数。
+    n_feasible : int
+        制約満足候補数。
+    quality_score : float
+        総合品質スコア (0-100)。
+    quality_label : str
+        品質ラベル（優良/良好/要注意/不十分）。
+    recommendations : list of str
+        設計者への推奨アクション。
+    """
+
+    feasibility_ratio: float = 0.0
+    improvement_ratio: float = 0.0
+    space_coverage: float = 0.0
+    best_cluster_ratio: float = 0.0
+    stagnation_detected: bool = False
+    n_evaluations: int = 0
+    n_feasible: int = 0
+    quality_score: float = 0.0
+    quality_label: str = ""
+    recommendations: List[str] = field(default_factory=list)
+
+
+def compute_convergence_diagnostics(
+    result: OptimizationResult,
+) -> Optional[ConvergenceDiagnostics]:
+    """最適化結果の収束品質を診断します。
+
+    Parameters
+    ----------
+    result : OptimizationResult
+        分析対象の最適化結果。
+
+    Returns
+    -------
+    ConvergenceDiagnostics or None
+        診断結果。候補が2未満の場合はNone。
+    """
+    candidates = result.all_candidates
+    if len(candidates) < 2:
+        return None
+
+    n_total = len(candidates)
+    feasible = result.feasible_candidates
+    n_feasible = len(feasible)
+
+    # --- 制約満足率 ---
+    feasibility_ratio = n_feasible / n_total if n_total > 0 else 0.0
+
+    # --- 後半の改善率 ---
+    # 目的関数の累積最良値を追跡し、後半での改善幅を評価
+    obj_values = [c.objective_value for c in candidates]
+    half = max(1, n_total // 2)
+    best_first_half = float("inf")
+    for v in obj_values[:half]:
+        if v < best_first_half:
+            best_first_half = v
+    best_second_half = float("inf")
+    for v in obj_values[half:]:
+        if v < best_second_half:
+            best_second_half = v
+    best_overall = min(best_first_half, best_second_half)
+
+    if best_first_half > 0 and best_first_half != float("inf"):
+        improvement_ratio = max(0.0, (best_first_half - best_overall) / abs(best_first_half))
+    else:
+        improvement_ratio = 0.0
+
+    # --- パラメータ空間カバー率 ---
+    space_coverage = _compute_space_coverage(candidates, result.config)
+
+    # --- 最良解近傍の候補密度 ---
+    best_cluster_ratio = _compute_best_cluster_ratio(candidates, result.best)
+
+    # --- 停滞検出 ---
+    stagnation_detected = _check_tail_stagnation(obj_values)
+
+    # --- 総合品質スコア ---
+    score = 0.0
+    recommendations: List[str] = []
+
+    # 制約満足率の評価 (0-25点)
+    if feasibility_ratio >= 0.3:
+        score += 25
+    elif feasibility_ratio >= 0.1:
+        score += 15
+    elif feasibility_ratio > 0:
+        score += 5
+    else:
+        recommendations.append(
+            "制約を満たす候補が0件です。制約条件の緩和またはパラメータ範囲の拡大を検討してください。"
+        )
+
+    # 後半改善率の評価 (0-25点) — 低いほど収束している
+    if improvement_ratio < 0.005:
+        score += 25  # ほぼ収束
+    elif improvement_ratio < 0.02:
+        score += 20
+    elif improvement_ratio < 0.05:
+        score += 10
+        recommendations.append(
+            "後半でまだ改善が見られます。反復数を増やすとより良い解が見つかる可能性があります。"
+        )
+    else:
+        score += 5
+        recommendations.append(
+            "後半で大きな改善が続いています。反復数を1.5〜2倍に増やして再実行を推奨します。"
+        )
+
+    # 空間カバー率の評価 (0-25点)
+    if space_coverage >= 0.6:
+        score += 25
+    elif space_coverage >= 0.3:
+        score += 15
+    elif space_coverage >= 0.1:
+        score += 8
+        recommendations.append(
+            "パラメータ空間の探索が不十分です。ランダムサーチまたはGA手法を検討してください。"
+        )
+    else:
+        recommendations.append(
+            "探索範囲のごく一部しか評価されていません。評価数の大幅な増加を推奨します。"
+        )
+
+    # 最良解近傍の密度評価 (0-25点)
+    if best_cluster_ratio >= 0.15:
+        score += 25
+    elif best_cluster_ratio >= 0.08:
+        score += 18
+    elif best_cluster_ratio >= 0.03:
+        score += 10
+        recommendations.append(
+            "最良解の近傍にもっと候補があると信頼性が高まります。ベイズ最適化の活用を検討してください。"
+        )
+    else:
+        score += 3
+        recommendations.append(
+            "最良解が孤立しています。局所最適の可能性があります。異なる初期条件で再実行を推奨します。"
+        )
+
+    # 停滞ペナルティ
+    if stagnation_detected and improvement_ratio < 0.005:
+        # 停滞しているが収束済みなのでOK
+        pass
+    elif stagnation_detected:
+        score = max(0, score - 5)
+        recommendations.append(
+            "探索末尾で停滞が検出されました。探索手法の変更（GA→ベイズ、SA→ランダム等）を検討してください。"
+        )
+
+    # 品質ラベル
+    if score >= 80:
+        quality_label = "優良"
+    elif score >= 60:
+        quality_label = "良好"
+    elif score >= 40:
+        quality_label = "要注意"
+    else:
+        quality_label = "不十分"
+
+    if not recommendations:
+        recommendations.append("探索品質は良好です。結果を信頼して設計に使用できます。")
+
+    return ConvergenceDiagnostics(
+        feasibility_ratio=feasibility_ratio,
+        improvement_ratio=improvement_ratio,
+        space_coverage=space_coverage,
+        best_cluster_ratio=best_cluster_ratio,
+        stagnation_detected=stagnation_detected,
+        n_evaluations=n_total,
+        n_feasible=n_feasible,
+        quality_score=score,
+        quality_label=quality_label,
+        recommendations=recommendations,
+    )
+
+
+def _compute_space_coverage(
+    candidates: List[OptimizationCandidate],
+    config: Optional[OptimizationConfig],
+) -> float:
+    """パラメータ空間のカバー率を推定します。
+
+    各パラメータの探索範囲をグリッド分割し、
+    カバーされたセルの割合を返します。
+    """
+    if not config or not config.parameters or not candidates:
+        return 0.0
+
+    params = config.parameters
+    n_params = len(params)
+    if n_params == 0:
+        return 0.0
+
+    # 各パラメータを10分割し、カバーされたビンの数を計算
+    n_bins = 10
+    total_bins = n_bins ** min(n_params, 3)  # 高次元は3次元に投影
+
+    # 各候補のパラメータ値をビンインデックスに変換
+    covered = set()
+    use_params = params[:3]  # 高次元は上位3パラメータに限定
+    for c in candidates:
+        bin_idx = []
+        for pr in use_params:
+            val = c.params.get(pr.key, pr.min_val)
+            rng = pr.max_val - pr.min_val
+            if rng <= 0:
+                bin_idx.append(0)
+            else:
+                idx = int((val - pr.min_val) / rng * n_bins)
+                idx = max(0, min(n_bins - 1, idx))
+                bin_idx.append(idx)
+        covered.add(tuple(bin_idx))
+
+    return len(covered) / total_bins if total_bins > 0 else 0.0
+
+
+def _compute_best_cluster_ratio(
+    candidates: List[OptimizationCandidate],
+    best: Optional[OptimizationCandidate],
+) -> float:
+    """最良解の近傍にある候補の割合を計算します。
+
+    最良解から各パラメータの範囲の10%以内にある候補の比率。
+    """
+    if not best or not candidates or len(candidates) < 2:
+        return 0.0
+
+    param_keys = sorted(best.params.keys())
+    if not param_keys:
+        return 0.0
+
+    # パラメータ範囲を候補群から推定
+    ranges = {}
+    for k in param_keys:
+        vals = [c.params.get(k, 0.0) for c in candidates]
+        rng = max(vals) - min(vals)
+        ranges[k] = rng if rng > 0 else 1.0
+
+    threshold = 0.10  # 10%以内
+    near_count = 0
+    for c in candidates:
+        if c is best:
+            continue
+        is_near = True
+        for k in param_keys:
+            dist = abs(c.params.get(k, 0.0) - best.params.get(k, 0.0))
+            if dist > ranges[k] * threshold:
+                is_near = False
+                break
+        if is_near:
+            near_count += 1
+
+    return near_count / (len(candidates) - 1)
+
+
+def _check_tail_stagnation(obj_values: List[float], window: int = 0) -> bool:
+    """目的関数値列の末尾で停滞しているか判定します。"""
+    n = len(obj_values)
+    if n < 6:
+        return False
+    if window <= 0:
+        window = max(3, n // 4)
+    tail = obj_values[-window:]
+
+    # 累積最良値の改善幅を確認
+    best = float("inf")
+    improvements = 0
+    for v in tail:
+        if v < best - abs(best) * 0.0001:
+            best = v
+            improvements += 1
+        elif best == float("inf") and v != float("inf"):
+            best = v
+
+    return improvements <= 1

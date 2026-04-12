@@ -101,6 +101,7 @@ import matplotlib.pyplot as plt
 from app.models import AnalysisCase
 from app.models.performance_criteria import PerformanceCriteria
 from app.services.optimizer import (
+    ConvergenceDiagnostics,
     CorrelationResult,
     DamperOptimizer,
     OptimizationCandidate,
@@ -108,6 +109,7 @@ from app.services.optimizer import (
     OptimizationResult,
     ParameterRange,
     SensitivityResult,
+    compute_convergence_diagnostics,
     compute_correlation_analysis,
     compute_sensitivity,
     export_optimization_log,
@@ -802,6 +804,13 @@ class OptimizerDialog(QDialog):
         )
         btn_row.addWidget(self._report_btn)
 
+        self._diagnostics_btn = QPushButton("収束診断")
+        self._diagnostics_btn.setEnabled(False)
+        self._diagnostics_btn.setToolTip(
+            "探索の品質を診断し、再実行の必要性や推奨アクションを表示します"
+        )
+        btn_row.addWidget(self._diagnostics_btn)
+
         btn_row.addStretch()
 
         close_btn = QPushButton("閉じる")
@@ -824,6 +833,7 @@ class OptimizerDialog(QDialog):
         self._correlation_btn.clicked.connect(self._show_correlation)
         self._log_export_btn.clicked.connect(self._export_log)
         self._report_btn.clicked.connect(self._export_html_report)
+        self._diagnostics_btn.clicked.connect(self._show_diagnostics)
         self._result_table.cellDoubleClicked.connect(self._show_candidate_detail)
         self._optimizer.progress.connect(self._on_progress)
         self._optimizer.candidate_found.connect(self._on_candidate)
@@ -1442,6 +1452,7 @@ class OptimizerDialog(QDialog):
         self._log_export_btn.setEnabled(False)
         self._save_btn.setEnabled(False)
         self._report_btn.setEnabled(False)
+        self._diagnostics_btn.setEnabled(False)
         self._progress_bar.show()
         self._progress_bar.setValue(0)
 
@@ -1606,6 +1617,7 @@ class OptimizerDialog(QDialog):
             self._save_btn.setEnabled(True)
             self._report_btn.setEnabled(True)
             self._log_export_btn.setEnabled(True)
+            self._diagnostics_btn.setEnabled(True)
             # 相関分析は2パラメータ以上・3候補以上のときのみ有効
             if (result.config and len(result.config.parameters) >= 2
                     and len(result.all_candidates) >= 3):
@@ -1618,12 +1630,13 @@ class OptimizerDialog(QDialog):
                 "制約を満たす解が見つかりませんでした。"
                 "パラメータ範囲や制約条件を見直してください。"
             )
-            # NG結果でもCSV/JSON/レポート/ログ出力は許可（デバッグ用）
+            # NG結果でもCSV/JSON/レポート/ログ/診断出力は許可（デバッグ用）
             if result.all_candidates:
                 self._export_csv_btn.setEnabled(True)
                 self._save_btn.setEnabled(True)
                 self._report_btn.setEnabled(True)
                 self._log_export_btn.setEnabled(True)
+                self._diagnostics_btn.setEnabled(True)
                 if (result.config and len(result.config.parameters) >= 2
                         and len(result.all_candidates) >= 3):
                     self._correlation_btn.setEnabled(True)
@@ -1726,9 +1739,28 @@ class OptimizerDialog(QDialog):
             "  border-radius: 4px;"
             "}"
         )
+        # 収束品質バッジを付加
+        quality_badge = ""
+        diag = compute_convergence_diagnostics(result)
+        if diag:
+            qc = diag.quality_label
+            if diag.quality_score >= 80:
+                qc_color = "#2e7d32"
+            elif diag.quality_score >= 60:
+                qc_color = "#1565c0"
+            elif diag.quality_score >= 40:
+                qc_color = "#e65100"
+            else:
+                qc_color = "#c62828"
+            quality_badge = (
+                f"  <span style='font-size:9px; color:{qc_color};'>"
+                f"[収束: {qc} {diag.quality_score:.0f}点]</span>"
+            )
+
         self._bc_title_lbl.setText(
-            f"<b>🏆 最良解が見つかりました</b>  "
+            f"<b>最良解が見つかりました</b>  "
             f"<span style='font-size:10px; color:#388e3c;'>（{feasibility_text}）</span>"
+            f"{quality_badge}"
         )
         self._bc_title_lbl.setStyleSheet(
             "color: #1b5e20; font-size: 12px; background: transparent; border: none;"
@@ -1910,7 +1942,10 @@ class OptimizerDialog(QDialog):
         # --- 下段: パラメータ空間探索の可視化 ---
         self._draw_param_space(ax2, result)
 
-        self._conv_canvas.fig.tight_layout()
+        try:
+            self._conv_canvas.fig.tight_layout()
+        except (MemoryError, ValueError):
+            pass
         self._conv_canvas.draw()
 
     def _draw_param_space(self, ax: Any, result: OptimizationResult) -> None:
@@ -2207,6 +2242,19 @@ class OptimizerDialog(QDialog):
             logger.exception("評価ログ出力エラー")
             QMessageBox.warning(self, "出力エラー", str(exc))
 
+    def _show_diagnostics(self) -> None:
+        """収束品質診断ダイアログを表示します。"""
+        if not self._result:
+            return
+        diag = compute_convergence_diagnostics(self._result)
+        if diag is None:
+            QMessageBox.information(
+                self, "診断不可", "候補数が不足しているため診断できません。"
+            )
+            return
+        dlg = DiagnosticsDialog(diag, parent=self)
+        dlg.exec()
+
     def _save_result_json(self) -> None:
         """最適化結果をJSONファイルに保存します。"""
         if not self._result:
@@ -2260,6 +2308,7 @@ class OptimizerDialog(QDialog):
         self._save_btn.setEnabled(True)
         self._report_btn.setEnabled(True)
         self._log_export_btn.setEnabled(True)
+        self._diagnostics_btn.setEnabled(True)
         if result.best:
             self._apply_btn.setEnabled(True)
             self._sensitivity_btn.setEnabled(True)
@@ -2716,7 +2765,10 @@ class SensitivityDialog(QDialog):
                 f"{val:.1f}%", va="center", fontsize=9,
             )
 
-        self._tornado_fig.tight_layout()
+        try:
+            self._tornado_fig.tight_layout()
+        except (MemoryError, ValueError):
+            pass
 
     def _draw_curves(self) -> None:
         """各パラメータの感度曲線（変動率 vs 目的関数値）を描画します。"""
@@ -2755,7 +2807,10 @@ class SensitivityDialog(QDialog):
         ax.set_title("パラメータ感度曲線", fontsize=11)
         ax.legend(fontsize=8, loc="best")
 
-        self._curve_fig.tight_layout()
+        try:
+            self._curve_fig.tight_layout()
+        except (MemoryError, ValueError):
+            pass
 
 
 class ParetoDialog(QDialog):
@@ -3043,4 +3098,91 @@ class CorrelationDialog(QDialog):
                 )
 
         ax.set_title("パラメータ相関行列", fontsize=12)
-        fig.tight_layout()
+        try:
+            fig.tight_layout()
+        except (MemoryError, ValueError):
+            pass
+
+
+class DiagnosticsDialog(QDialog):
+    """収束品質診断結果を表示するダイアログ。
+
+    探索の品質を5段階のスコアと具体的な推奨アクションで提示し、
+    設計者が「もう一度回すべきか」を判断するのを支援します。
+    """
+
+    def __init__(
+        self,
+        diagnostics: ConvergenceDiagnostics,
+        parent: Optional[QWidget] = None,
+    ) -> None:
+        super().__init__(parent)
+        self._diag = diagnostics
+        self.setWindowTitle("収束品質診断")
+        self.resize(520, 480)
+        self._setup_ui()
+
+    def _setup_ui(self) -> None:
+        layout = QVBoxLayout(self)
+
+        # 品質スコアカード
+        score = self._diag.quality_score
+        label = self._diag.quality_label
+        if score >= 80:
+            score_color = "#4CAF50"  # 緑
+        elif score >= 60:
+            score_color = "#2196F3"  # 青
+        elif score >= 40:
+            score_color = "#FF9800"  # 橙
+        else:
+            score_color = "#F44336"  # 赤
+
+        score_card = QLabel(
+            f"<div style='text-align:center;'>"
+            f"<span style='font-size:36px; font-weight:bold; color:{score_color};'>"
+            f"{score:.0f}</span>"
+            f"<span style='font-size:14px; color:#888;'> / 100</span><br/>"
+            f"<span style='font-size:16px; font-weight:bold; color:{score_color};'>"
+            f"{label}</span>"
+            f"</div>"
+        )
+        score_card.setStyleSheet(
+            f"background-color: #1E1E1E; border: 2px solid {score_color}; "
+            f"border-radius: 8px; padding: 16px; margin-bottom: 8px;"
+        )
+        layout.addWidget(score_card)
+
+        # 指標テーブル
+        metrics_text = (
+            f"評価数: {self._diag.n_evaluations}  |  "
+            f"制約満足: {self._diag.n_feasible} "
+            f"({self._diag.feasibility_ratio*100:.1f}%)\n"
+            f"空間カバー率: {self._diag.space_coverage*100:.1f}%  |  "
+            f"最良解近傍密度: {self._diag.best_cluster_ratio*100:.1f}%\n"
+            f"後半改善率: {self._diag.improvement_ratio*100:.2f}%  |  "
+            f"末尾停滞: {'検出' if self._diag.stagnation_detected else 'なし'}"
+        )
+        metrics_label = QLabel(metrics_text)
+        metrics_label.setStyleSheet(
+            "font-family: monospace; font-size: 11px; padding: 8px; "
+            "background-color: #2A2A2A; border-radius: 4px;"
+        )
+        layout.addWidget(metrics_label)
+
+        # 推奨アクション
+        rec_title = QLabel("推奨アクション:")
+        rec_title.setStyleSheet("font-weight: bold; font-size: 13px; margin-top: 8px;")
+        layout.addWidget(rec_title)
+
+        for rec in self._diag.recommendations:
+            rec_label = QLabel(f"  {rec}")
+            rec_label.setWordWrap(True)
+            rec_label.setStyleSheet("font-size: 12px; padding: 2px 8px;")
+            layout.addWidget(rec_label)
+
+        layout.addStretch()
+
+        # 閉じるボタン
+        btn_box = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+        btn_box.rejected.connect(self.reject)
+        layout.addWidget(btn_box)
