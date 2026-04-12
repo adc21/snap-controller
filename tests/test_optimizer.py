@@ -2760,3 +2760,277 @@ class TestConvergenceDiagnostics:
         assert diag.quality_label != ""
 
 
+# =====================================================================
+# Phase W: 獲得関数 (PI/UCB) + GA適応的突然変異
+# =====================================================================
+
+class TestAcquisitionFunctions:
+    """PI, UCB 獲得関数と _compute_acquisition 統合関数のテスト。"""
+
+    def test_probability_of_improvement_basic(self):
+        """PI は sigma>0 の点で [0, 1] の確率値を返す。"""
+        from app.services.optimizer import _probability_of_improvement
+        mu = np.array([0.5, 0.8, 1.2])
+        sigma = np.array([0.2, 0.3, 0.1])
+        y_best = 0.6
+        pi = _probability_of_improvement(mu, sigma, y_best, xi=0.0)
+        assert pi.shape == (3,)
+        # 各値は 0〜1 の確率
+        assert np.all(pi >= 0.0)
+        assert np.all(pi <= 1.0)
+        # mu < y_best の点は高い PI を持つべき
+        assert pi[0] > pi[2]
+
+    def test_probability_of_improvement_zero_sigma(self):
+        """sigma=0 の点では PI=0 を返す。"""
+        from app.services.optimizer import _probability_of_improvement
+        mu = np.array([0.5])
+        sigma = np.array([0.0])
+        pi = _probability_of_improvement(mu, sigma, 1.0)
+        assert pi[0] == 0.0
+
+    def test_upper_confidence_bound_basic(self):
+        """UCB は sigma が大きい点を高く評価する。"""
+        from app.services.optimizer import _upper_confidence_bound
+        mu = np.array([0.5, 0.5])
+        sigma = np.array([0.1, 0.5])
+        ucb = _upper_confidence_bound(mu, sigma, 0.3, kappa=2.0)
+        assert ucb.shape == (2,)
+        # sigma が大きい方が UCB 値が大きい
+        assert ucb[1] > ucb[0]
+
+    def test_upper_confidence_bound_kappa_effect(self):
+        """kappa が大きいほど探索寄り（sigma の重み増加）。"""
+        from app.services.optimizer import _upper_confidence_bound
+        mu = np.array([0.5])
+        sigma = np.array([0.3])
+        ucb_low = _upper_confidence_bound(mu, sigma, 0.5, kappa=1.0)
+        ucb_high = _upper_confidence_bound(mu, sigma, 0.5, kappa=3.0)
+        # kappa が大きいほど sigma の重みが増す → 値が大きい
+        assert ucb_high[0] > ucb_low[0]
+
+    def test_compute_acquisition_ei(self):
+        """_compute_acquisition("ei") は EI 値を返す。"""
+        from app.services.optimizer import _compute_acquisition, _expected_improvement_no_scipy
+        mu = np.array([0.3, 0.5, 0.8])
+        sigma = np.array([0.2, 0.1, 0.3])
+        y_best = 0.4
+        acq = _compute_acquisition("ei", mu, sigma, y_best)
+        ei_ref = _expected_improvement_no_scipy(mu, sigma, y_best)
+        # EI fallback は _expected_improvement_no_scipy と同じ結果
+        # (scipy が利用可能ならそちらを使うが、値は近似的に一致)
+        assert acq.shape == (3,)
+        assert np.all(acq >= 0.0)
+
+    def test_compute_acquisition_pi(self):
+        """_compute_acquisition("pi") は PI を呼ぶ。"""
+        from app.services.optimizer import _compute_acquisition
+        mu = np.array([0.3, 0.8])
+        sigma = np.array([0.2, 0.2])
+        acq = _compute_acquisition("pi", mu, sigma, 0.5)
+        assert acq.shape == (2,)
+        # mu < y_best の点のほうが改善確率が高い
+        assert acq[0] > acq[1]
+
+    def test_compute_acquisition_ucb(self):
+        """_compute_acquisition("ucb") は UCB を呼ぶ。"""
+        from app.services.optimizer import _compute_acquisition
+        mu = np.array([0.5, 0.5])
+        sigma = np.array([0.1, 0.5])
+        acq = _compute_acquisition("ucb", mu, sigma, 0.3, kappa=2.0)
+        assert acq.shape == (2,)
+        assert acq[1] > acq[0]  # sigma が大きい方が優先
+
+    def test_compute_acquisition_unknown_defaults_to_ei(self):
+        """不明な獲得関数名はEIにフォールバック。"""
+        from app.services.optimizer import _compute_acquisition
+        mu = np.array([0.5])
+        sigma = np.array([0.2])
+        acq = _compute_acquisition("unknown", mu, sigma, 0.6)
+        assert acq.shape == (1,)
+        assert acq[0] >= 0.0
+
+
+class TestOptimizationConfigAcquisition:
+    """OptimizationConfig の獲得関数・GA適応変異フィールドのテスト。"""
+
+    def test_config_acquisition_defaults(self):
+        """デフォルト値の確認。"""
+        config = OptimizationConfig()
+        assert config.acquisition_function == "ei"
+        assert config.acquisition_kappa == 2.0
+        assert config.ga_adaptive_mutation is False
+
+    def test_config_to_dict_includes_acquisition(self):
+        """to_dict に獲得関数フィールドが含まれる。"""
+        config = OptimizationConfig(
+            acquisition_function="ucb",
+            acquisition_kappa=3.0,
+            ga_adaptive_mutation=True,
+        )
+        d = config.to_dict()
+        assert d["acquisition_function"] == "ucb"
+        assert d["acquisition_kappa"] == 3.0
+        assert d["ga_adaptive_mutation"] is True
+
+    def test_config_from_dict_restores_acquisition(self):
+        """from_dict で獲得関数フィールドが復元される。"""
+        d = {
+            "acquisition_function": "pi",
+            "acquisition_kappa": 1.5,
+            "ga_adaptive_mutation": True,
+        }
+        config = OptimizationConfig.from_dict(d)
+        assert config.acquisition_function == "pi"
+        assert config.acquisition_kappa == 1.5
+        assert config.ga_adaptive_mutation is True
+
+    def test_config_from_dict_defaults_on_missing(self):
+        """古いJSONでもデフォルト値で動作。"""
+        config = OptimizationConfig.from_dict({})
+        assert config.acquisition_function == "ei"
+        assert config.acquisition_kappa == 2.0
+        assert config.ga_adaptive_mutation is False
+
+
+class TestSummaryTextAcquisition:
+    """get_summary_text でベイズ/GA固有情報が出力されるかのテスト。"""
+
+    def test_summary_shows_acquisition_function(self):
+        """ベイズ最適化時にサマリーに獲得関数名が表示される。"""
+        config = OptimizationConfig(
+            method="bayesian",
+            acquisition_function="ucb",
+            acquisition_kappa=3.0,
+        )
+        result = OptimizationResult(config=config)
+        text = result.get_summary_text()
+        assert "Upper Confidence Bound" in text
+        assert "κ=3.0" in text
+
+    def test_summary_shows_ei_without_kappa(self):
+        """EI選択時はκを表示しない。"""
+        config = OptimizationConfig(
+            method="bayesian",
+            acquisition_function="ei",
+        )
+        result = OptimizationResult(config=config)
+        text = result.get_summary_text()
+        assert "Expected Improvement" in text
+        assert "κ" not in text
+
+    def test_summary_shows_adaptive_mutation(self):
+        """GA適応的突然変異時にサマリーに表示される。"""
+        config = OptimizationConfig(
+            method="ga",
+            ga_adaptive_mutation=True,
+        )
+        result = OptimizationResult(config=config)
+        text = result.get_summary_text()
+        assert "適応的突然変異" in text
+
+    def test_summary_no_adaptive_mutation_when_disabled(self):
+        """GA適応的突然変異無効時は表示しない。"""
+        config = OptimizationConfig(
+            method="ga",
+            ga_adaptive_mutation=False,
+        )
+        result = OptimizationResult(config=config)
+        text = result.get_summary_text()
+        assert "適応的突然変異" not in text
+
+
+class TestGAAdaptiveMutation:
+    """GA適応的突然変異の動作テスト。"""
+
+    def test_ga_adaptive_mutation_runs(self):
+        """GA適応的突然変異モードがエラーなく動作する。"""
+        def mock_eval(params):
+            return {"max_drift": sum(params.values()) * 0.01}
+        config = OptimizationConfig(
+            objective_key="max_drift",
+            parameters=[
+                ParameterRange(key="Cd", label="Cd", min_val=100, max_val=500),
+            ],
+            method="ga",
+            max_iterations=60,
+            ga_adaptive_mutation=True,
+        )
+        worker = _OptimizationWorker(config, mock_eval)
+        result = worker._run_ga_search(config)
+        assert result.best is not None
+        assert len(result.all_candidates) > 0
+
+    def test_ga_standard_mode_still_works(self):
+        """GA標準モード（非適応）も引き続き動作する。"""
+        def mock_eval(params):
+            return {"max_drift": sum(params.values()) * 0.01}
+        config = OptimizationConfig(
+            objective_key="max_drift",
+            parameters=[
+                ParameterRange(key="Cd", label="Cd", min_val=100, max_val=500),
+            ],
+            method="ga",
+            max_iterations=60,
+            ga_adaptive_mutation=False,
+        )
+        worker = _OptimizationWorker(config, mock_eval)
+        result = worker._run_ga_search(config)
+        assert result.best is not None
+
+
+class TestBayesianAcquisitionIntegration:
+    """ベイズ最適化で各獲得関数が正しく使用されるかの統合テスト。"""
+
+    def test_bayesian_with_pi(self):
+        """ベイズ最適化 + PI 獲得関数がエラーなく動作する。"""
+        def mock_eval(params):
+            return {"max_drift": (params["Cd"] - 300) ** 2 * 1e-5}
+        config = OptimizationConfig(
+            objective_key="max_drift",
+            parameters=[
+                ParameterRange(key="Cd", label="Cd", min_val=100, max_val=500),
+            ],
+            method="bayesian",
+            max_iterations=30,
+            acquisition_function="pi",
+        )
+        worker = _OptimizationWorker(config, mock_eval)
+        result = worker._run_bayesian_search(config)
+        assert result.best is not None
+
+    def test_bayesian_with_ucb(self):
+        """ベイズ最適化 + UCB 獲得関数がエラーなく動作する。"""
+        def mock_eval(params):
+            return {"max_drift": (params["Cd"] - 300) ** 2 * 1e-5}
+        config = OptimizationConfig(
+            objective_key="max_drift",
+            parameters=[
+                ParameterRange(key="Cd", label="Cd", min_val=100, max_val=500),
+            ],
+            method="bayesian",
+            max_iterations=30,
+            acquisition_function="ucb",
+            acquisition_kappa=2.5,
+        )
+        worker = _OptimizationWorker(config, mock_eval)
+        result = worker._run_bayesian_search(config)
+        assert result.best is not None
+
+    def test_bayesian_with_ei_default(self):
+        """ベイズ最適化 + EI（デフォルト）がエラーなく動作する。"""
+        def mock_eval(params):
+            return {"max_drift": (params["Cd"] - 300) ** 2 * 1e-5}
+        config = OptimizationConfig(
+            objective_key="max_drift",
+            parameters=[
+                ParameterRange(key="Cd", label="Cd", min_val=100, max_val=500),
+            ],
+            method="bayesian",
+            max_iterations=30,
+        )
+        worker = _OptimizationWorker(config, mock_eval)
+        result = worker._run_bayesian_search(config)
+        assert result.best is not None
+
+

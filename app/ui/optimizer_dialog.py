@@ -504,6 +504,57 @@ class OptimizerDialog(QDialog):
         self._penalty_cb.toggled.connect(self._penalty_spin.setEnabled)
         layout.addLayout(penalty_row)
 
+        # ---- ベイズ獲得関数 ----
+        acq_row = QHBoxLayout()
+        acq_row.addWidget(QLabel("獲得関数:"))
+        self._acq_combo = QComboBox()
+        self._acq_combo.addItem("Expected Improvement (EI)", "ei")
+        self._acq_combo.addItem("Probability of Improvement (PI)", "pi")
+        self._acq_combo.addItem("Upper Confidence Bound (UCB)", "ucb")
+        self._acq_combo.setFixedWidth(260)
+        self._acq_combo.setToolTip(
+            "ベイズ最適化で使用する獲得関数を選択します。\n"
+            "EI: 探索と利用のバランスが良い汎用的な選択（推奨）\n"
+            "PI: 利用寄りで収束が速いが局所解に陥りやすい\n"
+            "UCB: κ で探索度合いを直接制御。高次元で有効"
+        )
+        self._acq_combo.currentIndexChanged.connect(self._on_acq_changed)
+        acq_row.addWidget(self._acq_combo)
+        acq_row.addWidget(QLabel("κ:"))
+        self._acq_kappa_spin = QDoubleSpinBox()
+        self._acq_kappa_spin.setRange(0.1, 10.0)
+        self._acq_kappa_spin.setValue(2.0)
+        self._acq_kappa_spin.setSingleStep(0.5)
+        self._acq_kappa_spin.setDecimals(1)
+        self._acq_kappa_spin.setFixedWidth(60)
+        self._acq_kappa_spin.setEnabled(False)
+        self._acq_kappa_spin.setToolTip(
+            "UCB の探索パラメータ κ。\n"
+            "1.0: 利用寄り、2.0: バランス（推奨）、3.0: 探索寄り"
+        )
+        acq_row.addWidget(self._acq_kappa_spin)
+        acq_row.addStretch()
+        self._acq_row_widget = QWidget()
+        self._acq_row_widget.setLayout(acq_row)
+        self._acq_row_widget.setVisible(False)  # ベイズ選択時のみ表示
+        layout.addWidget(self._acq_row_widget)
+
+        # ---- GA適応的突然変異 ----
+        ga_row = QHBoxLayout()
+        self._ga_adaptive_cb = QCheckBox("適応的突然変異率")
+        self._ga_adaptive_cb.setChecked(False)
+        self._ga_adaptive_cb.setToolTip(
+            "世代が進むにつれて突然変異率を線形減衰させ、\n"
+            "序盤は探索（高突然変異率）・終盤は利用（低突然変異率）を重視します。\n"
+            "交叉率も逆方向に増加させて終盤の局所精錬を促進します。"
+        )
+        ga_row.addWidget(self._ga_adaptive_cb)
+        ga_row.addStretch()
+        self._ga_row_widget = QWidget()
+        self._ga_row_widget.setLayout(ga_row)
+        self._ga_row_widget.setVisible(False)  # GA選択時のみ表示
+        layout.addWidget(self._ga_row_widget)
+
         # ---- 並列評価 ----
         parallel_row = QHBoxLayout()
         parallel_row.addWidget(QLabel("並列評価数:"))
@@ -1048,6 +1099,11 @@ class OptimizerDialog(QDialog):
     def _on_method_changed(self, index: int) -> None:
         method = self._method_combo.currentData()
         self._iter_spin.setEnabled(method in ("random", "bayesian", "ga", "sa", "nsga2"))
+        self._acq_row_widget.setVisible(method == "bayesian")
+        self._ga_row_widget.setVisible(method == "ga")
+
+    def _on_acq_changed(self, index: int) -> None:
+        self._acq_kappa_spin.setEnabled(self._acq_combo.currentData() == "ucb")
 
     def _recommend_method(self) -> tuple[str, str, str]:
         """パラメータ空間に基づいて推奨手法を決定します。
@@ -1324,6 +1380,9 @@ class OptimizerDialog(QDialog):
                 getattr(c, "name", f"wave_{i}")
                 for i, c in enumerate(self._envelope_wave_cases)
             ] if self._envelope_check.isChecked() else [],
+            acquisition_function=self._acq_combo.currentData(),
+            acquisition_kappa=self._acq_kappa_spin.value(),
+            ga_adaptive_mutation=self._ga_adaptive_cb.isChecked(),
         )
 
     def _edit_cost_coefficients(self) -> None:
@@ -2508,6 +2567,17 @@ class OptimizerDialog(QDialog):
                 self._envelope_mode_combo.setCurrentIndex(idx)
         else:
             self._envelope_check.setChecked(False)
+
+        # 獲得関数
+        acq_func = preset.get("acquisition_function", "ei")
+        for i in range(self._acq_combo.count()):
+            if self._acq_combo.itemData(i) == acq_func:
+                self._acq_combo.setCurrentIndex(i)
+                break
+        self._acq_kappa_spin.setValue(preset.get("acquisition_kappa", 2.0))
+
+        # GA適応的突然変異
+        self._ga_adaptive_cb.setChecked(preset.get("ga_adaptive_mutation", False))
 
         self._update_est_run_label()
 

@@ -198,6 +198,108 @@ def _expected_improvement_no_scipy(
     return ei
 
 
+def _probability_of_improvement(
+    mu: np.ndarray, sigma: np.ndarray, y_best: float, xi: float = 0.01
+) -> np.ndarray:
+    """
+    Probability of Improvement (PI) 獲得関数。
+
+    現在の最良値 y_best を xi だけ改善する確率を計算します。
+    EI より保守的（利用寄り）な探索を行います。
+
+    Parameters
+    ----------
+    mu : ndarray
+        予測平均。
+    sigma : ndarray
+        予測標準偏差。
+    y_best : float
+        現在の最良目的関数値。
+    xi : float
+        改善閾値パラメータ。大きいほど探索寄り。
+
+    Returns
+    -------
+    pi : ndarray
+        各点の改善確率。
+    """
+    with np.errstate(divide="ignore", invalid="ignore"):
+        Z = np.where(sigma > 1e-10, (y_best - mu - xi) / sigma, 0.0)
+        # CDF 計算
+        cdf_Z = 0.5 * (1.0 + np.vectorize(math.erf)(Z / math.sqrt(2.0)))
+        pi = np.where(sigma > 1e-10, cdf_Z, 0.0)
+    return pi
+
+
+def _upper_confidence_bound(
+    mu: np.ndarray, sigma: np.ndarray, y_best: float, kappa: float = 2.0
+) -> np.ndarray:
+    """
+    Upper Confidence Bound (UCB) 獲得関数（最小化版: LCB）。
+
+    mu - kappa * sigma を最小化 → 負値を返して argmax で使えるようにする。
+    kappa が大きいほど探索（不確実な領域の探索）を重視。
+
+    Parameters
+    ----------
+    mu : ndarray
+        予測平均。
+    sigma : ndarray
+        予測標準偏差。
+    y_best : float
+        現在の最良目的関数値（未使用だがインターフェース統一のため）。
+    kappa : float
+        探索・利用バランスパラメータ。推奨: 1.0〜3.0。
+
+    Returns
+    -------
+    lcb_neg : ndarray
+        負の LCB 値（argmax で使用するため符号反転）。
+    """
+    # LCB = mu - kappa * sigma を最小化したい
+    # argmax で使うため -LCB = -mu + kappa * sigma を返す
+    return -mu + kappa * sigma
+
+
+def _compute_acquisition(
+    acq_func: str,
+    mu: np.ndarray,
+    sigma: np.ndarray,
+    y_best: float,
+    xi: float = 0.01,
+    kappa: float = 2.0,
+) -> np.ndarray:
+    """獲得関数を選択して評価する統合関数。
+
+    Parameters
+    ----------
+    acq_func : str
+        獲得関数名。"ei", "pi", "ucb" のいずれか。
+    mu, sigma : ndarray
+        GP 予測の平均と標準偏差。
+    y_best : float
+        現在の最良目的関数値。
+    xi : float
+        EI/PI の探索パラメータ。
+    kappa : float
+        UCB の探索パラメータ。
+
+    Returns
+    -------
+    values : ndarray
+        各候補点の獲得関数値（大きいほど良い）。
+    """
+    if acq_func == "pi":
+        return _probability_of_improvement(mu, sigma, y_best, xi=xi)
+    elif acq_func == "ucb":
+        return _upper_confidence_bound(mu, sigma, y_best, kappa=kappa)
+    else:  # "ei" (default)
+        try:
+            return _expected_improvement(mu, sigma, y_best, xi=xi)
+        except Exception:
+            return _expected_improvement_no_scipy(mu, sigma, y_best, xi=xi)
+
+
 # ---------------------------------------------------------------------------
 # 最適化設定
 # ---------------------------------------------------------------------------
@@ -346,6 +448,19 @@ class OptimizationConfig:
     空文字の場合は単一波（従来動作）。"""
     envelope_wave_names: List[str] = field(default_factory=list)
     """多波エンベロープ最適化で使用する波形名リスト。"""
+    acquisition_function: str = "ei"
+    """ベイズ最適化の獲得関数。"ei"=Expected Improvement, "pi"=Probability of Improvement,
+    "ucb"=Upper Confidence Bound (LCB)。デフォルト "ei"。
+    EI: 探索と利用のバランスが良い汎用的な選択。
+    PI: 利用寄りで収束が速いが局所解に陥りやすい。
+    UCB: kappa で探索度合いを直接制御でき、高次元で有効。"""
+    acquisition_kappa: float = 2.0
+    """UCB 獲得関数の探索パラメータ κ。大きいほど不確実な領域を重視。
+    推奨: 1.0（利用寄り）〜 3.0（探索寄り）。デフォルト 2.0。"""
+    ga_adaptive_mutation: bool = False
+    """GA で適応的突然変異率を使用するか。True の場合、世代が進むにつれて
+    突然変異率を線形減衰させ、序盤は探索・終盤は利用を重視する。
+    交叉率も逆方向に増加させて終盤の局所精錬を促進する。"""
 
     def compute_objective(self, response: Dict[str, float], params: Optional[Dict[str, float]] = None) -> float:
         """応答値辞書から目的関数値を計算する。
@@ -397,6 +512,9 @@ class OptimizationConfig:
             "cost_weight": self.cost_weight,
             "envelope_mode": self.envelope_mode,
             "envelope_wave_names": list(self.envelope_wave_names),
+            "acquisition_function": self.acquisition_function,
+            "acquisition_kappa": self.acquisition_kappa,
+            "ga_adaptive_mutation": self.ga_adaptive_mutation,
         }
 
     @classmethod
@@ -419,6 +537,9 @@ class OptimizationConfig:
             cost_weight=d.get("cost_weight", 0.0),
             envelope_mode=d.get("envelope_mode", ""),
             envelope_wave_names=d.get("envelope_wave_names", []),
+            acquisition_function=d.get("acquisition_function", "ei"),
+            acquisition_kappa=d.get("acquisition_kappa", 2.0),
+            ga_adaptive_mutation=d.get("ga_adaptive_mutation", False),
         )
 
 
@@ -542,6 +663,15 @@ class OptimizationResult:
 
         eval_label = "SNAP実解析" if self.evaluation_method == "snap" else "モック評価（デモ用）"
         lines.append(f"評価方式: {eval_label}")
+        if self.config and self.config.method == "bayesian":
+            acq_labels = {"ei": "Expected Improvement", "pi": "Probability of Improvement", "ucb": "Upper Confidence Bound"}
+            acq_name = acq_labels.get(self.config.acquisition_function, self.config.acquisition_function)
+            acq_info = f"獲得関数: {acq_name}"
+            if self.config.acquisition_function == "ucb":
+                acq_info += f" (κ={self.config.acquisition_kappa:.1f})"
+            lines.append(acq_info)
+        if self.config and self.config.method == "ga" and self.config.ga_adaptive_mutation:
+            lines.append("GA適応的突然変異: 有効（世代進行に応じてレート減衰）")
         if self.config and self.config.constraint_penalty_weight > 0:
             lines.append(f"制約ペナルティ重み: {self.config.constraint_penalty_weight:.1f}")
         if self.config and self.config.robustness_samples > 0:
@@ -1338,15 +1468,16 @@ class _OptimizationWorker(QThread):
                     # 目的関数の最小値
                     y_best = float(np.min(y_history))
 
-                    # EI獲得関数の評価
-                    try:
-                        ei = _expected_improvement(mu, sigma, y_best, xi=0.01)
-                    except Exception:
-                        # scipy不可の場合のフォールバック
-                        ei = _expected_improvement_no_scipy(mu, sigma, y_best, xi=0.01)
+                    # 獲得関数の評価
+                    acq_values = _compute_acquisition(
+                        config.acquisition_function,
+                        mu, sigma, y_best,
+                        xi=0.01,
+                        kappa=config.acquisition_kappa,
+                    )
 
-                    # 最高のEIを持つ点を選択
-                    best_idx = int(np.argmax(ei))
+                    # 最高の獲得関数値を持つ点を選択
+                    best_idx = int(np.argmax(acq_values))
                     x_next = X_candidates[best_idx].copy()
 
                     # 元のスケールに戻す
@@ -1466,9 +1597,9 @@ class _OptimizationWorker(QThread):
         pop_size = max(base_pop, min(100, 10 * n_params))
         n_generations = max(1, config.max_iterations // pop_size)
         n_elite = max(1, pop_size // 10)
-        crossover_rate = 0.8
-        mutation_rate = 0.1
-        mutation_sigma = 0.1
+        crossover_rate_init = 0.8
+        mutation_rate_init = 0.15 if config.ga_adaptive_mutation else 0.1
+        mutation_sigma_init = 0.15 if config.ga_adaptive_mutation else 0.1
         blx_alpha = 0.5
         tournament_size = 3
 
@@ -1552,6 +1683,19 @@ class _OptimizationWorker(QThread):
         for gen in range(1, n_generations):
             if self._cancelled:
                 break
+
+            # 適応的パラメータ: 世代進行率に基づいてレートを調整
+            gen_ratio = gen / max(1, n_generations - 1)  # 0.0 → 1.0
+            if config.ga_adaptive_mutation:
+                # 序盤: 高突然変異率(探索) → 終盤: 低突然変異率(利用)
+                mutation_rate = mutation_rate_init * (1.0 - 0.7 * gen_ratio)
+                mutation_sigma = mutation_sigma_init * (1.0 - 0.6 * gen_ratio)
+                # 交叉率は逆方向: 序盤やや低め → 終盤高め(局所精錬)
+                crossover_rate = crossover_rate_init + (1.0 - crossover_rate_init) * gen_ratio * 0.5
+            else:
+                mutation_rate = mutation_rate_init
+                mutation_sigma = mutation_sigma_init
+                crossover_rate = crossover_rate_init
 
             # エリート選択
             sorted_indices = sorted(range(pop_size), key=lambda i: _fitness(pop_candidates[i]))
