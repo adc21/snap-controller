@@ -318,6 +318,7 @@ class OptimizerDialog(QDialog):
         self._param_widgets: List[dict] = []
         self._convergence_history: List[float] = []
         self._opt_start_time: float = 0.0  # 最適化開始時刻 (time.time)
+        self._avg_eval_sec: float = 30.0  # 1回あたりの平均評価時間（動的更新）
 
         self.setWindowTitle("ダンパー最適化")
         self.setMinimumWidth(900)
@@ -1064,8 +1065,9 @@ class OptimizerDialog(QDialog):
             n_runs = self._iter_spin.value() if hasattr(self, "_iter_spin") else 200
             method_label = "ランダム/ベイズ"
 
-        # 1回あたり30秒と仮定
-        est_sec = n_runs * 30
+        # 実績値ベースの動的推定（初期値30秒、実行後は実測値を使用）
+        per_eval = getattr(self, "_avg_eval_sec", 30.0)
+        est_sec = int(n_runs * per_eval)
         if est_sec < 60:
             time_str = f"約 {est_sec}秒"
         elif est_sec < 3600:
@@ -1106,6 +1108,38 @@ class OptimizerDialog(QDialog):
         self._est_run_label.setTextFormat(
             __import__("PySide6.QtCore", fromlist=["Qt"]).Qt.RichText
         )
+
+    def _validate_param_ranges(self, _value: float = 0.0) -> None:
+        """パラメータ範囲のリアルタイムバリデーション。
+
+        min>=maxやstep問題をスピンボックスの背景色で即座にフィードバックします。
+        """
+        if not hasattr(self, "_param_widgets"):
+            return
+        method = (self._method_combo.currentData()
+                  if hasattr(self, "_method_combo") else "grid")
+        _ERR = "background-color: #ffcccc;"
+        _OK = ""
+        for w in self._param_widgets:
+            try:
+                mn = w["min"]
+                mx = w["max"]
+                st = w["step"]
+                min_v = mn.value()
+                max_v = mx.value()
+                step_v = st.value()
+                # min >= max チェック
+                range_bad = min_v >= max_v
+                mn.setStyleSheet(_ERR if range_bad else _OK)
+                mx.setStyleSheet(_ERR if range_bad else _OK)
+                # step チェック（グリッドサーチ時のみ）
+                if method == "grid" and not range_bad:
+                    step_bad = step_v <= 0 or step_v > (max_v - min_v)
+                    st.setStyleSheet(_ERR if step_bad else _OK)
+                else:
+                    st.setStyleSheet(_OK)
+            except (AttributeError, TypeError):
+                pass
 
     # ------------------------------------------------------------------
     # Parameter range widgets
@@ -1200,9 +1234,14 @@ class OptimizerDialog(QDialog):
             min_spin.valueChanged.connect(self._update_est_run_label)
             max_spin.valueChanged.connect(self._update_est_run_label)
             step_spin.valueChanged.connect(self._update_est_run_label)
+            # AO-1: リアルタイムバリデーション
+            min_spin.valueChanged.connect(self._validate_param_ranges)
+            max_spin.valueChanged.connect(self._validate_param_ranges)
+            step_spin.valueChanged.connect(self._validate_param_ranges)
 
         # 初回ラベル更新
         self._update_est_run_label()
+        self._validate_param_ranges()
 
     def _on_composite_toggled(self, checked: bool) -> None:
         """複合目的関数チェックボックスのトグル処理。"""
@@ -1220,6 +1259,7 @@ class OptimizerDialog(QDialog):
         self._iter_spin.setEnabled(method in ("random", "lhs", "bayesian", "ga", "sa", "de", "nsga2"))
         self._acq_row_widget.setVisible(method == "bayesian")
         self._ga_row_widget.setVisible(method == "ga")
+        self._validate_param_ranges()
 
     def _on_acq_changed(self, index: int) -> None:
         self._acq_kappa_spin.setEnabled(self._acq_combo.currentData() == "ucb")
@@ -1606,7 +1646,8 @@ class OptimizerDialog(QDialog):
                   if config.method == "grid"
                   else self._iter_spin.value())
         if n_runs > 50:
-            est_sec = n_runs * 30
+            per_eval = getattr(self, "_avg_eval_sec", 30.0)
+            est_sec = int(n_runs * per_eval)
             if est_sec < 3600:
                 time_str = f"約 {est_sec // 60} 分"
             else:
@@ -1614,10 +1655,13 @@ class OptimizerDialog(QDialog):
                 m = (est_sec % 3600) // 60
                 time_str = f"約 {h} 時間 {m} 分"
 
+            basis = (f"1回あたり{per_eval:.0f}秒（実測値）"
+                     if per_eval != 30.0
+                     else "1回あたり30秒と仮定")
             reply = QMessageBox.question(
                 self, "計算時間の確認",
                 f"推定 {n_runs} 回の解析を実行します。\n"
-                f"所要時間の目安: {time_str}（1回あたり30秒と仮定）\n\n"
+                f"所要時間の目安: {time_str}（{basis}）\n\n"
                 f"続行しますか？",
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
                 QMessageBox.StandardButton.Yes,
@@ -1752,10 +1796,11 @@ class OptimizerDialog(QDialog):
     def _on_progress(self, current: int, total: int, message: str) -> None:
         self._progress_bar.setMaximum(total)
         self._progress_bar.setValue(current)
-        # ETA計算
+        # ETA計算 + 動的評価時間学習
         eta_str = ""
         if current > 0 and total > 0 and self._opt_start_time > 0:
             elapsed = time.time() - self._opt_start_time
+            self._avg_eval_sec = elapsed / current
             remaining = max(current, 1)
             eta_sec = elapsed / remaining * (total - current)
             elapsed_str = self._format_duration(elapsed)

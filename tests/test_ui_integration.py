@@ -1947,3 +1947,97 @@ class TestOptimizerDialogTimeoutAndApply:
         dlg._apply_config_preset(preset)
         assert dlg._timeout_spin.value() == 900
         dlg.close()
+
+
+class TestOptimizerDialogValidationAndETA:
+    """AO-1: リアルタイムバリデーション, AO-2: 動的ETA のテスト。"""
+
+    def test_validate_param_ranges_ok(self, qapp):
+        """正常な範囲ではスピンの背景が赤くならない。"""
+        from app.ui.optimizer_dialog import OptimizerDialog
+        dlg = OptimizerDialog()
+        if dlg._param_widgets:
+            w = dlg._param_widgets[0]
+            w["min"].setValue(0.0)
+            w["max"].setValue(10.0)
+            w["step"].setValue(1.0)
+            dlg._validate_param_ranges()
+            assert "ffcccc" not in w["min"].styleSheet()
+            assert "ffcccc" not in w["max"].styleSheet()
+        dlg.close()
+
+    def test_validate_param_ranges_min_ge_max(self, qapp):
+        """min >= max のとき背景が赤くなる。"""
+        from app.ui.optimizer_dialog import OptimizerDialog
+        dlg = OptimizerDialog()
+        if dlg._param_widgets:
+            w = dlg._param_widgets[0]
+            w["min"].setValue(10.0)
+            w["max"].setValue(5.0)
+            dlg._validate_param_ranges()
+            assert "ffcccc" in w["min"].styleSheet()
+            assert "ffcccc" in w["max"].styleSheet()
+        dlg.close()
+
+    def test_validate_step_bad_grid(self, qapp):
+        """グリッドサーチ時に step > range で赤くなる。"""
+        from app.ui.optimizer_dialog import OptimizerDialog
+        dlg = OptimizerDialog()
+        if dlg._param_widgets:
+            # グリッドサーチに設定
+            for i in range(dlg._method_combo.count()):
+                if dlg._method_combo.itemData(i) == "grid":
+                    dlg._method_combo.setCurrentIndex(i)
+                    break
+            w = dlg._param_widgets[0]
+            w["min"].setValue(0.0)
+            w["max"].setValue(1.0)
+            w["step"].setValue(5.0)
+            dlg._validate_param_ranges()
+            assert "ffcccc" in w["step"].styleSheet()
+        dlg.close()
+
+    def test_validate_step_ok_non_grid(self, qapp):
+        """非グリッドサーチではstep検証しない。"""
+        from app.ui.optimizer_dialog import OptimizerDialog
+        dlg = OptimizerDialog()
+        if dlg._param_widgets:
+            for i in range(dlg._method_combo.count()):
+                if dlg._method_combo.itemData(i) == "random":
+                    dlg._method_combo.setCurrentIndex(i)
+                    break
+            w = dlg._param_widgets[0]
+            w["min"].setValue(0.0)
+            w["max"].setValue(1.0)
+            w["step"].setValue(5.0)
+            dlg._validate_param_ranges()
+            assert "ffcccc" not in w["step"].styleSheet()
+        dlg.close()
+
+    def test_avg_eval_sec_initial(self, qapp):
+        """初期値は30秒。"""
+        from app.ui.optimizer_dialog import OptimizerDialog
+        dlg = OptimizerDialog()
+        assert dlg._avg_eval_sec == 30.0
+        dlg.close()
+
+    def test_avg_eval_sec_updates_on_progress(self, qapp):
+        """_on_progressで実測値が更新される。"""
+        import time as _time
+        from app.ui.optimizer_dialog import OptimizerDialog
+        dlg = OptimizerDialog()
+        dlg._opt_start_time = _time.time() - 20.0  # 20秒前に開始
+        dlg._on_progress(4, 10, "テスト")  # 4回完了 → 5秒/回
+        assert abs(dlg._avg_eval_sec - 5.0) < 0.5
+        dlg.close()
+
+    def test_est_run_label_uses_avg_eval(self, qapp):
+        """動的評価時間が推定ラベルに反映される。"""
+        from app.ui.optimizer_dialog import OptimizerDialog
+        dlg = OptimizerDialog()
+        dlg._avg_eval_sec = 10.0  # 10秒/回
+        dlg._update_est_run_label()
+        # ラベルにテキストがセットされていること
+        text = dlg._est_run_label.text()
+        assert "推定" in text
+        dlg.close()
