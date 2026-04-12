@@ -14,8 +14,10 @@ from typing import Callable, Dict, List, Optional
 from PySide6.QtCore import Qt, QThread, Signal
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
+    QCheckBox,
     QComboBox,
     QDialog,
+    QDoubleSpinBox,
     QFileDialog,
     QGroupBox,
     QHBoxLayout,
@@ -73,6 +75,7 @@ class _MinimizerWorker(QThread):
         evaluate_fn: EvaluateFn,
         strategy: str,
         max_iterations: int = 200,
+        extra_kwargs: Optional[Dict] = None,
         parent: Optional[QThread] = None,
     ) -> None:
         super().__init__(parent)
@@ -82,6 +85,7 @@ class _MinimizerWorker(QThread):
         self._evaluate_fn = evaluate_fn
         self._strategy = strategy
         self._max_iterations = max_iterations
+        self._extra_kwargs = extra_kwargs or {}
         self._stop_requested = False
 
     def request_stop(self) -> None:
@@ -104,6 +108,8 @@ class _MinimizerWorker(QThread):
             if self._strategy == "bayesian":
                 kwargs["max_iterations"] = self._max_iterations
                 kwargs["n_initial"] = min(10, self._max_iterations // 3)
+            # extra_kwargs でユーザー指定パラメータを上書き
+            kwargs.update(self._extra_kwargs)
 
             result = minimize_damper_count(
                 floor_keys=self._floor_keys,
@@ -227,6 +233,56 @@ class MinimizerDialog(QDialog):
         eval_layout.addWidget(self._lbl_eval_mode)
         algo_layout.addLayout(eval_layout)
 
+        # 詳細パラメータパネル（戦略ごとに表示/非表示切替）
+        self._adv_group = QGroupBox("詳細パラメータ")
+        adv_layout = QVBoxLayout(self._adv_group)
+
+        # 集団サイズ (GA, PSO, DE)
+        pop_row = QHBoxLayout()
+        pop_row.addWidget(QLabel("集団サイズ:"))
+        self._spin_pop = QSpinBox()
+        self._spin_pop.setRange(5, 200)
+        self._spin_pop.setValue(30)
+        self._spin_pop.setToolTip("GA/PSO/DEの集団サイズ（大きいほど探索精度↑、計算時間↑）")
+        pop_row.addWidget(self._spin_pop)
+        adv_layout.addLayout(pop_row)
+        self._pop_row_widgets = [pop_row.itemAt(i).widget() for i in range(pop_row.count()) if pop_row.itemAt(i).widget()]
+
+        # 初期温度 (SA)
+        temp_row = QHBoxLayout()
+        temp_row.addWidget(QLabel("初期温度:"))
+        self._spin_temp = QDoubleSpinBox()
+        self._spin_temp.setRange(1.0, 10000.0)
+        self._spin_temp.setValue(100.0)
+        self._spin_temp.setDecimals(0)
+        self._spin_temp.setToolTip("SA初期温度（高いほど序盤の探索範囲が広い）")
+        temp_row.addWidget(self._spin_temp)
+        adv_layout.addLayout(temp_row)
+        self._temp_row_widgets = [temp_row.itemAt(i).widget() for i in range(temp_row.count()) if temp_row.itemAt(i).widget()]
+
+        # 初期サンプル数 (Bayesian)
+        init_row = QHBoxLayout()
+        init_row.addWidget(QLabel("初期サンプル:"))
+        self._spin_n_initial = QSpinBox()
+        self._spin_n_initial.setRange(3, 100)
+        self._spin_n_initial.setValue(10)
+        self._spin_n_initial.setToolTip("ベイズ最適化の初期ランダムサンプル数")
+        init_row.addWidget(self._spin_n_initial)
+        adv_layout.addLayout(init_row)
+        self._init_row_widgets = [init_row.itemAt(i).widget() for i in range(init_row.count()) if init_row.itemAt(i).widget()]
+
+        # DE適応F/CR (jDE)
+        self._chk_de_adaptive = QCheckBox("自己適応 F/CR (jDE)")
+        self._chk_de_adaptive.setChecked(True)
+        self._chk_de_adaptive.setToolTip("個体ごとにF, CRを自動調整（Brest et al. 2006）")
+        adv_layout.addWidget(self._chk_de_adaptive)
+
+        algo_layout.addWidget(self._adv_group)
+
+        # 戦略切替時にパネルを更新
+        self._combo_strategy.currentIndexChanged.connect(self._on_strategy_changed)
+        self._on_strategy_changed()
+
         algo_layout.addStretch()
         settings_layout.addWidget(algo_group, stretch=1)
         root.addLayout(settings_layout)
@@ -304,6 +360,45 @@ class MinimizerDialog(QDialog):
         root.addLayout(bottom)
 
     # -------------------------------------------------------------------
+    # 戦略切替
+    # -------------------------------------------------------------------
+
+    def _on_strategy_changed(self) -> None:
+        """選択された戦略に応じて詳細パラメータの表示/非表示を切り替える。"""
+        strategy = self._combo_strategy.currentData()
+        has_pop = strategy in ("ga", "pso", "de")
+        has_temp = strategy == "sa"
+        has_init = strategy == "bayesian"
+        has_de_adaptive = strategy == "de"
+        # 反復回数はメタヒューリスティック系のみ
+        has_iter = strategy in ("ga", "sa", "pso", "de", "random", "bayesian")
+
+        for w in self._pop_row_widgets:
+            w.setVisible(has_pop)
+        for w in self._temp_row_widgets:
+            w.setVisible(has_temp)
+        for w in self._init_row_widgets:
+            w.setVisible(has_init)
+        self._chk_de_adaptive.setVisible(has_de_adaptive)
+        self._iter_spin.setEnabled(has_iter)
+
+        # 詳細グループ全体: 何も表示項目がなければ非表示
+        self._adv_group.setVisible(has_pop or has_temp or has_init or has_de_adaptive)
+
+    def _collect_extra_kwargs(self, strategy: str) -> dict:
+        """UI上の詳細パラメータを kwargs として収集する。"""
+        kw: dict = {}
+        if strategy in ("ga", "pso", "de"):
+            kw["population_size"] = self._spin_pop.value()
+        if strategy == "sa":
+            kw["initial_temp"] = self._spin_temp.value()
+        if strategy == "bayesian":
+            kw["n_initial"] = self._spin_n_initial.value()
+        if strategy == "de":
+            kw["adaptive"] = self._chk_de_adaptive.isChecked()
+        return kw
+
+    # -------------------------------------------------------------------
     # 実行
     # -------------------------------------------------------------------
 
@@ -335,6 +430,9 @@ class MinimizerDialog(QDialog):
         self._canvas.draw()
         self._canvas_floor.draw()
 
+        # 戦略固有パラメータを収集
+        extra_kwargs = self._collect_extra_kwargs(strategy)
+
         self._worker = _MinimizerWorker(
             floor_keys=self._floor_keys,
             max_quantities=self._max_quantities,
@@ -342,6 +440,7 @@ class MinimizerDialog(QDialog):
             evaluate_fn=self._evaluate_fn,
             strategy=strategy,
             max_iterations=self._iter_spin.value(),
+            extra_kwargs=extra_kwargs,
             parent=self,
         )
         self._worker.stepCompleted.connect(self._on_step)

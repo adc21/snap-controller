@@ -782,8 +782,9 @@ def minimize_de(
     penalty_weight: Optional[float] = None,
     F: float = 0.8,
     CR: float = 0.9,
+    adaptive: bool = True,
 ) -> MinimizationResult:
-    """差分進化 (DE/rand/1/bin)。"""
+    """差分進化 (DE/rand/1/bin)。adaptive=True で jDE 自己適応 F/CR。"""
     if penalty_weight is None:
         penalty_weight = _auto_penalty_weight(max_quantities)
     n = len(floor_keys)
@@ -813,18 +814,30 @@ def minimize_de(
                      for _ in range(population_size)], dtype=float)
     pop_obj = np.array([obj_fn(ind) for ind in pop])
 
+    # jDE: 個体ごとの F, CR (Brest et al., 2006)
+    tau1, tau2 = 0.1, 0.1  # 自己適応確率
+    F_arr = np.full(population_size, F)
+    CR_arr = np.full(population_size, CR)
+
     for gen in range(max_iterations):
         for i in range(population_size):
+            # jDE: F, CR の自己適応
+            if adaptive:
+                Fi = 0.1 + 0.9 * random.random() if random.random() < tau1 else F_arr[i]
+                CRi = random.random() if random.random() < tau2 else CR_arr[i]
+            else:
+                Fi, CRi = F, CR
+
             # 突然変異: DE/rand/1
             candidates = [j for j in range(population_size) if j != i]
             a, b, c = random.sample(candidates, 3)
-            mutant = pop[a] + F * (pop[b] - pop[c])
+            mutant = pop[a] + Fi * (pop[b] - pop[c])
 
             # 交叉
             trial = np.copy(pop[i])
             j_rand = random.randint(0, n - 1)
             for j in range(n):
-                if random.random() < CR or j == j_rand:
+                if random.random() < CRi or j == j_rand:
                     trial[j] = mutant[j]
             # クランプ
             trial = np.clip(np.round(trial), 0, [float(m) for m in maxes])
@@ -833,6 +846,10 @@ def minimize_de(
             if trial_obj <= pop_obj[i]:
                 pop[i] = trial
                 pop_obj[i] = trial_obj
+                # 成功した F, CR を保持
+                if adaptive:
+                    F_arr[i] = Fi
+                    CR_arr[i] = CRi
 
         step = _make_step(gen, best_solution or {},
                           best_result, action="eval",

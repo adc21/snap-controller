@@ -268,3 +268,48 @@ class TestDataClasses:
         er = EvaluationResult(total_count=10, is_feasible=True, worst_margin=0.1)
         assert er.total_count == 10
         assert er.is_feasible
+
+
+class TestDEAdaptive:
+    """DE jDE自己適応F/CRのテスト。"""
+
+    def test_adaptive_de_finds_solution(self):
+        fn = make_evaluator({"F1": 1.0, "F2": 0.8}, 3.0)
+        result = minimize_de(
+            ["F1", "F2"], {"F1": 5, "F2": 5}, fn,
+            population_size=10, max_iterations=10, adaptive=True,
+        )
+        assert isinstance(result, MinimizationResult)
+        assert result.evaluations > 0
+
+    def test_non_adaptive_de_works(self):
+        fn = make_evaluator({"F1": 1.0}, 2.0)
+        result = minimize_de(
+            ["F1"], {"F1": 5}, fn,
+            population_size=8, max_iterations=5, adaptive=False,
+        )
+        assert isinstance(result, MinimizationResult)
+        assert result.evaluations > 0
+
+    def test_adaptive_de_converges(self):
+        fn = make_evaluator({"F1": 1.5, "F2": 1.0}, 3.0)
+        result = minimize_de(
+            ["F1", "F2"], {"F1": 5, "F2": 5}, fn,
+            population_size=15, max_iterations=20, adaptive=True,
+        )
+        assert result.is_feasible
+
+
+class TestAutoPenaltyWeight:
+    """_auto_penalty_weight のテスト。"""
+
+    def test_auto_penalty_scales_with_max_quantities(self):
+        from app.services.damper_count_minimizer import _auto_penalty_weight
+        w1 = _auto_penalty_weight({"F1": 5, "F2": 5})
+        w2 = _auto_penalty_weight({"F1": 50, "F2": 50})
+        assert w2 > w1  # 問題スケールが大きいとペナルティも大きい
+
+    def test_auto_penalty_minimum(self):
+        from app.services.damper_count_minimizer import _auto_penalty_weight
+        w = _auto_penalty_weight({"F1": 1})
+        assert w >= 100.0

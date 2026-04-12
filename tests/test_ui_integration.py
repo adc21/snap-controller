@@ -1439,3 +1439,82 @@ class TestHeatmapDialog:
         assert "ビン" in info
         assert "探索済み" in info
         dlg.close()
+
+    # ----------------------------------------------------------
+    # MinimizerDialog 詳細パラメータパネル
+    # ----------------------------------------------------------
+
+    def test_minimizer_adv_panel_visibility_ga(self, qapp):
+        from app.ui.minimizer_dialog import MinimizerDialog
+        dlg = MinimizerDialog(["F1"], {"F1": 5}, {"F1": 3})
+        # GA を選択
+        for i in range(dlg._combo_strategy.count()):
+            if dlg._combo_strategy.itemData(i) == "ga":
+                dlg._combo_strategy.setCurrentIndex(i)
+                break
+        # isHidden() はウィジェット自身の hidden 状態のみ確認（親の表示に依存しない）
+        assert not dlg._spin_pop.isHidden()
+        assert dlg._spin_temp.isHidden()
+        assert dlg._chk_de_adaptive.isHidden()
+        dlg.close()
+
+    def test_minimizer_adv_panel_visibility_sa(self, qapp):
+        from app.ui.minimizer_dialog import MinimizerDialog
+        dlg = MinimizerDialog(["F1"], {"F1": 5}, {"F1": 3})
+        for i in range(dlg._combo_strategy.count()):
+            if dlg._combo_strategy.itemData(i) == "sa":
+                dlg._combo_strategy.setCurrentIndex(i)
+                break
+        assert dlg._spin_pop.isHidden()
+        assert not dlg._spin_temp.isHidden()
+        assert dlg._chk_de_adaptive.isHidden()
+        dlg.close()
+
+    def test_minimizer_adv_panel_visibility_de(self, qapp):
+        from app.ui.minimizer_dialog import MinimizerDialog
+        dlg = MinimizerDialog(["F1"], {"F1": 5}, {"F1": 3})
+        for i in range(dlg._combo_strategy.count()):
+            if dlg._combo_strategy.itemData(i) == "de":
+                dlg._combo_strategy.setCurrentIndex(i)
+                break
+        assert not dlg._spin_pop.isHidden()
+        assert not dlg._chk_de_adaptive.isHidden()
+        assert dlg._chk_de_adaptive.isChecked()  # デフォルトON
+        dlg.close()
+
+    def test_minimizer_adv_panel_hidden_for_deterministic(self, qapp):
+        from app.ui.minimizer_dialog import MinimizerDialog
+        dlg = MinimizerDialog(["F1"], {"F1": 5}, {"F1": 3})
+        for i in range(dlg._combo_strategy.count()):
+            if dlg._combo_strategy.itemData(i) == "floor_add":
+                dlg._combo_strategy.setCurrentIndex(i)
+                break
+        assert dlg._adv_group.isHidden()
+        dlg.close()
+
+    def test_minimizer_collect_extra_kwargs_de(self, qapp):
+        from app.ui.minimizer_dialog import MinimizerDialog
+        dlg = MinimizerDialog(["F1"], {"F1": 5}, {"F1": 3})
+        dlg._spin_pop.setValue(20)
+        dlg._chk_de_adaptive.setChecked(False)
+        kw = dlg._collect_extra_kwargs("de")
+        assert kw["population_size"] == 20
+        assert kw["adaptive"] is False
+        dlg.close()
+
+    def test_minimizer_collect_extra_kwargs_sa(self, qapp):
+        from app.ui.minimizer_dialog import MinimizerDialog
+        dlg = MinimizerDialog(["F1"], {"F1": 5}, {"F1": 3})
+        dlg._spin_temp.setValue(500.0)
+        kw = dlg._collect_extra_kwargs("sa")
+        assert kw["initial_temp"] == 500.0
+        assert "population_size" not in kw
+        dlg.close()
+
+    def test_minimizer_collect_extra_kwargs_bayesian(self, qapp):
+        from app.ui.minimizer_dialog import MinimizerDialog
+        dlg = MinimizerDialog(["F1"], {"F1": 5}, {"F1": 3})
+        dlg._spin_n_initial.setValue(15)
+        kw = dlg._collect_extra_kwargs("bayesian")
+        assert kw["n_initial"] == 15
+        dlg.close()
