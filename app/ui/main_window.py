@@ -84,7 +84,10 @@ from .step4_summary_bar import Step4SummaryBar  # UX改善（新）: STEP4結果
 from .step_hint_banner import StepHintBanner  # UX改善（新）: 初回ステップヒントバナー
 from .error_guide_widget import ErrorGuideWidget  # UX改善③: 解析エラーガイダンスパネル
 
+import logging
 import qtawesome as qta
+
+logger = logging.getLogger(__name__)
 
 APP_NAME = "snap-controller"
 ORG_NAME = "BAUES"
@@ -153,7 +156,20 @@ class MainWindow(QMainWindow):
         self.setWindowTitle(APP_NAME)
         self.resize(1200, 750)
 
-        # ---- ウィジェット ----
+        self._create_widgets()
+        self._setup_welcome()
+        step1 = self._build_step1()
+        step2 = self._build_step2()
+        step3, step3_split = self._build_step3()
+        step4 = self._build_step4()
+        self._assemble_layout(step1, step2, step3, step4, step3_split)
+        self._setup_statusbar()
+        self._connect_signals()
+
+    # ---- _setup_ui サブメソッド群 ----
+
+    def _create_widgets(self) -> None:
+        """子ウィジェットを一括生成します。"""
         self._model_info = ModelInfoWidget()
         self._case_table = CaseTableWidget()
         self._chart = ResultChartWidget()
@@ -172,81 +188,68 @@ class MainWindow(QMainWindow):
         self._batch_queue = BatchQueueWidget()
         self._log = LogWidget()
 
-        # ---- ウェルカム画面 ----
+    def _setup_welcome(self) -> None:
+        """ウェルカム画面を構築します。"""
         self._welcome = WelcomeWidget()
         self._welcome.newProjectRequested.connect(self._new_project_dialog)
         self._welcome.openProjectRequested.connect(self._open_project)
         self._welcome.recentProjectSelected.connect(self._open_recent_project)
-        # UX改善（スマートデフォルト）: SNAP未設定警告バナーから設定ダイアログへ誘導
         self._welcome.snapSettingsRequested.connect(self._open_settings)
 
-        # ---- ワークフローの4ステップ構築 ----
-        from PySide6.QtWidgets import QTabWidget as _QTabWidget, QStackedWidget
-
-        # ---- UX改善①新: ステップナビゲーションフッター ----
-        # STEP 1: モデル設定 (Model Info + File Preview)
+    def _build_step1(self) -> QWidget:
+        """STEP1: モデル設定を構築して返します。"""
         step1 = QWidget()
         step1_layout = QVBoxLayout(step1)
         step1_layout.setContentsMargins(0, 0, 0, 0)
         step1_layout.setSpacing(0)
-        # UX改善（新）: 初回ヒントバナー
         self._hint_banner_step1 = StepHintBanner(step_index=0)
         step1_layout.addWidget(self._hint_banner_step1)
         step1_layout.addWidget(self._model_info)
         step1_layout.addWidget(self._file_preview, stretch=1)
-        # STEP1 フッター: 次へ（ケース設計）のみ
         self._step1_footer = StepNavFooter(
             show_back=False,
             next_label="ケースを設計する  (STEP2) →",
             next_primary=True,
         )
-        # UX改善②新: 初期状態は s8i 未読み込みのため無効
         self._step1_footer.set_next_enabled(False)
-        # UX改善（段階的開示）: 無効理由をインラインヒントで表示
         self._step1_footer.set_next_hint(".s8i ファイルを読み込むと STEP2 へ進めます")
         self._step1_footer.setToolTip("STEP1でs8iファイルを読み込むとSTEP2へ進めます")
         self._step1_footer.nextRequested.connect(lambda: self._sidebar.set_current_step(1))
         step1_layout.addWidget(self._step1_footer)
+        return step1
 
-        # STEP 2: ケース設計 (Case Table)
+    def _build_step2(self) -> QWidget:
+        """STEP2: ケース設計を構築して返します。"""
         step2 = QWidget()
         step2_layout = QVBoxLayout(step2)
         step2_layout.setContentsMargins(0, 0, 0, 0)
         step2_layout.setSpacing(0)
-        # UX改善（新）: 初回ヒントバナー
         self._hint_banner_step2 = StepHintBanner(step_index=1)
         step2_layout.addWidget(self._hint_banner_step2)
-
         step2_layout.addWidget(self._case_table)
-        # STEP2 フッター
         self._step2_footer = StepNavFooter(
             back_label="← モデル設定  (STEP1)",
             next_label="解析を実行する  (STEP3) →",
             next_primary=True,
         )
-        # UX改善②新: 初期状態はケースなしのため無効
         self._step2_footer.set_next_enabled(False)
-        # UX改善（段階的開示）: 無効理由をインラインヒントで表示
         self._step2_footer.set_next_hint("解析ケースを1件以上追加すると STEP3 へ進めます")
         self._step2_footer.setToolTip("STEP2で解析ケースを1件以上追加するとSTEP3へ進めます")
         self._step2_footer.backRequested.connect(lambda: self._sidebar.set_current_step(0))
         self._step2_footer.nextRequested.connect(lambda: self._sidebar.set_current_step(2))
         step2_layout.addWidget(self._step2_footer)
+        return step2
 
-        # STEP 3: 解析実行 (Run Selection + Batch Queue + Log)
+    def _build_step3(self) -> tuple:
+        """STEP3: 解析実行を構築して (step3_widget, step3_split) を返します。"""
         step3_widget = QWidget()
         step3_layout = QVBoxLayout(step3_widget)
         step3_layout.setContentsMargins(0, 0, 0, 0)
         step3_layout.setSpacing(0)
-        # UX改善（新）: 初回ヒントバナー
         self._hint_banner_step3 = StepHintBanner(step_index=2)
         step3_layout.addWidget(self._hint_banner_step3)
 
-        # ── UX改善（第12回④）: STEP2→STEP3 遷移時ケース設定確認トーストバナー ────────
-        # STEP3 に切り替えるたびに、デフォルト名のままのケースや設定不完全なケースを
-        # 自動検出してオレンジ色のトーストバナーで知らせます。
-        # ユーザーが STEP3 に入るときに「直しそびれ」を防ぎます。
-        # バナーは「✕」で手動非表示、または5秒後に自動フェードアウトします。
+        # ケース設定確認トーストバナー
         self._case_readiness_toast = QFrame()
         self._case_readiness_toast.setFrameShape(QFrame.NoFrame)
         self._case_readiness_toast.setStyleSheet(
@@ -301,14 +304,13 @@ class MainWindow(QMainWindow):
         _toast_close_btn.clicked.connect(self._case_readiness_toast.hide)
         _toast_row.addWidget(_toast_close_btn)
 
-        self._case_readiness_toast.hide()  # 初期非表示
-        self._case_readiness_toast_timer = None  # 自動非表示タイマー
+        self._case_readiness_toast.hide()
+        self._case_readiness_toast_timer = None
         step3_layout.addWidget(self._case_readiness_toast)
 
         step3_layout.addWidget(self._run_selection)
 
-        # ---- UX改善③: 解析エラーガイダンスパネル ----
-        # 解析がエラー終了したとき、ログエリアの上部に原因・解決策を表示します。
+        # 解析エラーガイダンスパネル
         self._error_guide = ErrorGuideWidget()
         self._error_guide.openSettingsRequested.connect(self._open_settings)
         self._error_guide.editCaseRequested.connect(self._edit_case_by_id)
@@ -321,24 +323,25 @@ class MainWindow(QMainWindow):
         step3_split.setStretchFactor(1, 1)
 
         step3_layout.addWidget(step3_split, stretch=1)
-        # STEP3 フッター
         self._step3_footer = StepNavFooter(
             back_label="← ケース設計  (STEP2)",
             next_label="結果を確認する  (STEP4) →",
             next_primary=True,
         )
-        # UX改善②新: 初期状態は解析完了なしのため無効
         self._step3_footer.set_next_enabled(False)
-        # UX改善（段階的開示）: 無効理由をインラインヒントで表示
         self._step3_footer.set_next_hint("解析を実行して結果が出ると STEP4 へ進めます")
         self._step3_footer.setToolTip("解析を実行して結果が出るとSTEP4へ進めます")
         self._step3_footer.backRequested.connect(lambda: self._sidebar.set_current_step(1))
         self._step3_footer.nextRequested.connect(lambda: self._sidebar.set_current_step(3))
         step3_layout.addWidget(self._step3_footer)
-        step3 = step3_widget
+        return step3_widget, step3_split
 
-        # STEP 4: 結果・戦略
-        # --- ケース比較: CompareChartWidget を BinaryResultWidget の先頭タブに統合 ---
+    def _build_step4(self) -> QWidget:
+        """STEP4: 結果・戦略を構築して返します。"""
+        from PySide6.QtWidgets import QTabWidget as _QTabWidget
+        from PySide6.QtWidgets import QTextEdit as _QTextEdit
+
+        # ケース比較タブを BinaryResultWidget の先頭に統合
         self._binary_result.prepend_tab(self._compare_chart, "📊 応答値比較")
         self._binary_result.prepend_tab(self._hysteresis_widget, "🔄 履歴ループ")
         self._binary_result.prepend_tab(self._mode_shape_widget, "🏗 モード形状")
@@ -362,9 +365,7 @@ class MainWindow(QMainWindow):
 
         self._update_result_tabs(result_count=0)
 
-        # ---- UX改善④: STEP4 タブ「このタブの読み方」コーナーボタン ----
-        # 各タブに文脈に応じた解説を提供するコーナーボタンをタブバーに追加します。
-        # タブを切り替えるたびに現在のタブの説明が読めます。
+        # 「このタブの読み方」コーナーボタン
         _tab_guide_btn = QPushButton("📖 読み方")
         _tab_guide_btn.setFixedHeight(22)
         _tab_guide_btn.setStyleSheet(
@@ -383,35 +384,27 @@ class MainWindow(QMainWindow):
         _tab_guide_btn.clicked.connect(self._show_current_tab_guide)
         self._right_tabs.setCornerWidget(_tab_guide_btn, Qt.TopRightCorner)
 
-        # ---- UX改善⑤新: STEP4 コンテナ（タブ + 「次の解析を計画」フッター） ----
+        # STEP4 コンテナ
         step4 = QWidget()
         step4_layout = QVBoxLayout(step4)
         step4_layout.setContentsMargins(0, 0, 0, 0)
         step4_layout.setSpacing(0)
 
-        # ---- UX改善（新）: STEP4 結果サマリーバー ----
-        # 全タブの最上部に常時表示される最良/最悪ケースと改善率のサマリーです。
-        # タブを切り替えても「どのケースが最も優れているか」がひと目でわかります。
+        # 結果サマリーバー
         self._step4_summary_bar = Step4SummaryBar()
         self._step4_summary_bar.bestCaseClicked.connect(self._on_summary_best_case_clicked)
         step4_layout.addWidget(self._step4_summary_bar)
 
-        # UX改善（新）: 初回ヒントバナー（サマリーバーの直下に表示）
+        # 初回ヒントバナー
         self._hint_banner_step4 = StepHintBanner(step_index=3)
-        # UX改善④: タブショートカットシグナルをRIGHT_TABSに接続（ラムダで後から接続）
-        # right_tabs はこの時点ではまだ作成済みなので直接接続する
         self._hint_banner_step4.tabShortcutRequested.connect(
             lambda idx: self._right_tabs.setCurrentIndex(idx)
         )
         step4_layout.addWidget(self._hint_banner_step4)
 
-        # ---- UX改善①新: STEP4 「結果なし」空状態ウィジェット ----
-        # 結果がゼロのとき: 空状態ページ (index=0)
-        # 結果が1件以上のとき: タブページ (index=1)
-        from PySide6.QtWidgets import QStackedWidget as _QStackedWidget4
-        self._step4_content_stack = _QStackedWidget4()
+        # 「結果なし」空状態 / タブ 切替スタック
+        self._step4_content_stack = QStackedWidget()
 
-        # -- 空状態ページ --
         _s4_empty = QWidget()
         _s4_empty_layout = QVBoxLayout(_s4_empty)
         _s4_empty_layout.setAlignment(Qt.AlignCenter)
@@ -459,16 +452,14 @@ class MainWindow(QMainWindow):
         _s4_goto_btn_row.addWidget(_s4_goto_btn)
         _s4_empty_layout.addLayout(_s4_goto_btn_row)
 
-        self._step4_content_stack.addWidget(_s4_empty)      # index 0: 空状態
+        self._step4_content_stack.addWidget(_s4_empty)        # index 0: 空状態
         self._step4_content_stack.addWidget(self._right_tabs)  # index 1: タブ
 
         step4_layout.addWidget(self._step4_content_stack, stretch=1)
 
-        # ---- UX改善④新: 解析戦略メモパネル（STEP4） ----
-        from PySide6.QtWidgets import QTextEdit as _QTextEdit
-        from PySide6.QtWidgets import QFrame as _QFrame
-        _notes_frame = _QFrame()
-        _notes_frame.setFrameShape(_QFrame.StyledPanel)
+        # 解析戦略メモパネル
+        _notes_frame = QFrame()
+        _notes_frame.setFrameShape(QFrame.StyledPanel)
         _notes_frame.setMaximumHeight(110)
         _notes_frame_layout = QVBoxLayout(_notes_frame)
         _notes_frame_layout.setContentsMargins(8, 4, 8, 4)
@@ -503,7 +494,7 @@ class MainWindow(QMainWindow):
         _notes_frame_layout.addWidget(self._strategy_notes_edit)
         step4_layout.addWidget(_notes_frame)
 
-        # STEP4 フッター: 戻る（解析実行）と「次のケースを設計する」
+        # STEP4 フッター
         self._step4_footer = StepNavFooter(
             back_label="← 解析実行  (STEP3)",
             next_label="次のケースを設計する  (STEP2) →",
@@ -512,8 +503,12 @@ class MainWindow(QMainWindow):
         self._step4_footer.backRequested.connect(lambda: self._sidebar.set_current_step(2))
         self._step4_footer.nextRequested.connect(self._go_plan_next_case)
         step4_layout.addWidget(self._step4_footer)
+        return step4
 
-        # ---- 全体レイアウト構築 ----
+    def _assemble_layout(self, step1: QWidget, step2: QWidget,
+                         step3: QWidget, step4: QWidget,
+                         step3_split: QSplitter) -> None:
+        """4ステップのウィジェットを全体レイアウトに組み立てます。"""
         self._workflow_stack = QStackedWidget()
         self._workflow_stack.addWidget(step1)
         self._workflow_stack.addWidget(step2)
@@ -522,7 +517,6 @@ class MainWindow(QMainWindow):
 
         self._sidebar = SidebarWidget()
         self._sidebar.stepChanged.connect(self._workflow_stack.setCurrentIndex)
-        # STEP3（解析実行）に切り替えるたびにチェックリストを最新化する
         self._sidebar.stepChanged.connect(self._on_sidebar_step_changed)
 
         workspace = QWidget()
@@ -532,17 +526,16 @@ class MainWindow(QMainWindow):
         workspace_layout.addWidget(self._sidebar)
         workspace_layout.addWidget(self._workflow_stack, stretch=1)
 
-        # ---- メインスタック（ウェルカム画面/ワークスペース切替） ----
         self._main_stack = QStackedWidget()
         self._main_stack.addWidget(self._welcome)      # index 0
         self._main_stack.addWidget(workspace)           # index 1
         self.setCentralWidget(self._main_stack)
         self._v_splitter = step3_split
 
-        # ---- ステータスバー ----
+    def _setup_statusbar(self) -> None:
+        """ステータスバーを構築します。"""
         self.statusBar().showMessage("準備完了")
 
-        # プログレスバーをステータスバーに埋め込む
         self._progress_bar = QProgressBar()
         self._progress_bar.setMaximumWidth(200)
         self._progress_bar.setMaximumHeight(16)
@@ -551,28 +544,24 @@ class MainWindow(QMainWindow):
         self._progress_bar.hide()
         self.statusBar().addPermanentWidget(self._progress_bar)
 
-        # 改善③: 選択ケースのサマリー情報ラベル（常時右端に表示）
-        from PySide6.QtWidgets import QLabel as _QLabel
-        self._case_info_label = _QLabel()
+        self._case_info_label = QLabel()
         self._case_info_label.setStyleSheet("color: gray; margin-right: 8px; font-size: 11px;")
         self.statusBar().addPermanentWidget(self._case_info_label)
 
-        # ---- シグナル接続 ----
+    def _connect_signals(self) -> None:
+        """ウィジェット間のシグナル接続を行います。"""
         self._model_info.fileRequested.connect(self._load_s8i_file)
-        # UX改善D: ドラッグ&ドロップでs8iファイルを直接読み込む
         self._model_info.fileDropped.connect(self._load_s8i_from_path)
         self._case_table.caseSelectionChanged.connect(self._on_case_selected)
         self._case_table.runRequested.connect(self._on_run_requested)
-        self._case_table.projectModified.connect(self._update_title)  # 改善⑤: ケース変更時にタイトルバーを即時更新
+        self._case_table.projectModified.connect(self._update_title)
         self._case_table.projectModified.connect(self._run_selection.refresh)
-        self._case_table.projectModified.connect(self._update_sidebar_badges)  # UX改善1: ケース変更でバッジ更新
-        self._case_table.projectModified.connect(self._on_project_modified_groups)  # UX改善⑤新: グループ変更時に比較グラフを更新
+        self._case_table.projectModified.connect(self._update_sidebar_badges)
+        self._case_table.projectModified.connect(self._on_project_modified_groups)
         self._ranking.caseSelected.connect(self._on_case_selected)
-        # UX改善①新: ランキングから「基点として再設計」ボタン
         self._ranking.useAsStartingPointRequested.connect(self._on_use_ranking_case_as_base)
         self._dashboard.caseSelected.connect(self._on_case_selected)
         self._run_selection.runSelectedRequested.connect(self._run_selected_cases)
-        # UX改善③新: 解析完了バナーの「結果を確認する」ボタンでSTEP4へ移動
         self._run_selection.viewResultsRequested.connect(
             lambda: self._sidebar.set_current_step(3)
         )
@@ -902,6 +891,7 @@ class MainWindow(QMainWindow):
             self._tray.activated.connect(self._on_tray_activated)
             self._tray.show()
         except Exception:
+            logger.debug("システムトレイアイコンの初期化に失敗", exc_info=True)
             self._tray = None
 
     def _on_tray_activated(self, reason: QSystemTrayIcon.ActivationReason) -> None:

@@ -10,9 +10,12 @@ app/models/project.py
 from __future__ import annotations
 
 import json
+import logging
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional
+
+logger = logging.getLogger(__name__)
 
 from .analysis_case import AnalysisCase, AnalysisCaseStatus
 from .performance_criteria import PerformanceCriteria
@@ -277,6 +280,7 @@ class Project:
             try:
                 proj.s8i_model = parse_s8i(proj.s8i_path)
             except Exception:
+                logger.warning("s8iファイルのパースに失敗: %s", proj.s8i_path, exc_info=True)
                 proj.s8i_model = None
 
         return proj

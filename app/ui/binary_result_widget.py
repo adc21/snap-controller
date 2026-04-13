@@ -63,8 +63,12 @@ try:
 except Exception:
     pass
 
+import logging
+
 from controller.binary import SnapResultLoader
 from controller.binary.result_loader import BinaryCategory
+
+logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -1020,6 +1024,7 @@ class BinaryResultWidget(QWidget):
                 t = bc.hst.times()
                 y = bc.hst.time_series(rec_idx, field_idx)
             except Exception:
+                logger.debug("時刻歴データ読込失敗: %s", e.name, exc_info=True)
                 continue
             ax.plot(t, y, linewidth=0.9, label=e.name)
             plotted += 1
@@ -1144,6 +1149,7 @@ class BinaryResultWidget(QWidget):
                 try:
                     e_abs = float(np.trapz(F, D))
                 except Exception:
+                    logger.debug("エネルギー積分計算失敗: %s", e.name)
                     e_abs = 0.0
                 summaries.append(
                     f"{e.name}: |F|max={float(np.max(np.abs(F))):.4g}, "
@@ -1158,6 +1164,7 @@ class BinaryResultWidget(QWidget):
                     try:
                         y = bc.hst.time_series(rec_idx, fields["累積エネルギー"])
                     except Exception:
+                        logger.debug("累積エネルギー読込失敗: %s", e.name)
                         continue
                     ylabel = "累積エネルギー"
                 ax.plot(t, y, linewidth=0.9, label=e.name)
@@ -1311,6 +1318,7 @@ class BinaryResultWidget(QWidget):
                         continue
                     y = raw[:, 1] if raw.shape[1] > 1 else raw[:, 0]
             except Exception:
+                logger.debug("エネルギーデータ読込失敗: %s", e.name, exc_info=True)
                 continue
             if np.any(y):
                 ax.plot(t, y, linewidth=0.9, label=e.name)

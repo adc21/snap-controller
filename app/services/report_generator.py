@@ -21,9 +21,12 @@ from __future__ import annotations
 import base64
 import io
 import html as _html
+import logging
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
+
+logger = logging.getLogger(__name__)
 
 from app.models.analysis_case import AnalysisCase, AnalysisCaseStatus
 from app.models.performance_criteria import PerformanceCriteria
@@ -953,6 +956,7 @@ def _build_modal_analysis_section(
             if reader.modes:
                 case_modes.append((case.name, reader.modes))
         except Exception:
+            logger.debug("固有値解析結果の読込失敗: %s", period_path)
             continue
 
     if not case_modes:
@@ -1440,7 +1444,7 @@ def _build_minimizer_chart(result: Any) -> Optional[str]:
         try:
             fig.tight_layout()
         except Exception:
-            pass
+            logger.debug("tight_layout失敗（MemoryError等）")
 
         buf = io.BytesIO()
         fig.savefig(buf, format="png", dpi=100, bbox_inches="tight")
@@ -1461,6 +1465,7 @@ def _build_minimizer_chart(result: Any) -> Optional[str]:
         </section>
         """
     except Exception:
+        logger.debug("探索推移チャート生成失敗", exc_info=True)
         return None
 
 

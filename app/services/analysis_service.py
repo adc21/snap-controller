@@ -8,10 +8,13 @@ QThread を使ってバックグラウンドで SNAP を実行します。
 
 from __future__ import annotations
 
+import logging
 import shutil
 import tempfile
 from pathlib import Path
 from typing import List, Optional
+
+logger = logging.getLogger(__name__)
 
 from PySide6.QtCore import QObject, QThread, Signal
 
@@ -373,6 +376,7 @@ class _AnalysisWorker(QThread):
         try:
             from controller.binary import SnapResultLoader  # noqa: WPS433
         except Exception:
+            logger.debug("SnapResultLoader のインポートに失敗", exc_info=True)
             return
 
         result_dir = getattr(res, "result_dir", None)

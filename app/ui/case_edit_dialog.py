@@ -97,6 +97,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+import logging
+
 from app.models import AnalysisCase
 from app.models.s8i_parser import (
     S8iModel,
@@ -106,6 +108,8 @@ from app.models.s8i_parser import (
     _RD_QUANTITY_IDX,
     _RD_DEF_NAME_IDX,
 )
+
+logger = logging.getLogger(__name__)
 
 
 # ─────────────────────────────────────────────
@@ -599,7 +603,7 @@ class CaseEditDialog(QDialog):
             if get_kdb_dir_from_settings:
                 kdb_dir = get_kdb_dir_from_settings() or kdb_dir
         except (ImportError, Exception):
-            pass
+            logger.debug("k-DB設定ディレクトリの取得に失敗", exc_info=True)
 
         dlg = KdbBrowserDialog(
             self,

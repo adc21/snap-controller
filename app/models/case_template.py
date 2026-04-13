@@ -12,10 +12,13 @@ app/models/case_template.py
 from __future__ import annotations
 
 import json
+import logging
 from dataclasses import dataclass, field, asdict
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+
+logger = logging.getLogger(__name__)
 
 
 # デフォルトテンプレート保存先
@@ -155,6 +158,7 @@ class TemplateManager:
                 self._templates[key] = tpl
                 self._file_map[key] = fp
             except Exception:
+                logger.debug("テンプレート読込失敗: %s", fp)
                 continue
 
     def list_all(self) -> List[CaseTemplate]:

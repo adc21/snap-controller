@@ -68,9 +68,13 @@ try:
 except Exception:
     pass
 
+import logging
+
 from app.models import AnalysisCase, AnalysisCaseStatus
 from app.models.performance_criteria import PerformanceCriteria
 from .theme import ThemeManager, MPL_STYLES
+
+logger = logging.getLogger(__name__)
 
 def _get_floor0_value(key: str, result_data: dict) -> float:
     """0層（地盤面）にプロットする値を返します。"""
@@ -305,7 +309,7 @@ class EnvelopeChartWidget(QWidget):
                         break
                     parent = parent.parent()
         except Exception:
-            pass
+            logger.debug("グラフコピー時のステータスバー更新失敗", exc_info=True)
 
     def _get_completed_cases(self) -> List[AnalysisCase]:
         """完了済みかつ結果を持つケースを返します。"""

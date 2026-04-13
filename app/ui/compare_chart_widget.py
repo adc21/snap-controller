@@ -99,9 +99,13 @@ try:
 except Exception:
     pass
 
+import logging
+
 from app.models import AnalysisCase, AnalysisCaseStatus
 from app.models.performance_criteria import PerformanceCriteria
 from .theme import ThemeManager, MPL_STYLES
+
+logger = logging.getLogger(__name__)
 
 def _get_floor0_value(key: str, result_data: dict) -> float:
     """
@@ -732,7 +736,7 @@ class CompareChartWidget(QWidget):
                         break
                     parent = parent.parent()
         except Exception:
-            pass
+            logger.debug("グラフコピー時のステータスバー更新失敗", exc_info=True)
 
     # ------------------------------------------------------------------
     # Drawing

@@ -34,11 +34,15 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+import logging
+
 from app.models import AnalysisCase, AnalysisCaseStatus, Project
 from .case_edit_dialog import CaseEditDialog
 from .theme import ThemeManager, STATUS_COLORS
 
 import qtawesome as qta
+
+logger = logging.getLogger(__name__)
 
 # テーブル列定義
 # UX改善③: 「変更点」列を追加。ダンパー定義・配置計画の変更内容を簡略表示します。
@@ -1630,7 +1634,7 @@ class CaseTableWidget(QWidget):
             try:
                 self._table.horizontalHeader().restoreState(state)
             except Exception:
-                pass  # 互換性エラーは無視してデフォルト幅を使用
+                logger.debug("テーブルヘッダー状態の復元に失敗（デフォルト幅を使用）")
 
     def _on_double_click(self, index: QModelIndex) -> None:
         """

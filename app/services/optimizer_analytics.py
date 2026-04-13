@@ -273,6 +273,7 @@ def compute_sobol_sensitivity(
                 return float("nan")
             return val
         except Exception:
+            logger.debug("Sobol評価失敗: row=%s", row)
             return float("nan")
 
     # f(A), f(B) を評価

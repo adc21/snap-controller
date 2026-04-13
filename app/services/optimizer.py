@@ -959,7 +959,7 @@ class _OptimizationWorker(_SearchAlgorithmsMixin, QThread):
             try:
                 result.evaluator_stats = evaluator.stats
             except Exception:
-                pass
+                logger.debug("evaluator.stats の取得に失敗", exc_info=True)
 
         # ロバスト摂動統計
         total_robust = self._robustness_success + self._robustness_failed

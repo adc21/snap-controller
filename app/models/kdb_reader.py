@@ -35,11 +35,14 @@ SNAP パラメータ対応:
 
 from __future__ import annotations
 
+import logging
 import os
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
+
+logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -739,7 +742,7 @@ class KdbReader:
                 if prod and prod.records:
                     self._products.append(prod)
             except Exception:
-                pass  # 解析失敗は無視
+                logger.debug("KDTファイル解析失敗: %s", fname)
 
     def _parse_kdt_file(self, filepath: Path, category: str) -> Optional[KdbProduct]:
         """1つの .kdt ファイルを解析して KdbProduct を返します。"""
@@ -820,7 +823,7 @@ class KdbReader:
                 if rec and rec.model_number:
                     prod.records.append(rec)
             except Exception:
-                pass
+                logger.debug("レコード解析失敗: section=%s", section_num)
 
         return prod
 
