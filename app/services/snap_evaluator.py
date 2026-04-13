@@ -794,22 +794,17 @@ def create_minimizer_evaluate_fn(
             for i, fk in enumerate(sorted_floor_keys):
                 floor_no = i + 1  # Result は 1-indexed
                 values: Dict[str, float] = {}
-                if res.max_story_drift:
-                    v = res.max_story_drift.get(floor_no)
-                    if v is not None:
-                        values["max_drift"] = v
-                if res.max_acc:
-                    v = res.max_acc.get(floor_no)
-                    if v is not None:
-                        values["max_acc"] = v
-                if res.max_disp:
-                    v = res.max_disp.get(floor_no)
-                    if v is not None:
-                        values["max_disp"] = v
-                if res.max_story_disp:
-                    v = res.max_story_disp.get(floor_no)
-                    if v is not None:
-                        values["max_story_disp"] = v
+                _floor_fields = [
+                    ("max_drift", res.max_story_drift),
+                    ("max_acc", res.max_acc),
+                    ("max_disp", res.max_disp),
+                    ("max_story_disp", res.max_story_disp),
+                ]
+                for fkey, fdict in _floor_fields:
+                    if fdict and floor_no in fdict:
+                        v = fdict[floor_no]
+                        if v is not None:
+                            values[fkey] = v
                 # マージン計算（各基準項目）
                 for item in criteria.items:
                     if not item.enabled or item.limit_value is None:

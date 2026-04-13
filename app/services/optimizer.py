@@ -298,6 +298,7 @@ def _compute_acquisition(
         try:
             return _expected_improvement(mu, sigma, y_best, xi=xi)
         except Exception:
+            logger.debug("scipy EI計算失敗, 簡易実装にフォールバック")
             return _expected_improvement_no_scipy(mu, sigma, y_best, xi=xi)
 
 
@@ -1196,7 +1197,10 @@ class _OptimizationWorker(_SearchAlgorithmsMixin, QThread):
             try:
                 response = self._evaluate_fn(params)
             except Exception as e:
-                logger.warning("並列評価エラー (iter=%d): %s", start_iter + idx, e)
+                logger.warning(
+                    "並列評価エラー (iter=%d, params=%s): %s",
+                    start_iter + idx, params, e,
+                )
                 response = {}
             obj_val = config.compute_objective(response, params)
             is_feasible, margins = self._check_constraints(response, config)

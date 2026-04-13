@@ -464,3 +464,65 @@ class TestSafeDictMax:
 
     def test_single_value(self):
         assert _safe_dict_max({"a": 42.0}) == 42.0
+
+
+class TestExtractMinimizerResponseEdgeCases:
+    """_extract_minimizer_response の境界値テスト。"""
+
+    def test_empty_dicts_produce_empty_response(self):
+        """属性が空辞書の場合、応答キーは生成されない。"""
+        from unittest.mock import MagicMock
+        res = MagicMock()
+        res.max_story_drift = {}
+        res.max_acc = {}
+        res.max_disp = {}
+        res.max_vel = {}
+        res.shear_coeff = {}
+        res.max_otm = {}
+        res.max_story_disp = {}
+        response = _extract_minimizer_response(res)
+        assert response == {}
+
+    def test_partial_none_attributes(self):
+        """一部属性がNone・一部が有効値の場合。"""
+        from unittest.mock import MagicMock
+        res = MagicMock()
+        res.max_story_drift = {1: 0.005, 2: 0.003}
+        res.max_acc = None
+        res.max_disp = {}
+        res.max_vel = {1: 0.1}
+        res.shear_coeff = None
+        res.max_otm = None
+        res.max_story_disp = None
+        response = _extract_minimizer_response(res)
+        assert response["max_drift"] == 0.005
+        assert response["max_vel"] == 0.1
+        assert "max_acc" not in response
+        assert "max_disp" not in response
+
+
+class TestParallelEvalErrorContext:
+    """並列評価エラー時のパラメータ情報ログ出力テスト。"""
+
+    def test_parallel_eval_logs_params_on_error(self):
+        """評価関数例外時にパラメータ値がログに含まれる。"""
+        from app.services.optimizer import (
+            _OptimizationWorker, OptimizationConfig, ParameterRange,
+        )
+
+        config = OptimizationConfig(
+            parameters=[ParameterRange("x", 0.0, 1.0, 0.5)],
+            objective_key="max_drift",
+            n_parallel=1,
+        )
+
+        def failing_eval(params):
+            raise ValueError("test error")
+
+        worker = _OptimizationWorker(config, evaluate_fn=failing_eval)
+        candidates = worker._evaluate_batch(
+            [{"x": 0.5}], config, start_iter=0
+        )
+        # Should still return a candidate with inf objective
+        assert len(candidates) == 1
+        assert candidates[0].objective_value == float("inf")
