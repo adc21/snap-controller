@@ -328,10 +328,44 @@ class MainWindow(_MainWindowDialogsMixin, QMainWindow):
 
     def _build_step4(self) -> QWidget:
         """STEP4: 結果・戦略を構築して返します。"""
-        from PySide6.QtWidgets import QTabWidget as _QTabWidget
-        from PySide6.QtWidgets import QTextEdit as _QTextEdit
+        self._build_step4_result_tabs()
 
-        # ケース比較タブを BinaryResultWidget の先頭に統合
+        step4 = QWidget()
+        step4_layout = QVBoxLayout(step4)
+        step4_layout.setContentsMargins(0, 0, 0, 0)
+        step4_layout.setSpacing(0)
+
+        self._step4_summary_bar = Step4SummaryBar()
+        self._step4_summary_bar.bestCaseClicked.connect(self._on_summary_best_case_clicked)
+        step4_layout.addWidget(self._step4_summary_bar)
+
+        self._hint_banner_step4 = StepHintBanner(step_index=3)
+        self._hint_banner_step4.tabShortcutRequested.connect(
+            lambda idx: self._right_tabs.setCurrentIndex(idx)
+        )
+        step4_layout.addWidget(self._hint_banner_step4)
+
+        self._step4_content_stack = QStackedWidget()
+        self._step4_content_stack.addWidget(self._build_step4_empty_state())
+        self._step4_content_stack.addWidget(self._right_tabs)
+        step4_layout.addWidget(self._step4_content_stack, stretch=1)
+
+        step4_layout.addWidget(self._build_step4_notes_panel())
+
+        self._step4_footer = StepNavFooter(
+            back_label="← 解析実行  (STEP3)",
+            next_label="次のケースを設計する  (STEP2) →",
+            next_primary=True,
+        )
+        self._step4_footer.backRequested.connect(lambda: self._sidebar.set_current_step(2))
+        self._step4_footer.nextRequested.connect(self._go_plan_next_case)
+        step4_layout.addWidget(self._step4_footer)
+        return step4
+
+    def _build_step4_result_tabs(self) -> None:
+        """結果タブウィジェットを構築します。"""
+        from PySide6.QtWidgets import QTabWidget as _QTabWidget
+
         self._binary_result.prepend_tab(self._compare_chart, "📊 応答値比較")
         self._binary_result.prepend_tab(self._hysteresis_widget, "🔄 履歴ループ")
         self._binary_result.prepend_tab(self._mode_shape_widget, "🏗 モード形状")
@@ -355,7 +389,6 @@ class MainWindow(_MainWindowDialogsMixin, QMainWindow):
 
         self._update_result_tabs(result_count=0)
 
-        # 「このタブの読み方」コーナーボタン
         _tab_guide_btn = QPushButton("📖 読み方")
         _tab_guide_btn.setFixedHeight(22)
         _tab_guide_btn.setStyleSheet(
@@ -374,27 +407,8 @@ class MainWindow(_MainWindowDialogsMixin, QMainWindow):
         _tab_guide_btn.clicked.connect(self._show_current_tab_guide)
         self._right_tabs.setCornerWidget(_tab_guide_btn, Qt.TopRightCorner)
 
-        # STEP4 コンテナ
-        step4 = QWidget()
-        step4_layout = QVBoxLayout(step4)
-        step4_layout.setContentsMargins(0, 0, 0, 0)
-        step4_layout.setSpacing(0)
-
-        # 結果サマリーバー
-        self._step4_summary_bar = Step4SummaryBar()
-        self._step4_summary_bar.bestCaseClicked.connect(self._on_summary_best_case_clicked)
-        step4_layout.addWidget(self._step4_summary_bar)
-
-        # 初回ヒントバナー
-        self._hint_banner_step4 = StepHintBanner(step_index=3)
-        self._hint_banner_step4.tabShortcutRequested.connect(
-            lambda idx: self._right_tabs.setCurrentIndex(idx)
-        )
-        step4_layout.addWidget(self._hint_banner_step4)
-
-        # 「結果なし」空状態 / タブ 切替スタック
-        self._step4_content_stack = QStackedWidget()
-
+    def _build_step4_empty_state(self) -> QWidget:
+        """結果なし時の空状態ウィジェットを構築します。"""
         _s4_empty = QWidget()
         _s4_empty_layout = QVBoxLayout(_s4_empty)
         _s4_empty_layout.setAlignment(Qt.AlignCenter)
@@ -442,12 +456,13 @@ class MainWindow(_MainWindowDialogsMixin, QMainWindow):
         _s4_goto_btn_row.addWidget(_s4_goto_btn)
         _s4_empty_layout.addLayout(_s4_goto_btn_row)
 
-        self._step4_content_stack.addWidget(_s4_empty)        # index 0: 空状態
-        self._step4_content_stack.addWidget(self._right_tabs)  # index 1: タブ
+        return _s4_empty
 
-        step4_layout.addWidget(self._step4_content_stack, stretch=1)
+    def _build_step4_notes_panel(self) -> QFrame:
+        """解析戦略メモパネルを構築します。"""
+        from PySide6.QtWidgets import QTextEdit as _QTextEdit
 
-        # 解析戦略メモパネル
+        icon_color = "#d4d4d4" if ThemeManager.is_dark() else "#333333"
         _notes_frame = QFrame()
         _notes_frame.setFrameShape(QFrame.StyledPanel)
         _notes_frame.setMaximumHeight(110)
@@ -482,18 +497,7 @@ class MainWindow(_MainWindowDialogsMixin, QMainWindow):
         )
         self._strategy_notes_edit.textChanged.connect(self._on_strategy_notes_changed)
         _notes_frame_layout.addWidget(self._strategy_notes_edit)
-        step4_layout.addWidget(_notes_frame)
-
-        # STEP4 フッター
-        self._step4_footer = StepNavFooter(
-            back_label="← 解析実行  (STEP3)",
-            next_label="次のケースを設計する  (STEP2) →",
-            next_primary=True,
-        )
-        self._step4_footer.backRequested.connect(lambda: self._sidebar.set_current_step(2))
-        self._step4_footer.nextRequested.connect(self._go_plan_next_case)
-        step4_layout.addWidget(self._step4_footer)
-        return step4
+        return _notes_frame
 
     def _assemble_layout(self, step1: QWidget, step2: QWidget,
                          step3: QWidget, step4: QWidget,
@@ -570,8 +574,12 @@ class MainWindow(_MainWindowDialogsMixin, QMainWindow):
 
     def _setup_menu(self) -> None:
         mb = self.menuBar()
+        self._build_file_menu(mb)
+        self._build_analysis_menu(mb)
+        self._build_settings_menu(mb)
+        self._build_help_menu(mb)
 
-        # ---- File ----
+    def _build_file_menu(self, mb) -> None:
         file_menu = mb.addMenu("ファイル(&F)")
 
         act_new = QAction("新規プロジェクト(&N)", self)
@@ -598,7 +606,6 @@ class MainWindow(_MainWindowDialogsMixin, QMainWindow):
 
         file_menu.addSeparator()
 
-        # 最近使ったプロジェクト
         from .welcome_widget import get_recent_projects
         self._recent_menu = file_menu.addMenu("最近使ったプロジェクト(&R)")
         self._update_recent_menu()
@@ -622,7 +629,7 @@ class MainWindow(_MainWindowDialogsMixin, QMainWindow):
         act_quit.triggered.connect(self.close)
         file_menu.addAction(act_quit)
 
-        # ---- Analysis ----
+    def _build_analysis_menu(self, mb) -> None:
         analysis_menu = mb.addMenu("解析(&A)")
 
         act_add = QAction("ケースを追加(&A)", self)
@@ -706,18 +713,16 @@ class MainWindow(_MainWindowDialogsMixin, QMainWindow):
         act_run_all.triggered.connect(self._run_all)
         analysis_menu.addAction(act_run_all)
 
-
-        # ---- Settings ----
+    def _build_settings_menu(self, mb) -> None:
         settings_menu = mb.addMenu("設定(&S)")
 
         act_app_settings = QAction("アプリケーション設定(&P)…", self)
         act_app_settings.triggered.connect(self._open_settings)
         settings_menu.addAction(act_app_settings)
 
-        # ---- Help ----
+    def _build_help_menu(self, mb) -> None:
         help_menu = mb.addMenu("ヘルプ(&H)")
 
-        # 改善⑨: ショートカットキー一覧
         act_shortcuts = QAction("キーボードショートカット一覧(&K)…", self)
         act_shortcuts.setShortcut("Ctrl+?")
         act_shortcuts.setToolTip("アプリ内のキーボードショートカットを一覧表示します  [Ctrl+?]")
@@ -731,12 +736,15 @@ class MainWindow(_MainWindowDialogsMixin, QMainWindow):
         help_menu.addAction(act_about)
 
     def _setup_toolbar(self) -> None:
-        # 改善⑥: ツールバーを機能グループ別に整理し、重複アイコンを修正、ショートカットをツールチップに明記
         tb = self.addToolBar("メイン")
         tb.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
         icon_color = "#d4d4d4" if ThemeManager.is_dark() else "#333333"
+        self._build_toolbar_actions(tb, icon_color)
+        self._build_toolbar_progress(tb, icon_color)
+        self._build_toolbar_shortcuts()
 
-        # ---- グループ1: ケース操作 ----
+    def _build_toolbar_actions(self, tb, icon_color: str) -> None:
+        """ツールバーのアクションボタンを構築します。"""
         act_add = QAction(qta.icon("fa5s.plus", color=icon_color), "ケース追加", self)
         act_add.setToolTip("新しい解析ケースをダイアログで作成します")
         act_add.triggered.connect(self._add_case)
@@ -744,7 +752,6 @@ class MainWindow(_MainWindowDialogsMixin, QMainWindow):
 
         tb.addSeparator()
 
-        # ---- グループ2: 解析実行 ----
         act_run = QAction(qta.icon("fa5s.play", color="#4CAF50"), "実行", self)
         act_run.setToolTip("選択ケースを解析実行します  [F5]")
         act_run.triggered.connect(self._run_selected)
@@ -752,7 +759,6 @@ class MainWindow(_MainWindowDialogsMixin, QMainWindow):
 
         tb.addSeparator()
 
-        # ---- グループ3: 設定・条件 ----
         act_criteria = QAction(qta.icon("fa5s.bullseye", color=icon_color), "基準設定", self)
         act_criteria.setToolTip("目標性能基準を設定します  [Ctrl+T]")
         act_criteria.triggered.connect(self._open_criteria_dialog)
@@ -760,7 +766,6 @@ class MainWindow(_MainWindowDialogsMixin, QMainWindow):
 
         tb.addSeparator()
 
-        # ---- グループ5: ファイル操作 ----
         act_save = QAction(qta.icon("fa5s.save", color=icon_color), "保存", self)
         act_save.setToolTip("プロジェクトを上書き保存します  [Ctrl+S]")
         act_save.triggered.connect(self._save_project)
@@ -768,7 +773,6 @@ class MainWindow(_MainWindowDialogsMixin, QMainWindow):
 
         tb.addSeparator()
 
-        # ---- グループ6: バッチ実行制御（実行中のみ有効） ----
         self._act_pause = QAction(qta.icon("fa5s.pause", color="#FF9800"), "一時停止", self)
         self._act_pause.setToolTip("バッチ実行を一時停止します")
         self._act_pause.triggered.connect(self._toggle_pause)
@@ -783,7 +787,6 @@ class MainWindow(_MainWindowDialogsMixin, QMainWindow):
 
         tb.addSeparator()
 
-        # ---- 改善⑨: ヘルプ（ショートカット一覧）----
         act_help = QAction("❓ ヘルプ", self)
         act_help.setToolTip("キーボードショートカット一覧を表示します  [Ctrl+?]")
         act_help.triggered.connect(self._show_shortcut_help)
@@ -791,8 +794,8 @@ class MainWindow(_MainWindowDialogsMixin, QMainWindow):
 
         tb.addSeparator()
 
-        # ---- UX改善④新: グローバル解析進捗インジケーター ----
-        # 現在どのステップを見ていても、解析の進行状況をツールバーで常時確認できます。
+    def _build_toolbar_progress(self, tb, icon_color: str) -> None:
+        """ツールバーのグローバル進捗インジケーターを構築します。"""
         self._global_progress_widget = QWidget()
         _gp_layout = QHBoxLayout(self._global_progress_widget)
         _gp_layout.setContentsMargins(4, 0, 8, 0)
@@ -829,25 +832,23 @@ class MainWindow(_MainWindowDialogsMixin, QMainWindow):
             "QProgressBar::chunk { background-color: #4CAF50; border-radius: 2px; }"
         )
         self._global_mini_bar.setToolTip("解析完了率")
-        self._global_mini_bar.hide()  # ケースがゼロのときは非表示
+        self._global_mini_bar.hide()
         _gp_layout.addWidget(self._global_mini_bar)
 
         tb.addWidget(self._global_progress_widget)
 
-        # ---- UX改善④新: Ctrl+1/2/3/4 でワークフローステップを直接切り替え ----
+    def _build_toolbar_shortcuts(self) -> None:
+        """Ctrl+1〜4 / Alt+1〜7 のキーボードショートカットを設定します。"""
         from PySide6.QtGui import QShortcut as _QShortcut
-        _step_shortcuts = []  # GC対策で参照を保持
+        _step_shortcuts = []
         for _step_idx in range(4):
             _sc = _QShortcut(QKeySequence(f"Ctrl+{_step_idx + 1}"), self)
             _sc.activated.connect(
                 lambda _n=_step_idx: self._navigate_to_step(_n)
             )
             _step_shortcuts.append(_sc)
-        # リストをインスタンス変数に保存してGCを防ぐ
         self._step_shortcuts = _step_shortcuts
 
-        # ---- UX改善②新: Alt+1〜7 で STEP4 の結果タブを直接切り替え ----
-        # Alt+1=ダッシュボード, Alt+2=解析結果, Alt+3=ケース比較, ...Alt+7=ランキング
         _result_tab_shortcuts = []
         for _tab_idx in range(7):
             _sc = _QShortcut(QKeySequence(f"Alt+{_tab_idx + 1}"), self)
@@ -2159,6 +2160,7 @@ class MainWindow(_MainWindowDialogsMixin, QMainWindow):
                                 f"<b>{best.name}</b>  —  {drift:.5f} rad"
                             )
                     except Exception:
+                        logger.debug("best case info formatting failed", exc_info=True)
                         best_case_info = ""
                     self._run_selection.show_completion_banner(
                         completed_n, error_count, best_case_info

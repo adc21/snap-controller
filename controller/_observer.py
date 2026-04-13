@@ -17,7 +17,7 @@ class FileEventHandler(FileSystemEventHandler):
     """
 
     def on_created(self, event):
-        print("on_created", event.src_path)
+        logger.debug("on_created: %s", event.src_path)
         if self.on_created_callback:
             self.on_created_callback(event)
 
@@ -44,7 +44,7 @@ def run_observer(work_dir: str, target_files: List[str], on_created: Callable[[F
     def _on_target_file_created(event: FileSystemEvent):
         path = event.src_path
         basename = os.path.basename(path)
-        print("test", path)
+        logger.debug("file event: %s", path)
 
         if os.path.isfile(path) and basename in target_files:
             logger.info(f"Target file {basename} created")
