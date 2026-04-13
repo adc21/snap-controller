@@ -518,12 +518,23 @@ class OptimizerDialog(_OptimizerResultActionsMixin, QDialog):
         layout.addWidget(settings_group)
 
     def _build_advanced_options(self, layout: QVBoxLayout) -> None:
-        # ---- 推定試行数・時間インジケーター ----
+        # 推定試行数・時間インジケーター
         self._est_run_label = QLabel("")
         self._est_run_label.setStyleSheet("font-size: 11px; color: #1565c0; padding: 2px 4px;")
         layout.addWidget(self._est_run_label)
 
-        # ---- ウォームスタート ----
+        self._build_warmstart_row(layout)
+        self._build_penalty_row(layout)
+        self._build_acquisition_row(layout)
+        self._build_ga_options_row(layout)
+        self._build_seed_row(layout)
+        self._build_parallel_row(layout)
+        self._build_checkpoint_row(layout)
+        self._build_robust_row(layout)
+        self._build_cost_row(layout)
+        self._build_envelope_row(layout)
+
+    def _build_warmstart_row(self, layout: QVBoxLayout) -> None:
         warm_row = QHBoxLayout()
         self._warm_start_cb = QCheckBox("ウォームスタート（前回結果を初期値に利用）")
         self._warm_start_cb.setToolTip(
@@ -539,10 +550,9 @@ class OptimizerDialog(_OptimizerResultActionsMixin, QDialog):
         self._warm_start_browse_btn.setEnabled(False)
         warm_row.addWidget(self._warm_start_browse_btn)
         layout.addLayout(warm_row)
-
         self._warm_start_candidates: List[OptimizationCandidate] = []
 
-        # ---- 制約ペナルティ重み ----
+    def _build_penalty_row(self, layout: QVBoxLayout) -> None:
         penalty_row = QHBoxLayout()
         self._penalty_cb = QCheckBox("制約ペナルティ法")
         self._penalty_cb.setToolTip(
@@ -563,7 +573,7 @@ class OptimizerDialog(_OptimizerResultActionsMixin, QDialog):
         self._penalty_cb.toggled.connect(self._penalty_spin.setEnabled)
         layout.addLayout(penalty_row)
 
-        # ---- ベイズ獲得関数 ----
+    def _build_acquisition_row(self, layout: QVBoxLayout) -> None:
         acq_row = QHBoxLayout()
         acq_row.addWidget(QLabel("獲得関数:"))
         self._acq_combo = QComboBox()
@@ -595,10 +605,10 @@ class OptimizerDialog(_OptimizerResultActionsMixin, QDialog):
         acq_row.addStretch()
         self._acq_row_widget = QWidget()
         self._acq_row_widget.setLayout(acq_row)
-        self._acq_row_widget.setVisible(False)  # ベイズ選択時のみ表示
+        self._acq_row_widget.setVisible(False)
         layout.addWidget(self._acq_row_widget)
 
-        # ---- GA適応的突然変異 ----
+    def _build_ga_options_row(self, layout: QVBoxLayout) -> None:
         ga_row = QHBoxLayout()
         self._ga_adaptive_cb = QCheckBox("適応的突然変異率")
         self._ga_adaptive_cb.setChecked(False)
@@ -611,10 +621,10 @@ class OptimizerDialog(_OptimizerResultActionsMixin, QDialog):
         ga_row.addStretch()
         self._ga_row_widget = QWidget()
         self._ga_row_widget.setLayout(ga_row)
-        self._ga_row_widget.setVisible(False)  # GA選択時のみ表示
+        self._ga_row_widget.setVisible(False)
         layout.addWidget(self._ga_row_widget)
 
-        # ---- 乱数シード ----
+    def _build_seed_row(self, layout: QVBoxLayout) -> None:
         seed_row = QHBoxLayout()
         self._seed_check = QCheckBox("乱数シード:")
         self._seed_check.setChecked(False)
@@ -636,7 +646,7 @@ class OptimizerDialog(_OptimizerResultActionsMixin, QDialog):
         seed_widget.setLayout(seed_row)
         layout.addWidget(seed_widget)
 
-        # ---- 並列評価 ----
+    def _build_parallel_row(self, layout: QVBoxLayout) -> None:
         parallel_row = QHBoxLayout()
         parallel_row.addWidget(QLabel("並列評価数:"))
         self._parallel_spin = QSpinBox()
@@ -649,7 +659,6 @@ class OptimizerDialog(_OptimizerResultActionsMixin, QDialog):
         )
         parallel_row.addWidget(self._parallel_spin)
         parallel_row.addWidget(QLabel("（SNAP解析を並列化。1=逐次）"))
-
         parallel_row.addWidget(QLabel("    タイムアウト:"))
         self._timeout_spin = QSpinBox()
         self._timeout_spin.setRange(30, 3600)
@@ -663,11 +672,10 @@ class OptimizerDialog(_OptimizerResultActionsMixin, QDialog):
             "デフォルト: 300秒（5分）"
         )
         parallel_row.addWidget(self._timeout_spin)
-
         parallel_row.addStretch()
         layout.addLayout(parallel_row)
 
-        # ---- チェックポイント自動保存 ----
+    def _build_checkpoint_row(self, layout: QVBoxLayout) -> None:
         checkpoint_row = QHBoxLayout()
         self._checkpoint_check = QCheckBox("チェックポイント自動保存")
         self._checkpoint_check.setChecked(False)
@@ -686,7 +694,7 @@ class OptimizerDialog(_OptimizerResultActionsMixin, QDialog):
         checkpoint_row.addStretch()
         layout.addLayout(checkpoint_row)
 
-        # ---- ロバスト最適化 ----
+    def _build_robust_row(self, layout: QVBoxLayout) -> None:
         robust_row = QHBoxLayout()
         self._robust_check = QCheckBox("ロバスト最適化")
         self._robust_check.setChecked(False)
@@ -714,7 +722,7 @@ class OptimizerDialog(_OptimizerResultActionsMixin, QDialog):
         robust_row.addStretch()
         layout.addLayout(robust_row)
 
-        # ---- コスト重み付き最適化 ----
+    def _build_cost_row(self, layout: QVBoxLayout) -> None:
         cost_row = QHBoxLayout()
         self._cost_check = QCheckBox("コスト重み付き")
         self._cost_check.setChecked(False)
@@ -752,7 +760,7 @@ class OptimizerDialog(_OptimizerResultActionsMixin, QDialog):
         self._cost_coefficients: Dict[str, float] = {}
         layout.addLayout(cost_row)
 
-        # ---- 多波エンベロープ最適化 ----
+    def _build_envelope_row(self, layout: QVBoxLayout) -> None:
         envelope_row = QHBoxLayout()
         self._envelope_check = QCheckBox("多波エンベロープ")
         self._envelope_check.setChecked(False)
@@ -773,7 +781,7 @@ class OptimizerDialog(_OptimizerResultActionsMixin, QDialog):
         envelope_row.addWidget(self._envelope_info_label)
         envelope_row.addStretch()
         self._envelope_check.toggled.connect(self._envelope_mode_combo.setEnabled)
-        self._envelope_wave_cases: List[Any] = []  # list of AnalysisCase
+        self._envelope_wave_cases: List[Any] = []
         layout.addLayout(envelope_row)
 
     def _build_run_controls(self, layout: QVBoxLayout) -> None:

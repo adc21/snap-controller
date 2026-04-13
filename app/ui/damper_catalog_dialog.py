@@ -455,8 +455,8 @@ class DamperCatalogDialog(QDialog):
         self._lbl_tags.setText(", ".join(spec.tags) if spec.tags else "-")
 
         # パラメータテーブル更新
-        from app.ui.case_edit_dialog import _get_damper_field_labels
-        field_labels = _get_damper_field_labels(spec.snap_keyword)
+        from app.ui.damper_field_data import get_damper_field_labels
+        field_labels = get_damper_field_labels(spec.snap_keyword)
 
         params = spec.parameters
         ranges = spec.param_ranges
