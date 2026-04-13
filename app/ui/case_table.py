@@ -1152,39 +1152,14 @@ class CaseTableWidget(QWidget):
         color = _get_status_color(case.status)
 
         name_item = make_item(case.name, case.id)
-
-        # グループ名を取得
-        group_name = ""
-        if self._project:
-            for gname, cids in self._project.case_groups.items():
-                if case.id in cids:
-                    group_name = gname
-                    break
-        group_item = make_item(group_name)
-
-        # UX改善B: グループ別アクセントカラーをグループ列セルに適用
-        if group_name:
-            if group_name not in self._group_color_map:
-                # 新しいグループに色を割り当て（パレットを循環使用）
-                self._group_color_map[group_name] = len(self._group_color_map)
-            color_idx = self._group_color_map[group_name] % len(_GROUP_COLORS_LIGHT)
-            is_dark = ThemeManager.is_dark()
-            group_color = (_GROUP_COLORS_DARK if is_dark else _GROUP_COLORS_LIGHT)[color_idx]
-            group_item.setBackground(group_color)
-            group_item.setToolTip(f"グループ: {group_name}")
-
+        group_item, group_name = self._build_group_item(case, make_item)
         model_item = make_item(os.path.basename(case.model_path) if case.model_path else "（未設定）")
         status_item = make_item(case.get_status_label())
 
         drift_val = case.result_summary.get("max_drift") if case.result_summary else None
         acc_val = case.result_summary.get("max_acc") if case.result_summary else None
-
-        drift_item = make_item(
-            f"{drift_val:.5f}" if drift_val is not None else ""
-        )
-        acc_item = make_item(
-            f"{acc_val:.3f}" if acc_val is not None else ""
-        )
+        drift_item = make_item(f"{drift_val:.5f}" if drift_val is not None else "")
+        acc_item = make_item(f"{acc_val:.3f}" if acc_val is not None else "")
         notes_item = make_item(case.notes)
 
         all_items = [name_item, group_item, model_item, status_item,
@@ -1192,98 +1167,128 @@ class CaseTableWidget(QWidget):
         for item in all_items:
             item.setBackground(color)
 
-        # UX改善④新: 解析結果セルに性能基準との対比でOK/NG色を適用
-        # ケースが完了済みかつ値がある場合のみ、基準値との比較で色付けする
-        # ステータス色（薄い背景）の上に、より濃い色で上書きして視認性を高める
-        if case.result_summary and self._project and hasattr(self._project, "criteria"):
-            criteria = self._project.criteria
+        self._apply_criteria_colors(case, drift_item, drift_val, acc_item, acc_val)
+        self._apply_base_case_diff(case, name_item)
+        changes_item = self._build_changes_item(case)
+        self._apply_readiness_indicator(case, name_item)
+
+        self._table.setItem(row, _COL_NAME, name_item)
+        self._table.setItem(row, _COL_GROUP, group_item)
+        self._table.setItem(row, _COL_CHANGES, changes_item)
+        self._table.setItem(row, _COL_MODEL, model_item)
+        self._table.setItem(row, _COL_STATUS, status_item)
+        self._table.setItem(row, _COL_DRIFT, drift_item)
+        self._table.setItem(row, _COL_ACC, acc_item)
+        self._table.setItem(row, _COL_NOTES, notes_item)
+
+    def _build_group_item(self, case: AnalysisCase, make_item) -> tuple:
+        """グループ名アイテムを構築し、グループ色を適用します。"""
+        group_name = ""
+        if self._project:
+            for gname, cids in self._project.case_groups.items():
+                if case.id in cids:
+                    group_name = gname
+                    break
+        group_item = make_item(group_name)
+        if group_name:
+            if group_name not in self._group_color_map:
+                self._group_color_map[group_name] = len(self._group_color_map)
+            color_idx = self._group_color_map[group_name] % len(_GROUP_COLORS_LIGHT)
             is_dark = ThemeManager.is_dark()
-            _OK_COLOR  = QColor("#1b5e20") if is_dark else QColor("#c8e6c9")  # 深緑 / 薄緑
-            _NG_COLOR  = QColor("#b71c1c") if is_dark else QColor("#ffcdd2")  # 深赤 / 薄赤
-            _WARN_COLOR = QColor("#4e3b00") if is_dark else QColor("#fff9c4")  # 深黄 / 薄黄
+            group_color = (_GROUP_COLORS_DARK if is_dark else _GROUP_COLORS_LIGHT)[color_idx]
+            group_item.setBackground(group_color)
+            group_item.setToolTip(f"グループ: {group_name}")
+        return group_item, group_name
 
-            # criteria.items から key→CriterionItem のマップを構築
-            criteria_map = {}
-            if hasattr(criteria, "items"):
-                for ci in criteria.items:
-                    criteria_map[ci.key] = ci
+    def _apply_criteria_colors(self, case: AnalysisCase,
+                               drift_item: QTableWidgetItem, drift_val,
+                               acc_item: QTableWidgetItem, acc_val) -> None:
+        """解析結果セルに性能基準との対比でOK/NG色を適用します。"""
+        if not (case.result_summary and self._project and hasattr(self._project, "criteria")):
+            return
+        criteria = self._project.criteria
+        is_dark = ThemeManager.is_dark()
+        ok_color = QColor("#1b5e20") if is_dark else QColor("#c8e6c9")
+        ng_color = QColor("#b71c1c") if is_dark else QColor("#ffcdd2")
+        warn_color = QColor("#4e3b00") if is_dark else QColor("#fff9c4")
 
-            def _apply_criteria_color(item: QTableWidgetItem, value: float,
-                                      key: str, fmt: str, label: str, unit: str) -> None:
-                """値と基準を比較してセルに色・テキストマーク・ツールチップを設定します。
+        criteria_map = {}
+        if hasattr(criteria, "items"):
+            for ci in criteria.items:
+                criteria_map[ci.key] = ci
 
-                UX改善⑧新: 背景色だけでなくテキストの先頭にも ✅/⚠/❌ マークを付与し、
-                印刷時やモノクロ表示でも合否が一目で判断できるようにします。
-                """
-                ci = criteria_map.get(key)
-                if ci and ci.enabled and ci.limit_value and ci.limit_value > 0:
-                    ratio = value / ci.limit_value
-                    val_str = f"{value:{fmt}}"
-                    lim_str = f"{ci.limit_value:{fmt}}"
-                    if ratio <= 1.0:
-                        item.setText(f"✅ {val_str}")
-                        item.setBackground(_OK_COLOR)
-                        item.setToolTip(
-                            f"{label}: {val_str} {unit}\n"
-                            f"基準値: {lim_str} {unit}\n"
-                            f"充足率: {ratio:.1%}  ✅ OK（基準クリア）"
-                        )
-                    elif ratio <= 1.2:
-                        item.setText(f"⚠ {val_str}")
-                        item.setBackground(_WARN_COLOR)
-                        item.setToolTip(
-                            f"{label}: {val_str} {unit}\n"
-                            f"基準値: {lim_str} {unit}\n"
-                            f"充足率: {ratio:.1%}  ⚠ 基準近傍（要注意）"
-                        )
-                    else:
-                        item.setText(f"❌ {val_str}")
-                        item.setBackground(_NG_COLOR)
-                        item.setToolTip(
-                            f"{label}: {val_str} {unit}\n"
-                            f"基準値: {lim_str} {unit}\n"
-                            f"充足率: {ratio:.1%}  ❌ NG（基準超過）"
-                        )
+        def _color_cell(item: QTableWidgetItem, value: float,
+                        key: str, fmt: str, label: str, unit: str) -> None:
+            ci = criteria_map.get(key)
+            if ci and ci.enabled and ci.limit_value and ci.limit_value > 0:
+                ratio = value / ci.limit_value
+                val_str = f"{value:{fmt}}"
+                lim_str = f"{ci.limit_value:{fmt}}"
+                if ratio <= 1.0:
+                    item.setText(f"✅ {val_str}")
+                    item.setBackground(ok_color)
+                    item.setToolTip(
+                        f"{label}: {val_str} {unit}\n"
+                        f"基準値: {lim_str} {unit}\n"
+                        f"充足率: {ratio:.1%}  ✅ OK（基準クリア）"
+                    )
+                elif ratio <= 1.2:
+                    item.setText(f"⚠ {val_str}")
+                    item.setBackground(warn_color)
+                    item.setToolTip(
+                        f"{label}: {val_str} {unit}\n"
+                        f"基準値: {lim_str} {unit}\n"
+                        f"充足率: {ratio:.1%}  ⚠ 基準近傍（要注意）"
+                    )
+                else:
+                    item.setText(f"❌ {val_str}")
+                    item.setBackground(ng_color)
+                    item.setToolTip(
+                        f"{label}: {val_str} {unit}\n"
+                        f"基準値: {lim_str} {unit}\n"
+                        f"充足率: {ratio:.1%}  ❌ NG（基準超過）"
+                    )
 
-            if drift_val is not None:
-                _apply_criteria_color(drift_item, drift_val,
-                                      "max_drift", ".5f", "最大層間変形角", "rad")
-            if acc_val is not None:
-                _apply_criteria_color(acc_item, acc_val,
-                                      "max_acc", ".3f", "最大絶対加速度", "m/s²")
+        if drift_val is not None:
+            _color_cell(drift_item, drift_val, "max_drift", ".5f", "最大層間変形角", "rad")
+        if acc_val is not None:
+            _color_cell(acc_item, acc_val, "max_acc", ".3f", "最大絶対加速度", "m/s²")
 
-        # UX改善⑤新: 基点ケースとの差分をケース名セル・結果セルに追記
-        if self._base_case_id and self._project:
-            if case.id == self._base_case_id:
-                # 基点ケース自体には ⭐ マーク
-                name_item.setText(f"⭐ {case.name}")
-                name_item.setToolTip(
-                    "この行が基点ケースです。\n"
-                    "他のケースの解析結果はこのケースとの差分で表示されます。\n"
-                    "右クリック→「基点ケースを解除」で解除できます。"
-                )
-            else:
-                base = self._project.get_case(self._base_case_id)
-                if base and base.result_summary and case.result_summary:
-                    diff_texts = []
-                    for key, fmt in [("max_drift", ".4f"), ("max_acc", ".2f")]:
-                        v_cur = case.result_summary.get(key)
-                        v_base = base.result_summary.get(key)
-                        if v_cur is not None and v_base is not None:
-                            try:
-                                delta = float(v_cur) - float(v_base)
-                                pct = (delta / float(v_base) * 100) if float(v_base) != 0 else 0
-                                sign = "+" if pct >= 0 else ""
-                                diff_texts.append(f"{sign}{pct:.0f}%")
-                            except (TypeError, ValueError):
-                                pass
-                    if diff_texts:
-                        name_item.setToolTip(
-                            f"基点ケース「{base.name}」との差分:\n"
-                            + "\n".join(diff_texts)
-                        )
+    def _apply_base_case_diff(self, case: AnalysisCase,
+                              name_item: QTableWidgetItem) -> None:
+        """基点ケースとの差分をケース名セルに追記します。"""
+        if not (self._base_case_id and self._project):
+            return
+        if case.id == self._base_case_id:
+            name_item.setText(f"⭐ {case.name}")
+            name_item.setToolTip(
+                "この行が基点ケースです。\n"
+                "他のケースの解析結果はこのケースとの差分で表示されます。\n"
+                "右クリック→「基点ケースを解除」で解除できます。"
+            )
+        else:
+            base = self._project.get_case(self._base_case_id)
+            if base and base.result_summary and case.result_summary:
+                diff_texts = []
+                for key, fmt in [("max_drift", ".4f"), ("max_acc", ".2f")]:
+                    v_cur = case.result_summary.get(key)
+                    v_base = base.result_summary.get(key)
+                    if v_cur is not None and v_base is not None:
+                        try:
+                            delta = float(v_cur) - float(v_base)
+                            pct = (delta / float(v_base) * 100) if float(v_base) != 0 else 0
+                            sign = "+" if pct >= 0 else ""
+                            diff_texts.append(f"{sign}{pct:.0f}%")
+                        except (TypeError, ValueError):
+                            pass
+                if diff_texts:
+                    name_item.setToolTip(
+                        f"基点ケース「{base.name}」との差分:\n"
+                        + "\n".join(diff_texts)
+                    )
 
-        # UX改善③: 「変更点」列を生成
+    def _build_changes_item(self, case: AnalysisCase) -> QTableWidgetItem:
+        """「変更点」列アイテムを構築します。"""
         changes_label = _build_changes_label(case)
         changes_item = QTableWidgetItem(changes_label)
         changes_item.setFlags(changes_item.flags() & ~Qt.ItemIsEditable)
@@ -1299,39 +1304,30 @@ class CaseTableWidget(QWidget):
                 f"変更内容:\n{changes_label}\n\n"
                 "ダブルクリックして詳細を確認・編集できます。"
             )
+        return changes_item
 
-        # ── UX改善（第12回②）: ケース準備度インジケーター ────────────────────────
-        # ケース名がデフォルトのままであれば ⚠ プレフィックスを付けてツールチップで案内します。
-        # 基点ケース（⭐）との競合を避けるため、基点ケースでない場合のみ付与します。
+    def _apply_readiness_indicator(self, case: AnalysisCase,
+                                   name_item: QTableWidgetItem) -> None:
+        """ケース準備度インジケーターを適用します。"""
         is_base = self._base_case_id and case.id == self._base_case_id
-        if not is_base:
-            _readiness = _calc_readiness(case)
-            if _readiness == "warn_name":
-                # ケース名がデフォルトのまま → ⚠ で注意喚起
-                name_item.setText(f"⚠ {case.name}")
-                existing_tip = name_item.toolTip()
-                name_item.setToolTip(
-                    "⚠ ケース名がデフォルトのままです。\n"
-                    "内容がわかる名前（例: OIL_Ce500_α04）に変更することをお勧めします。\n"
-                    "ダブルクリック → 基本設定タブ → ケース名を編集してください。\n\n"
-                    + (existing_tip if existing_tip else "")
-                )
-            elif _readiness == "ready":
-                # 設定完了: アイコンは付けず、ツールチップに簡潔に示す
-                existing_tip = name_item.toolTip()
-                name_item.setToolTip(
-                    ("✅ 設定完了（カスタム名＋ダンパー変更あり）\n\n" + existing_tip)
-                    if not existing_tip else existing_tip
-                )
-
-        self._table.setItem(row, _COL_NAME, name_item)
-        self._table.setItem(row, _COL_GROUP, group_item)
-        self._table.setItem(row, _COL_CHANGES, changes_item)
-        self._table.setItem(row, _COL_MODEL, model_item)
-        self._table.setItem(row, _COL_STATUS, status_item)
-        self._table.setItem(row, _COL_DRIFT, drift_item)
-        self._table.setItem(row, _COL_ACC, acc_item)
-        self._table.setItem(row, _COL_NOTES, notes_item)
+        if is_base:
+            return
+        _readiness = _calc_readiness(case)
+        if _readiness == "warn_name":
+            name_item.setText(f"⚠ {case.name}")
+            existing_tip = name_item.toolTip()
+            name_item.setToolTip(
+                "⚠ ケース名がデフォルトのままです。\n"
+                "内容がわかる名前（例: OIL_Ce500_α04）に変更することをお勧めします。\n"
+                "ダブルクリック → 基本設定タブ → ケース名を編集してください。\n\n"
+                + (existing_tip if existing_tip else "")
+            )
+        elif _readiness == "ready":
+            existing_tip = name_item.toolTip()
+            name_item.setToolTip(
+                ("✅ 設定完了（カスタム名＋ダンパー変更あり）\n\n" + existing_tip)
+                if not existing_tip else existing_tip
+            )
 
     def _show_context_menu(self, pos) -> None:
         menu = QMenu(self)

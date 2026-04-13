@@ -405,17 +405,22 @@ class OptimizerDialog(_OptimizerResultActionsMixin, QDialog):
     def _build_settings_section(self, layout: QVBoxLayout) -> None:
         settings_group = QGroupBox("最適化設定")
         settings_layout = QVBoxLayout(settings_group)
+        self._build_obj_method_row(settings_layout)
+        self._build_composite_panel(settings_layout)
+        self._build_damper_type_row(settings_layout)
+        self._build_param_range_group(settings_layout)
+        layout.addWidget(settings_group)
 
-        # 行1: 目的関数 + 手法
-        row1 = QHBoxLayout()
-
-        row1.addWidget(QLabel("目的関数:"))
+    def _build_obj_method_row(self, parent_layout: QVBoxLayout) -> None:
+        """目的関数・探索手法・反復数の行を構築します。"""
+        row = QHBoxLayout()
+        row.addWidget(QLabel("目的関数:"))
         self._obj_combo = QComboBox()
         for key, label, unit in _OBJECTIVE_ITEMS:
             self._obj_combo.addItem(f"{label} [{unit}] を最小化")
-        row1.addWidget(self._obj_combo)
+        row.addWidget(self._obj_combo)
 
-        row1.addWidget(QLabel("探索手法:"))
+        row.addWidget(QLabel("探索手法:"))
         self._method_combo = QComboBox()
         self._method_combo.addItem("グリッドサーチ", "grid")
         self._method_combo.addItem("ランダムサーチ", "random")
@@ -426,28 +431,28 @@ class OptimizerDialog(_OptimizerResultActionsMixin, QDialog):
         self._method_combo.addItem("差分進化 (DE)", "de")
         self._method_combo.addItem("多目的最適化 (NSGA-II)", "nsga2")
         self._method_combo.currentIndexChanged.connect(self._on_method_changed)
-        row1.addWidget(self._method_combo)
+        row.addWidget(self._method_combo)
 
         self._method_rec_btn = QPushButton("💡 おすすめ")
         self._method_rec_btn.setToolTip("パラメータ空間のサイズに基づいて最適な探索手法を推薦します")
         self._method_rec_btn.setFixedWidth(90)
         self._method_rec_btn.clicked.connect(self._show_method_recommendation)
-        row1.addWidget(self._method_rec_btn)
+        row.addWidget(self._method_rec_btn)
 
-        row1.addWidget(QLabel("反復数:"))
+        row.addWidget(QLabel("反復数:"))
         self._iter_spin = QSpinBox()
         self._iter_spin.setRange(10, 10000)
         self._iter_spin.setValue(200)
-        self._iter_spin.setEnabled(False)  # グリッドサーチでは無効
-        row1.addWidget(self._iter_spin)
+        self._iter_spin.setEnabled(False)
+        row.addWidget(self._iter_spin)
+        row.addStretch()
+        parent_layout.addLayout(row)
 
-        row1.addStretch()
-        settings_layout.addLayout(row1)
-
-        # 複合目的関数パネル
+    def _build_composite_panel(self, parent_layout: QVBoxLayout) -> None:
+        """複合目的関数（重み付き和）パネルを構築します。"""
         self._composite_check = QCheckBox("複合目的関数（重み付き和）")
         self._composite_check.toggled.connect(self._on_composite_toggled)
-        settings_layout.addWidget(self._composite_check)
+        parent_layout.addWidget(self._composite_check)
 
         self._composite_panel = QFrame()
         self._composite_panel.setFrameShape(QFrame.Shape.StyledPanel)
@@ -460,7 +465,7 @@ class OptimizerDialog(_OptimizerResultActionsMixin, QDialog):
         ))
         self._weight_spins: list[dict] = []
         weight_grid = QHBoxLayout()
-        for key, label, unit in _OBJECTIVE_ITEMS[:4]:  # 主要4項目
+        for key, label, unit in _OBJECTIVE_ITEMS[:4]:
             col = QVBoxLayout()
             col.addWidget(QLabel(f"{label}"))
             spin = QDoubleSpinBox()
@@ -473,27 +478,28 @@ class OptimizerDialog(_OptimizerResultActionsMixin, QDialog):
             weight_grid.addLayout(col)
             self._weight_spins.append({"key": key, "label": label, "spin": spin})
         composite_layout.addLayout(weight_grid)
-        settings_layout.addWidget(self._composite_panel)
+        parent_layout.addWidget(self._composite_panel)
 
-        # 行2: ダンパー種類
-        row2 = QHBoxLayout()
-        row2.addWidget(QLabel("ダンパー種類:"))
+    def _build_damper_type_row(self, parent_layout: QVBoxLayout) -> None:
+        """ダンパー種類選択行を構築します。"""
+        row = QHBoxLayout()
+        row.addWidget(QLabel("ダンパー種類:"))
         self._damper_combo = QComboBox()
         for dtype in _DAMPER_PARAM_PRESETS.keys():
             self._damper_combo.addItem(dtype)
         self._damper_combo.currentTextChanged.connect(self._on_damper_type_changed)
-        row2.addWidget(self._damper_combo)
-        row2.addStretch()
-        settings_layout.addLayout(row2)
+        row.addWidget(self._damper_combo)
+        row.addStretch()
+        parent_layout.addLayout(row)
 
-        # パラメータ範囲テーブル
+    def _build_param_range_group(self, parent_layout: QVBoxLayout) -> None:
+        """探索パラメータ範囲グループを構築します。"""
         param_group = QGroupBox("探索パラメータ範囲")
         param_group_layout = QVBoxLayout(param_group)
         self._param_layout = QVBoxLayout()
         param_group_layout.addLayout(self._param_layout)
         self._on_damper_type_changed(self._damper_combo.currentText())
 
-        # 設定保存/読込ボタン
         config_btn_row = QHBoxLayout()
         config_btn_row.addStretch()
         self._save_config_btn = QPushButton("設定保存")
@@ -512,10 +518,7 @@ class OptimizerDialog(_OptimizerResultActionsMixin, QDialog):
         self._load_config_btn.clicked.connect(self._load_config_preset)
         config_btn_row.addWidget(self._load_config_btn)
         param_group_layout.addLayout(config_btn_row)
-
-        settings_layout.addWidget(param_group)
-
-        layout.addWidget(settings_group)
+        parent_layout.addWidget(param_group)
 
     def _build_advanced_options(self, layout: QVBoxLayout) -> None:
         # 推定試行数・時間インジケーター
@@ -906,115 +909,123 @@ class OptimizerDialog(_OptimizerResultActionsMixin, QDialog):
         layout.addWidget(result_splitter, stretch=1)
 
     def _build_button_rows(self, layout: QVBoxLayout) -> None:
-        analysis_row = QHBoxLayout()
-        analysis_label = QLabel("分析:")
-        analysis_label.setStyleSheet("font-weight: bold; color: #888;")
-        analysis_row.addWidget(analysis_label)
+        self._build_analysis_buttons(layout)
+        self._build_export_buttons(layout)
+        self._build_action_buttons(layout)
+
+    def _build_analysis_buttons(self, layout: QVBoxLayout) -> None:
+        """分析ボタン行を構築します。"""
+        row = QHBoxLayout()
+        label = QLabel("分析:")
+        label.setStyleSheet("font-weight: bold; color: #888;")
+        row.addWidget(label)
 
         self._sensitivity_btn = QPushButton("感度解析")
         self._sensitivity_btn.setEnabled(False)
         self._sensitivity_btn.setToolTip(
             "最適解周りのパラメータ感度を解析します（各パラメータを±20%変動）"
         )
-        analysis_row.addWidget(self._sensitivity_btn)
+        row.addWidget(self._sensitivity_btn)
 
         self._sobol_btn = QPushButton("Sobol解析")
         self._sobol_btn.setEnabled(False)
         self._sobol_btn.setToolTip(
             "Sobol分散ベースグローバル感度解析（交互作用を含む一次/全次指標）"
         )
-        analysis_row.addWidget(self._sobol_btn)
+        row.addWidget(self._sobol_btn)
 
         self._pareto_btn = QPushButton("Pareto Front")
         self._pareto_btn.setEnabled(False)
         self._pareto_btn.setToolTip(
             "複合目的関数使用時のトレードオフ曲線を表示します"
         )
-        analysis_row.addWidget(self._pareto_btn)
+        row.addWidget(self._pareto_btn)
 
         self._correlation_btn = QPushButton("相関分析")
         self._correlation_btn.setEnabled(False)
         self._correlation_btn.setToolTip(
             "上位候補のパラメータ間の相関を分析します（相関行列ヒートマップ）"
         )
-        analysis_row.addWidget(self._correlation_btn)
+        row.addWidget(self._correlation_btn)
 
         self._diagnostics_btn = QPushButton("収束診断")
         self._diagnostics_btn.setEnabled(False)
         self._diagnostics_btn.setToolTip(
             "探索の品質を診断し、再実行の必要性や推奨アクションを表示します"
         )
-        analysis_row.addWidget(self._diagnostics_btn)
+        row.addWidget(self._diagnostics_btn)
 
         self._heatmap_btn = QPushButton("空間ヒートマップ")
         self._heatmap_btn.setEnabled(False)
         self._heatmap_btn.setToolTip(
             "パラメータ空間の探索密度と目的関数値を2Dヒートマップで可視化します"
         )
-        analysis_row.addWidget(self._heatmap_btn)
-        analysis_row.addStretch()
-        layout.addLayout(analysis_row)
+        row.addWidget(self._heatmap_btn)
+        row.addStretch()
+        layout.addLayout(row)
 
-        # 行2: 出力・保存
-        export_row = QHBoxLayout()
-        export_label = QLabel("出力:")
-        export_label.setStyleSheet("font-weight: bold; color: #888;")
-        export_row.addWidget(export_label)
+    def _build_export_buttons(self, layout: QVBoxLayout) -> None:
+        """出力・保存ボタン行を構築します。"""
+        row = QHBoxLayout()
+        label = QLabel("出力:")
+        label.setStyleSheet("font-weight: bold; color: #888;")
+        row.addWidget(label)
 
         self._export_csv_btn = QPushButton("CSV出力")
         self._export_csv_btn.setEnabled(False)
         self._export_csv_btn.setToolTip("探索結果をCSVファイルに出力します")
-        export_row.addWidget(self._export_csv_btn)
+        row.addWidget(self._export_csv_btn)
 
         self._log_export_btn = QPushButton("評価ログ")
         self._log_export_btn.setEnabled(False)
         self._log_export_btn.setToolTip(
             "全評価履歴をCSVログとして出力します（審査・規制文書用）"
         )
-        export_row.addWidget(self._log_export_btn)
+        row.addWidget(self._log_export_btn)
 
         self._report_btn = QPushButton("HTMLレポート")
         self._report_btn.setEnabled(False)
         self._report_btn.setToolTip(
             "最適化結果をHTMLレポートとして出力します（設定・最良解・収束グラフ含む）"
         )
-        export_row.addWidget(self._report_btn)
+        row.addWidget(self._report_btn)
 
         self._save_btn = QPushButton("結果保存")
         self._save_btn.setEnabled(False)
         self._save_btn.setToolTip("最適化結果をJSONファイルに保存します")
-        export_row.addWidget(self._save_btn)
+        row.addWidget(self._save_btn)
 
         self._load_btn = QPushButton("結果読込")
         self._load_btn.setToolTip("保存済みの最適化結果をJSONファイルから読み込みます")
-        export_row.addWidget(self._load_btn)
+        row.addWidget(self._load_btn)
 
         self._compare_btn = QPushButton("結果比較")
         self._compare_btn.setToolTip(
             "複数の最適化結果JSONを読み込み、パラメータ・収束曲線を比較します"
         )
-        export_row.addWidget(self._compare_btn)
+        row.addWidget(self._compare_btn)
 
         self._copy_params_btn = QPushButton("最良パラメータコピー")
         self._copy_params_btn.setEnabled(False)
         self._copy_params_btn.setToolTip(
             "最良解のパラメータ値をクリップボードにコピーします"
         )
-        export_row.addWidget(self._copy_params_btn)
-        export_row.addStretch()
-        layout.addLayout(export_row)
+        row.addWidget(self._copy_params_btn)
+        row.addStretch()
+        layout.addLayout(row)
 
-        # 行3: アクション
-        action_row = QHBoxLayout()
+    def _build_action_buttons(self, layout: QVBoxLayout) -> None:
+        """アクションボタン行を構築します。"""
+        row = QHBoxLayout()
         self._apply_btn = QPushButton("最良解を .s8i に適用")
         self._apply_btn.setEnabled(False)
-        action_row.addWidget(self._apply_btn)
-        action_row.addStretch()
+        row.addWidget(self._apply_btn)
+        row.addStretch()
 
         close_btn = QPushButton("閉じる")
         close_btn.clicked.connect(self.reject)
-        action_row.addWidget(close_btn)
-        layout.addLayout(action_row)
+        row.addWidget(close_btn)
+        layout.addLayout(row)
 
     def _connect_signals(self) -> None:
         self._run_btn.clicked.connect(self._start_optimization)
@@ -1981,75 +1992,67 @@ class OptimizerDialog(_OptimizerResultActionsMixin, QDialog):
             logger.warning("チェックポイント保存失敗: %s", e)
 
     def _update_best_summary_card(self, result: "OptimizationResult") -> None:
-        """
-        UX改善（第9回④）: ベストソリューションサマリーカードを最適化結果で更新します。
-
-        最適化完了後、結果テーブルの上部カードに最良パラメータ・目的関数値・
-        制約満足状況を表示します。制約を満たす解があれば緑、なければ黄色で表示します。
-
-        Parameters
-        ----------
-        result : OptimizationResult
-            最適化結果オブジェクト。
-        """
+        """ベストソリューションサマリーカードを最適化結果で更新します。"""
         if not hasattr(self, "_best_summary_card"):
             return
-
         if not result.best:
-            # 制約を満たす解なし: 赤カードで明確に警告 + 最も惜しい解を表示
-            self._best_summary_card.setStyleSheet(
-                "QFrame {"
-                "  background-color: #ffebee;"
-                "  border: 1px solid #ef5350;"
-                "  border-left: 5px solid #c62828;"
-                "  border-radius: 4px;"
-                "}"
-            )
-            self._bc_title_lbl.setText(
-                "<b>制約を満たす解が見つかりませんでした</b>"
-            )
-            self._bc_title_lbl.setStyleSheet(
-                "color: #b71c1c; font-size: 12px; background: transparent; border: none;"
-            )
+            self._show_infeasible_card(result)
+        else:
+            self._show_best_card(result)
+        self._best_summary_card.show()
 
-            # 最も惜しい解（least infeasible）を表示
-            least_inf = result.least_infeasible
-            if least_inf and least_inf.objective_value < float("inf"):
-                param_strs = [f"{k}={v:.4g}" for k, v in least_inf.params.items()]
-                margin_strs = []
-                for mk, mv in least_inf.constraint_margins.items():
-                    if mv < 0 and mv > float("-inf"):
-                        margin_strs.append(f"{mk}: {mv:+.4g}")
-                detail = "  /  ".join(param_strs)
-                if margin_strs:
-                    detail += "\n制約違反: " + ", ".join(margin_strs)
-                self._bc_params_lbl.setText(
-                    f"最も惜しい解: {detail}\n"
-                    "パラメータ範囲を広げるか、制約条件を緩和して再度お試しください。"
-                )
-            else:
-                self._bc_params_lbl.setText(
-                    "パラメータ範囲を広げるか、制約条件を緩和して再度お試しください。"
-                )
-            self._bc_params_lbl.setStyleSheet(
-                "color: #b71c1c; font-size: 10px; background: transparent; border: none;"
-            )
-            self._bc_obj_lbl.setText(
-                f"{len(result.all_candidates)}点\n評価済み"
-            )
-            self._bc_obj_lbl.setStyleSheet(
-                "color: #c62828; font-size: 13px; font-weight: bold;"
-                "  background: transparent; border: none; text-align: right;"
-            )
-            self._best_summary_card.show()
-            return
+    def _show_infeasible_card(self, result: "OptimizationResult") -> None:
+        """制約を満たす解なし: 赤カードで警告 + 最も惜しい解を表示します。"""
+        self._best_summary_card.setStyleSheet(
+            "QFrame {"
+            "  background-color: #ffebee;"
+            "  border: 1px solid #ef5350;"
+            "  border-left: 5px solid #c62828;"
+            "  border-radius: 4px;"
+            "}"
+        )
+        self._bc_title_lbl.setText(
+            "<b>制約を満たす解が見つかりませんでした</b>"
+        )
+        self._bc_title_lbl.setStyleSheet(
+            "color: #b71c1c; font-size: 12px; background: transparent; border: none;"
+        )
 
-        # 最良解あり: 緑カードで表示
+        least_inf = result.least_infeasible
+        if least_inf and least_inf.objective_value < float("inf"):
+            param_strs = [f"{k}={v:.4g}" for k, v in least_inf.params.items()]
+            margin_strs = []
+            for mk, mv in least_inf.constraint_margins.items():
+                if mv < 0 and mv > float("-inf"):
+                    margin_strs.append(f"{mk}: {mv:+.4g}")
+            detail = "  /  ".join(param_strs)
+            if margin_strs:
+                detail += "\n制約違反: " + ", ".join(margin_strs)
+            self._bc_params_lbl.setText(
+                f"最も惜しい解: {detail}\n"
+                "パラメータ範囲を広げるか、制約条件を緩和して再度お試しください。"
+            )
+        else:
+            self._bc_params_lbl.setText(
+                "パラメータ範囲を広げるか、制約条件を緩和して再度お試しください。"
+            )
+        self._bc_params_lbl.setStyleSheet(
+            "color: #b71c1c; font-size: 10px; background: transparent; border: none;"
+        )
+        self._bc_obj_lbl.setText(
+            f"{len(result.all_candidates)}点\n評価済み"
+        )
+        self._bc_obj_lbl.setStyleSheet(
+            "color: #c62828; font-size: 13px; font-weight: bold;"
+            "  background: transparent; border: none; text-align: right;"
+        )
+
+    def _show_best_card(self, result: "OptimizationResult") -> None:
+        """最良解あり: 緑カードで表示します。"""
         obj_label = result.config.objective_label if result.config else "目的関数"
         feasible_count = len(result.feasible_candidates)
         total_count = len(result.all_candidates)
 
-        # パラメータ文字列を構築
         param_strs = [f"{k} = {v:.4g}" for k, v in result.best.params.items()]
         params_text = "  /  ".join(param_strs)
         feasibility_text = f"制約満足: {feasible_count}/{total_count}点"
@@ -2062,7 +2065,6 @@ class OptimizerDialog(_OptimizerResultActionsMixin, QDialog):
             "  border-radius: 4px;"
             "}"
         )
-        # 収束品質バッジを付加
         quality_badge = ""
         diag = compute_convergence_diagnostics(result)
         if diag:
@@ -2099,7 +2101,6 @@ class OptimizerDialog(_OptimizerResultActionsMixin, QDialog):
             "color: #1b5e20; font-size: 14px; font-weight: bold;"
             "  background: transparent; border: none;"
         )
-        self._best_summary_card.show()
 
     def _populate_result_table(self, result: OptimizationResult) -> None:
         """結果テーブルを上位20候補で更新します。

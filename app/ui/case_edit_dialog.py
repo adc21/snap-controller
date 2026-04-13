@@ -762,32 +762,35 @@ class CaseEditDialog(QDialog):
         self._check_param_validity()
 
     def _check_param_validity(self) -> None:
-        """
-        UX改善（第12回①）: ダンパー定義テーブル内の全「現在の値」セルを検証し、
-        妥当性チェックバーを更新します。
-
-        検証内容:
-        - 空文字列 → ❌ 不正値
-        - 数値に変換できない値（文字列など）→ ❌ 不正値
-        - 数値だが 0 以下（減衰係数・降伏荷重等は通常正値）→ ⚠ 要確認
-        - 全て正常 → ✅ 表示
-
-        問題がなく変更もない場合はバーを非表示にします。
-        """
+        """ダンパー定義テーブル内の全「現在の値」セルを検証し、妥当性チェックバーを更新します。"""
         if not hasattr(self, "_param_validity_bar"):
             return
 
-        # 全テーブルを検査
         all_tables: list = []
         for tbl in self._damper_def_tables.values():
             all_tables.append(tbl)
         for tbl in self._extra_def_tables.values():
             all_tables.append(tbl)
 
-        # 変更があるか確認
+        any_changed, errors, warnings = self._scan_param_tables(all_tables)
+
+        if not any_changed:
+            self._param_validity_bar.hide()
+            return
+
+        self._param_validity_bar.show()
+        if errors:
+            self._show_validity_error(errors)
+        elif warnings:
+            self._show_validity_warning(warnings)
+        else:
+            self._show_validity_ok(all_tables)
+
+    def _scan_param_tables(self, all_tables: list) -> tuple:
+        """全テーブルをスキャンし、変更有無・エラー・警告を返します。"""
         any_changed = False
-        errors: list = []    # ❌ 不正値
-        warnings: list = []  # ⚠ 要確認（0以下）
+        errors: list = []
+        warnings: list = []
 
         for tbl in all_tables:
             for r in range(tbl.rowCount()):
@@ -798,14 +801,13 @@ class CaseEditDialog(QDialog):
                 raw = val_item.text().strip()
                 orig_raw = orig_item.text().strip() if orig_item else raw
 
-                # 変更があるか
                 if raw != orig_raw:
                     any_changed = True
 
                 # 空文字チェック（元値も空の場合はスキップ＝元から空欄のフィールド）
                 if raw == "":
                     if orig_raw == "":
-                        continue  # 元から空欄のフィールドはエラー対象外
+                        continue
                     label_item = tbl.item(r, _DEF_COL_LABEL)
                     label = label_item.text() if label_item else f"行{r+1}"
                     errors.append(f"{label}: 空欄")
@@ -815,7 +817,6 @@ class CaseEditDialog(QDialog):
                 try:
                     num = float(raw)
                 except ValueError:
-                    # 元の値も数値でなければ文字列フィールドとみなしスキップ
                     is_orig_str = True
                     if orig_raw:
                         try:
@@ -824,88 +825,84 @@ class CaseEditDialog(QDialog):
                         except ValueError:
                             is_orig_str = True
                     if is_orig_str:
-                        continue  # 文字列フィールド → 数値チェック対象外
+                        continue
                     label_item = tbl.item(r, _DEF_COL_LABEL)
                     label = label_item.text() if label_item else f"行{r+1}"
                     errors.append(f"{label}: 「{raw[:8]}」は数値ではありません")
                     continue
 
-                # 0以下チェック（0以下になると解析が発散しやすい）
-                # ただし変更がない行は警告対象外
+                # 0以下チェック（変更がない行は警告対象外）
                 if num <= 0 and raw != orig_raw:
                     label_item = tbl.item(r, _DEF_COL_LABEL)
                     label = label_item.text() if label_item else f"行{r+1}"
                     warnings.append(f"{label} = {raw}")
 
-        # 変更がなければバーを非表示
-        if not any_changed:
-            self._param_validity_bar.hide()
-            return
+        return any_changed, errors, warnings
 
-        # バーを表示してメッセージ更新
-        self._param_validity_bar.show()
-        if errors:
-            # ❌ 不正値あり
-            msg = "不正値あり: " + "、".join(errors[:2])
-            if len(errors) > 2:
-                msg += f" 他{len(errors)-2}件"
-            self._validity_icon_lbl.setText("❌")
-            self._validity_text_lbl.setText(msg)
-            self._param_validity_bar.setStyleSheet(
-                "QFrame {"
-                "  background-color: #ffebee;"
-                "  border: 1px solid #ef9a9a;"
-                "  border-radius: 4px; margin: 2px 0px;"
-                "}"
-            )
-            self._validity_text_lbl.setStyleSheet(
-                "color: #b71c1c; font-size: 10px; background: transparent; border: none;"
-            )
-            self._validity_jump_btn.show()
-        elif warnings:
-            # ⚠ 0以下の値あり
-            msg = "要確認: " + "、".join(warnings[:2])
-            if len(warnings) > 2:
-                msg += f" 他{len(warnings)-2}件（0以下の値は解析が不安定になる可能性があります）"
-            else:
-                msg += "（0以下の値は解析が不安定になる可能性があります）"
-            self._validity_icon_lbl.setText("⚠")
-            self._validity_text_lbl.setText(msg)
-            self._param_validity_bar.setStyleSheet(
-                "QFrame {"
-                "  background-color: #fff8e1;"
-                "  border: 1px solid #ffca28;"
-                "  border-radius: 4px; margin: 2px 0px;"
-                "}"
-            )
-            self._validity_text_lbl.setStyleSheet(
-                "color: #e65100; font-size: 10px; background: transparent; border: none;"
-            )
-            self._validity_jump_btn.hide()
+    def _show_validity_error(self, errors: list) -> None:
+        """❌ 不正値ありのバー表示を設定します。"""
+        msg = "不正値あり: " + "、".join(errors[:2])
+        if len(errors) > 2:
+            msg += f" 他{len(errors)-2}件"
+        self._validity_icon_lbl.setText("❌")
+        self._validity_text_lbl.setText(msg)
+        self._param_validity_bar.setStyleSheet(
+            "QFrame {"
+            "  background-color: #ffebee;"
+            "  border: 1px solid #ef9a9a;"
+            "  border-radius: 4px; margin: 2px 0px;"
+            "}"
+        )
+        self._validity_text_lbl.setStyleSheet(
+            "color: #b71c1c; font-size: 10px; background: transparent; border: none;"
+        )
+        self._validity_jump_btn.show()
+
+    def _show_validity_warning(self, warnings: list) -> None:
+        """⚠ 0以下の値ありのバー表示を設定します。"""
+        msg = "要確認: " + "、".join(warnings[:2])
+        if len(warnings) > 2:
+            msg += f" 他{len(warnings)-2}件（0以下の値は解析が不安定になる可能性があります）"
         else:
-            # ✅ 全て正常
-            n_changed = sum(
-                1 for tbl in all_tables
-                for r in range(tbl.rowCount())
-                if (tbl.item(r, _DEF_COL_VALUE) and tbl.item(r, _DEF_COL_ORIG)
-                    and tbl.item(r, _DEF_COL_VALUE).text().strip()
-                    != tbl.item(r, _DEF_COL_ORIG).text().strip())
-            )
-            self._validity_icon_lbl.setText("✅")
-            self._validity_text_lbl.setText(
-                f"すべてのパラメータが正常です（{n_changed}件変更済み）"
-            )
-            self._param_validity_bar.setStyleSheet(
-                "QFrame {"
-                "  background-color: #e8f5e9;"
-                "  border: 1px solid #a5d6a7;"
-                "  border-radius: 4px; margin: 2px 0px;"
-                "}"
-            )
-            self._validity_text_lbl.setStyleSheet(
-                "color: #1b5e20; font-size: 10px; background: transparent; border: none;"
-            )
-            self._validity_jump_btn.hide()
+            msg += "（0以下の値は解析が不安定になる可能性があります）"
+        self._validity_icon_lbl.setText("⚠")
+        self._validity_text_lbl.setText(msg)
+        self._param_validity_bar.setStyleSheet(
+            "QFrame {"
+            "  background-color: #fff8e1;"
+            "  border: 1px solid #ffca28;"
+            "  border-radius: 4px; margin: 2px 0px;"
+            "}"
+        )
+        self._validity_text_lbl.setStyleSheet(
+            "color: #e65100; font-size: 10px; background: transparent; border: none;"
+        )
+        self._validity_jump_btn.hide()
+
+    def _show_validity_ok(self, all_tables: list) -> None:
+        """✅ 全て正常のバー表示を設定します。"""
+        n_changed = sum(
+            1 for tbl in all_tables
+            for r in range(tbl.rowCount())
+            if (tbl.item(r, _DEF_COL_VALUE) and tbl.item(r, _DEF_COL_ORIG)
+                and tbl.item(r, _DEF_COL_VALUE).text().strip()
+                != tbl.item(r, _DEF_COL_ORIG).text().strip())
+        )
+        self._validity_icon_lbl.setText("✅")
+        self._validity_text_lbl.setText(
+            f"すべてのパラメータが正常です（{n_changed}件変更済み）"
+        )
+        self._param_validity_bar.setStyleSheet(
+            "QFrame {"
+            "  background-color: #e8f5e9;"
+            "  border: 1px solid #a5d6a7;"
+            "  border-radius: 4px; margin: 2px 0px;"
+            "}"
+        )
+        self._validity_text_lbl.setStyleSheet(
+            "color: #1b5e20; font-size: 10px; background: transparent; border: none;"
+        )
+        self._validity_jump_btn.hide()
 
     def _jump_to_invalid_param(self) -> None:
         """
