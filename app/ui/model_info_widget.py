@@ -203,7 +203,15 @@ class ModelInfoWidget(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
 
-        # ---- ヘッダー: ファイル選択 ----
+        layout.addLayout(self._build_header())
+        layout.addWidget(self._build_change_banner())
+        self._info_stack = QStackedWidget()
+        self._info_stack.addWidget(self._build_empty_card())
+        self._info_stack.addWidget(self._build_loaded_panel())
+        layout.addWidget(self._info_stack)
+        layout.addStretch()
+
+    def _build_header(self) -> QHBoxLayout:
         header = QHBoxLayout()
         header.addWidget(QLabel("<b>入力モデル (.s8i)</b>"))
         header.addStretch()
@@ -216,7 +224,6 @@ class ModelInfoWidget(QWidget):
         self._load_btn.clicked.connect(self.fileRequested.emit)
         header.addWidget(self._load_btn)
 
-        # UX改善⑤新: 最近使ったs8iファイルのクイックアクセスドロップダウン
         self._recent_btn = QToolButton()
         self._recent_btn.setText("▼ 履歴")
         self._recent_btn.setToolTip(
@@ -229,10 +236,9 @@ class ModelInfoWidget(QWidget):
         self._recent_btn.setMenu(self._recent_menu)
         self._rebuild_recent_menu()
         header.addWidget(self._recent_btn)
+        return header
 
-        layout.addLayout(header)
-
-        # ---- UX改善（新）: ファイル変更通知バナー ----
+    def _build_change_banner(self) -> QFrame:
         self._change_banner = QFrame()
         self._change_banner.setFrameShape(QFrame.StyledPanel)
         self._change_banner.setStyleSheet(
@@ -280,13 +286,10 @@ class ModelInfoWidget(QWidget):
         _dismiss_btn.setToolTip("このバナーを閉じる（ファイルの変更は無視されます）")
         _dismiss_btn.clicked.connect(self._change_banner.hide)
         banner_h.addWidget(_dismiss_btn)
-        self._change_banner.hide()  # 初期状態は非表示
-        layout.addWidget(self._change_banner)
+        self._change_banner.hide()
+        return self._change_banner
 
-        # ---- スタック: 未読み込みCTA / モデル概要 切替 ----
-        self._info_stack = QStackedWidget()
-
-        # -- 未読み込み時のCTAカード (index 0) --
+    def _build_empty_card(self) -> QFrame:
         empty_card = QFrame()
         empty_card.setStyleSheet("""
             QFrame {
@@ -323,10 +326,9 @@ class ModelInfoWidget(QWidget):
         empty_hint.setStyleSheet("color: gray;")
         empty_hint.setWordWrap(True)
         empty_card_layout.addWidget(empty_hint)
+        return empty_card
 
-        self._info_stack.addWidget(empty_card)  # index 0
-
-        # -- モデル読み込み済みの表示 (index 1) --
+    def _build_loaded_panel(self) -> QWidget:
         loaded_widget = QWidget()
         loaded_layout = QVBoxLayout(loaded_widget)
         loaded_layout.setContentsMargins(0, 0, 0, 0)
@@ -335,7 +337,6 @@ class ModelInfoWidget(QWidget):
         self._summary_label.setWordWrap(True)
         loaded_layout.addWidget(self._summary_label)
 
-        # ダンパー定義一覧テーブル トグルボタン
         self._toggle_btn = QPushButton("▼ ダンパー詳細定義を表示")
         self._toggle_btn.setCheckable(True)
         self._toggle_btn.setChecked(False)
@@ -359,18 +360,13 @@ class ModelInfoWidget(QWidget):
         self._damper_group.hide()
         loaded_layout.addWidget(self._damper_group)
 
-        # ---- UX改善⑤（新）: ダンパー種別カードグリッド ----
-        # モデル読み込み直後に「このモデルにはどんなダンパーが何基あるか」を
-        # コンパクトなカード形式でひと目で確認できるようにします。
-        # STEP2 でケースを追加する前に、変更対象の装置を把握するのに役立ちます。
         self._damper_cards_area = QWidget()
         self._damper_cards_layout = QHBoxLayout(self._damper_cards_area)
         self._damper_cards_layout.setContentsMargins(0, 4, 0, 4)
         self._damper_cards_layout.setSpacing(6)
-        self._damper_cards_area.hide()  # モデル未読込時は非表示
+        self._damper_cards_area.hide()
         loaded_layout.addWidget(self._damper_cards_area)
 
-        # ---- UX改善（新）: 層別ダンパー配置分布ミニチャート ----
         self._floor_chart_area = QFrame()
         self._floor_chart_area.setFrameShape(QFrame.NoFrame)
         self._floor_chart_area.setStyleSheet("QFrame { margin: 0px; }")
@@ -381,8 +377,7 @@ class ModelInfoWidget(QWidget):
         loaded_layout.addWidget(self._floor_chart_area)
 
         loaded_layout.addStretch()
-
-        self._info_stack.addWidget(loaded_widget)  # index 1
+        return loaded_widget
 
     def _on_toggle_details(self, checked: bool) -> None:
         self._damper_group.setVisible(checked)
@@ -390,9 +385,6 @@ class ModelInfoWidget(QWidget):
             self._toggle_btn.setText("▲ ダンパー詳細定義を隠す")
         else:
             self._toggle_btn.setText("▼ ダンパー詳細定義を表示")
-
-        layout.addWidget(self._info_stack)
-        layout.addStretch()
 
     def _refresh(self) -> None:
         m = self._model

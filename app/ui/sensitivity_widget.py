@@ -180,7 +180,13 @@ class SensitivityWidget(QWidget):
         layout.setContentsMargins(4, 4, 4, 4)
         layout.setSpacing(4)
 
-        # ---- UX改善（新）①: 折りたたみ式ガイドバナー ----
+        self._build_guide_banner(layout)
+        self._build_ctrl_row(layout)
+        self._build_chart_area(layout)
+        self._build_stat_table(layout)
+        self._build_suggest_panel(layout)
+
+    def _build_guide_banner(self, layout: QVBoxLayout) -> None:
         self._guide_panel_visible = False
         guide_header = QFrame()
         guide_header.setStyleSheet(
@@ -223,7 +229,7 @@ class SensitivityWidget(QWidget):
         self._guide_content.setVisible(False)
         layout.addWidget(self._guide_content)
 
-        # コントロール行
+    def _build_ctrl_row(self, layout: QVBoxLayout) -> None:
         ctrl_row = QHBoxLayout()
         ctrl_row.addWidget(QLabel("<b>パラメータ感度分析</b>"))
         ctrl_row.addStretch()
@@ -237,10 +243,9 @@ class SensitivityWidget(QWidget):
 
         layout.addLayout(ctrl_row)
 
-        # グラフエリア: トルネード（左） + 散布図（右）
+    def _build_chart_area(self, layout: QVBoxLayout) -> None:
         chart_splitter = QSplitter(Qt.Horizontal)
 
-        # トルネード図
         tornado_widget = QWidget()
         tornado_layout = QVBoxLayout(tornado_widget)
         tornado_layout.setContentsMargins(0, 0, 0, 0)
@@ -249,7 +254,6 @@ class SensitivityWidget(QWidget):
         tornado_layout.addWidget(self._tornado_canvas)
         chart_splitter.addWidget(tornado_widget)
 
-        # 散布図
         scatter_widget = QWidget()
         scatter_layout = QVBoxLayout(scatter_widget)
         scatter_layout.setContentsMargins(0, 0, 0, 0)
@@ -270,7 +274,7 @@ class SensitivityWidget(QWidget):
         chart_splitter.setStretchFactor(1, 1)
         layout.addWidget(chart_splitter, stretch=2)
 
-        # 感度統計テーブル
+    def _build_stat_table(self, layout: QVBoxLayout) -> None:
         layout.addWidget(QLabel("<b>感度統計</b>"))
         self._stat_table = QTableWidget(0, 5)
         self._stat_table.setHorizontalHeaderLabels([
@@ -284,9 +288,7 @@ class SensitivityWidget(QWidget):
         self._stat_table.setMaximumHeight(180)
         layout.addWidget(self._stat_table, stretch=0)
 
-        # ── UX改善（第12回⑤）: 次ラウンド推奨パラメータ自動提案パネル ──────────────
-        # 感度統計テーブルの直下に「📋 改善提案を生成」ボタンを配置します。
-        # クリックすると最重要パラメータ・推奨変更方向・推定改善量を自動計算してパネルに表示します。
+    def _build_suggest_panel(self, layout: QVBoxLayout) -> None:
         suggest_header_row = QHBoxLayout()
         _suggest_hdr_lbl = QLabel("<b>📋 次ラウンド推奨パラメータ</b>")
         _suggest_hdr_lbl.setTextFormat(Qt.RichText)
@@ -356,7 +358,7 @@ class SensitivityWidget(QWidget):
         )
         _sp_layout.addWidget(_sp_note)
 
-        self._suggest_panel.hide()  # 初期非表示
+        self._suggest_panel.hide()
         layout.addWidget(self._suggest_panel)
 
     def _toggle_guide_panel(self) -> None:

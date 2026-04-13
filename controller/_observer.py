@@ -11,26 +11,10 @@ class FileEventHandler(FileSystemEventHandler):
         super().__init__()
         self.on_created_callback = on_created
 
-    """
-    def on_any_event(self, event):
-        print(event.event_type, event.src_path)
-    """
-
     def on_created(self, event):
         logger.debug("on_created: %s", event.src_path)
         if self.on_created_callback:
             self.on_created_callback(event)
-
-    """
-    def on_deleted(self, event):
-        print("on_deleted", event.src_path)
-
-    def on_modified(self, event):
-        print("on_modified", event.src_path)
-
-    def on_moved(self, event):
-        print("on_moved", event.src_path)
-    """
 
 
 def _add_schedule(observer: Observer, path: str, on_created: Callable[[FileSystemEvent], None]):

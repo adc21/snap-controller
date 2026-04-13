@@ -151,16 +151,16 @@ class LogWidget(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
 
-        # ヘッダー（ラベル + フィルターボタン + 操作ボタン）
+        layout.addLayout(self._build_header())
+        layout.addWidget(self._build_log_content())
+
+    def _build_header(self) -> QHBoxLayout:
         header = QHBoxLayout()
         header.setSpacing(4)
 
-        # UX改善（新）: 折りたたみトグルボタン（▲ 展開 / ▼ 折りたたみ）
-        # クリックするとログ内容エリア（検索バー＋テキスト）を表示/非表示できます。
-        # 解析中に画面スペースを節約したいとき、または結果だけ見たいときに便利です。
         self._collapse_btn = QPushButton("▼")
         self._collapse_btn.setCheckable(True)
-        self._collapse_btn.setChecked(True)   # デフォルト: 展開状態
+        self._collapse_btn.setChecked(True)
         self._collapse_btn.setFixedSize(22, 22)
         self._collapse_btn.setToolTip(
             "ログパネルを折りたたむ / 展開する\n\n"
@@ -178,7 +178,14 @@ class LogWidget(QWidget):
 
         header.addWidget(QLabel("<b>実行ログ</b>"))
 
-        # ---- 改善⑦: フィルタートグルボタン ----
+        self._build_filter_buttons(header)
+        self._build_badge_labels(header)
+        header.addStretch()
+        self._build_action_buttons(header)
+
+        return header
+
+    def _build_filter_buttons(self, header: QHBoxLayout) -> None:
         self._btn_all = QPushButton("全て")
         self._btn_all.setCheckable(True)
         self._btn_all.setChecked(True)
@@ -205,7 +212,7 @@ class LogWidget(QWidget):
             """)
             header.addWidget(btn)
 
-        # ---- 改善⑦: エラー・警告件数バッジ ----
+    def _build_badge_labels(self, header: QHBoxLayout) -> None:
         self._badge_error = QLabel()
         self._badge_error.setStyleSheet(
             "background-color: #ef5350; color: white; border-radius: 8px;"
@@ -225,12 +232,10 @@ class LogWidget(QWidget):
         header.addWidget(self._badge_error)
         header.addWidget(self._badge_warn)
 
-        header.addStretch()
-
-        # ---- UX改善（新⑤）: 自動スクロール on/off トグルボタン ----
+    def _build_action_buttons(self, header: QHBoxLayout) -> None:
         self._btn_autoscroll = QPushButton("⬇ 自動スクロール")
         self._btn_autoscroll.setCheckable(True)
-        self._btn_autoscroll.setChecked(True)  # デフォルト ON
+        self._btn_autoscroll.setChecked(True)
         self._btn_autoscroll.setFixedHeight(22)
         self._btn_autoscroll.setToolTip(
             "自動スクロール ON/OFF\n\n"
@@ -260,7 +265,6 @@ class LogWidget(QWidget):
         btn_copy.clicked.connect(self._copy_all)
         header.addWidget(btn_copy)
 
-        # UX改善（第7回④）: 「📥 ログを保存」ボタン
         self._btn_save = QPushButton("📥 保存")
         self._btn_save.setFixedHeight(22)
         self._btn_save.setToolTip(
@@ -273,17 +277,27 @@ class LogWidget(QWidget):
         self._btn_save.clicked.connect(self._save_log)
         header.addWidget(self._btn_save)
 
-        layout.addLayout(header)
-
-        # UX改善（新）: 折りたたみ対象コンテンツウィジェット
-        # このウィジェットの show/hide を切り替えることでパネルの折りたたみを実現します。
+    def _build_log_content(self) -> "QWidget":
         from PySide6.QtWidgets import QWidget as _QWidget, QVBoxLayout as _QVBoxLayout
         self._log_content = _QWidget()
         _content_layout = _QVBoxLayout(self._log_content)
         _content_layout.setContentsMargins(0, 0, 0, 0)
         _content_layout.setSpacing(2)
 
-        # ---- UX改善③: テキスト検索バー ----
+        _content_layout.addLayout(self._build_search_bar())
+
+        self._text = QTextEdit()
+        self._text.setReadOnly(True)
+        font = QFont("Consolas", 9)
+        if not font.exactMatch():
+            font = QFont("Courier New", 9)
+        self._text.setFont(font)
+        self._apply_theme_style()
+        _content_layout.addWidget(self._text)
+
+        return self._log_content
+
+    def _build_search_bar(self) -> QHBoxLayout:
         search_row = QHBoxLayout()
         search_row.setSpacing(4)
         search_row.setContentsMargins(0, 0, 0, 0)
@@ -304,33 +318,18 @@ class LogWidget(QWidget):
         self._search_edit.textChanged.connect(self._on_search_changed)
         search_row.addWidget(self._search_edit)
 
-        # 一致件数ラベル
         self._search_count_lbl = QLabel("")
         self._search_count_lbl.setStyleSheet("color: gray; font-size: 10px; min-width: 60px;")
         search_row.addWidget(self._search_count_lbl)
 
-        _content_layout.addLayout(search_row)
-
-        # Ctrl+F: 検索バーにフォーカス
         sc_search = QShortcut(QKeySequence("Ctrl+F"), self)
         sc_search.activated.connect(self._focus_search)
 
-        # Esc: 検索バーをクリア
         sc_esc = QShortcut(QKeySequence(Qt.Key_Escape), self._search_edit)
         sc_esc.setContext(Qt.WidgetShortcut)
         sc_esc.activated.connect(self._clear_search)
 
-        # テキストエリア
-        self._text = QTextEdit()
-        self._text.setReadOnly(True)
-        font = QFont("Consolas", 9)
-        if not font.exactMatch():
-            font = QFont("Courier New", 9)
-        self._text.setFont(font)
-        self._apply_theme_style()
-        _content_layout.addWidget(self._text)
-
-        layout.addWidget(self._log_content)
+        return search_row
 
     # ------------------------------------------------------------------
     # 改善⑦: フィルター制御
