@@ -186,8 +186,11 @@ class BinaryResultWidget(QWidget):
         outer = QVBoxLayout(self)
         outer.setContentsMargins(6, 6, 6, 6)
         outer.setSpacing(6)
+        outer.addLayout(self._build_top_bar())
+        body = self._build_body()
+        outer.addLayout(body, stretch=1)
 
-        # ---- 上部バー ----
+    def _build_top_bar(self) -> QHBoxLayout:
         top = QHBoxLayout()
         top.addWidget(QLabel("比較ケース:"))
         top.addWidget(QLabel("（Ctrl / Shift で複数選択）"))
@@ -205,12 +208,9 @@ class BinaryResultWidget(QWidget):
         btn_reload = QPushButton("再読込")
         btn_reload.clicked.connect(self._reload)
         top.addWidget(btn_reload)
+        return top
 
-        outer.addLayout(top)
-
-        # ---- ケース選択リスト + 本体 ----
-        body = QHBoxLayout()
-
+    def _build_case_list_panel(self) -> QVBoxLayout:
         left = QVBoxLayout()
         self._case_list = QListWidget()
         self._case_list.setSelectionMode(QAbstractItemView.ExtendedSelection)
@@ -223,30 +223,17 @@ class BinaryResultWidget(QWidget):
         btn_all = QPushButton("全選択")
         btn_all.clicked.connect(self._select_all_cases)
         left.addWidget(btn_all)
+        return left
 
-        body.addLayout(left)
-
-        right = QVBoxLayout()
-
-        # ---- ステータス ----
-        self._status_label = QLabel("解析ケースを選択してください。")
-        self._status_label.setStyleSheet(
-            "color: #555; padding: 4px; background: #f5f5f5; border-radius: 4px;"
-        )
-        self._status_label.setWordWrap(True)
-        right.addWidget(self._status_label)
-
-        # ---- タブ ----
+    def _build_result_tabs(self) -> QTabWidget:
         self._tabs = QTabWidget()
         self._tabs.setDocumentMode(True)
         self._tab_stacks: dict = {}
 
-        # 1. 固有値
         self._period_content = self._build_period_tab()
         self._tab_stacks["period"] = self._make_stack(self._period_content)
         self._tabs.addTab(self._tab_stacks["period"], "🌊 固有値解析")
 
-        # 2. Floor 時刻歴
         self._floor_content, self._floor_widgets = self._build_timehistory_tab(
             title="各階応答時刻歴",
             record_label="階",
@@ -255,7 +242,6 @@ class BinaryResultWidget(QWidget):
         self._tab_stacks["floor"] = self._make_stack(self._floor_content)
         self._tabs.addTab(self._tab_stacks["floor"], "📈 時刻歴応答")
 
-        # 3. Story
         self._story_content, self._story_widgets = self._build_timehistory_tab(
             title="層応答時刻歴",
             record_label="層",
@@ -264,7 +250,6 @@ class BinaryResultWidget(QWidget):
         self._tab_stacks["story"] = self._make_stack(self._story_content)
         self._tabs.addTab(self._tab_stacks["story"], "🏢 層応答")
 
-        # 4. ダンパー
         self._damper_content, self._damper_widgets = self._build_hysteresis_tab(
             record_label="ダンパー",
             fields=_DAMPER_FIELDS,
@@ -272,7 +257,6 @@ class BinaryResultWidget(QWidget):
         self._tab_stacks["damper"] = self._make_stack(self._damper_content)
         self._tabs.addTab(self._tab_stacks["damper"], "🛡 ダンパー履歴")
 
-        # 5. バネ
         self._spring_content, self._spring_widgets = self._build_hysteresis_tab(
             record_label="バネ",
             fields=_SPRING_FIELDS,
@@ -280,19 +264,29 @@ class BinaryResultWidget(QWidget):
         self._tab_stacks["spring"] = self._make_stack(self._spring_content)
         self._tabs.addTab(self._tab_stacks["spring"], "🧩 バネ履歴")
 
-        # 6. 最大値
         self._maxvals_content, self._maxvals_widgets = self._build_maxvals_tab()
         self._tab_stacks["maxvals"] = self._make_stack(self._maxvals_content)
         self._tabs.addTab(self._tab_stacks["maxvals"], "📊 最大応答値")
 
-        # 7. エネルギー
         self._energy_content, self._energy_widgets = self._build_energy_tab()
         self._tab_stacks["energy"] = self._make_stack(self._energy_content)
         self._tabs.addTab(self._tab_stacks["energy"], "⚡ エネルギー")
+        return self._tabs
 
-        right.addWidget(self._tabs, stretch=1)
+    def _build_body(self) -> QHBoxLayout:
+        body = QHBoxLayout()
+        body.addLayout(self._build_case_list_panel())
+
+        right = QVBoxLayout()
+        self._status_label = QLabel("解析ケースを選択してください。")
+        self._status_label.setStyleSheet(
+            "color: #555; padding: 4px; background: #f5f5f5; border-radius: 4px;"
+        )
+        self._status_label.setWordWrap(True)
+        right.addWidget(self._status_label)
+        right.addWidget(self._build_result_tabs(), stretch=1)
         body.addLayout(right, stretch=1)
-        outer.addLayout(body, stretch=1)
+        return body
 
     def _make_stack(self, content: QWidget) -> QStackedWidget:
         stack = QStackedWidget()

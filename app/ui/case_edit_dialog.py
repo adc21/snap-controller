@@ -391,7 +391,6 @@ class CaseEditDialog(QDialog):
         outer = QWidget()
         outer_layout = QVBoxLayout(outer)
 
-        # UX改善（新①）: タブガイドバナー
         outer_layout.addWidget(self._make_tab_guide_banner(
             "🔧",
             "ダンパーの物性値（減衰係数・降伏荷重など）を変更します。"
@@ -412,6 +411,13 @@ class CaseEditDialog(QDialog):
             "変更後の値は解析ケースごとに保存され、元の .s8i ファイルは変更されません。</small>"
         ))
 
+        outer_layout.addWidget(self._build_def_scroll_area())
+        outer_layout.addWidget(self._build_validity_bar())
+        outer_layout.addWidget(self._build_def_hint_panel())
+        self._connect_def_table_signals()
+        return outer
+
+    def _build_def_scroll_area(self) -> QScrollArea:
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         content = QWidget()
@@ -424,7 +430,6 @@ class CaseEditDialog(QDialog):
             grp.setTitle(f"  {_type_badge(ddef.keyword)}  {ddef.display_label}")
             grp_layout = QVBoxLayout(grp)
 
-            # ボタンバー（k-DB 選択）
             btn_bar = QHBoxLayout()
             kdb_btn = QPushButton("🗄 k-DB から選択")
             kdb_btn.setToolTip("k-DB（構造部材データベース）からダンパーを選択してパラメータを自動入力します")
@@ -445,11 +450,9 @@ class CaseEditDialog(QDialog):
 
         content_layout.addStretch()
         scroll.setWidget(content)
-        outer_layout.addWidget(scroll)
+        return scroll
 
-        # ── UX改善（第12回①）: ダンパーパラメータ妥当性チェックバー ──────────────────
-        # テーブルの値が変わるたびに「✅ すべて正常」「⚠ 要確認」「❌ 不正値あり」を
-        # リアルタイム表示し、保存前にミスを発見できるようにします。
+    def _build_validity_bar(self) -> QFrame:
         self._param_validity_bar = QFrame()
         self._param_validity_bar.setFrameShape(QFrame.NoFrame)
         self._param_validity_bar.setStyleSheet(
@@ -478,7 +481,6 @@ class CaseEditDialog(QDialog):
         self._validity_text_lbl.setWordWrap(False)
         _validity_row.addWidget(self._validity_text_lbl, stretch=1)
 
-        # 「問題のある行にジャンプ」ボタン（問題あり時のみ表示）
         self._validity_jump_btn = QPushButton("⬆ 問題の行を確認")
         self._validity_jump_btn.setFixedHeight(20)
         self._validity_jump_btn.setStyleSheet(
@@ -493,11 +495,10 @@ class CaseEditDialog(QDialog):
         self._validity_jump_btn.clicked.connect(self._jump_to_invalid_param)
         _validity_row.addWidget(self._validity_jump_btn)
 
-        # 初期状態では非表示（変更が入るまで出さない）
         self._param_validity_bar.hide()
-        outer_layout.addWidget(self._param_validity_bar)
+        return self._param_validity_bar
 
-        # UX改善（新②）: パラメータ説明ヒントパネル（行選択時に更新）
+    def _build_def_hint_panel(self) -> QFrame:
         self._def_hint_panel = QFrame()
         self._def_hint_panel.setFrameShape(QFrame.StyledPanel)
         self._def_hint_panel.setStyleSheet(
@@ -529,16 +530,13 @@ class CaseEditDialog(QDialog):
         self._def_hint_label.setWordWrap(True)
         self._def_hint_label.setAlignment(Qt.AlignTop | Qt.AlignLeft)
         _hint_layout.addWidget(self._def_hint_label, stretch=1)
+        return self._def_hint_panel
 
-        outer_layout.addWidget(self._def_hint_panel)
-
-        # 各テーブルの行選択シグナルをヒントパネル更新に接続
+    def _connect_def_table_signals(self) -> None:
         for ddef_name, tbl in self._damper_def_tables.items():
             tbl.itemSelectionChanged.connect(
                 lambda t=tbl, kw=ddef_name: self._on_def_table_row_selected(t, kw)
             )
-
-        return outer
 
     def _on_def_table_row_selected(self, tbl: QTableWidget, keyword: str) -> None:
         """
