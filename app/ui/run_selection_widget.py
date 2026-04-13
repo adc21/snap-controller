@@ -190,25 +190,29 @@ class RunSelectionWidget(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(6)
 
-        # ---- UX改善4: 事前チェックリストパネル ----
+        self._build_checklist(layout)
+        self._build_ready_banner(layout)
+        self._build_case_selection(layout)
+        self._build_completion_banner(layout)
+        self._build_error_panel(layout)
+
+        # 初期チェック
+        self._refresh_checklist()
+
+    def _build_checklist(self, layout: QVBoxLayout) -> None:
         check_group = QGroupBox("解析実行前チェック")
         check_layout = QVBoxLayout(check_group)
         check_layout.setSpacing(4)
         check_layout.setContentsMargins(8, 8, 8, 8)
 
-        icon_color = "#d4d4d4" if ThemeManager.is_dark() else "#333333"
-
-        # チェック1: s8iファイル
         self._chk_s8i = self._make_check_row(
             "① s8iモデルファイルが選択されています",
             check_layout,
         )
-        # チェック2: SNAP実行ファイル
         self._chk_snap = self._make_check_row(
             "② SNAP実行ファイル (Snap.exe) が設定されています",
             check_layout,
         )
-        # チェック3: ケース存在
         self._chk_cases = self._make_check_row(
             "③ 解析ケースが1件以上追加されています",
             check_layout,
@@ -216,10 +220,7 @@ class RunSelectionWidget(QWidget):
 
         layout.addWidget(check_group)
 
-        # ---- UX改善③（新）: 全チェックOK時「準備完了」バナー ----
-        # すべての前提条件が満たされたとき、目立つ緑バナーで
-        # 「解析の準備ができました」とユーザーに伝えます。
-        # ケースの実行状況（未実行/完了/エラー件数）も一目で確認できます。
+    def _build_ready_banner(self, layout: QVBoxLayout) -> None:
         self._ready_banner = QFrame()
         self._ready_banner.setFrameShape(QFrame.StyledPanel)
         self._ready_banner.setStyleSheet(
@@ -260,10 +261,10 @@ class RunSelectionWidget(QWidget):
         _ready_col.addWidget(self._ready_status_lbl)
 
         _ready_layout.addLayout(_ready_col, stretch=1)
-        self._ready_banner.hide()  # 初期は非表示（前提条件未達のため）
+        self._ready_banner.hide()
         layout.addWidget(self._ready_banner)
 
-        # ---- ケース選択エリア ----
+    def _build_case_selection(self, layout: QVBoxLayout) -> None:
         group = QGroupBox("解析実行対象の選択")
         g_layout = QVBoxLayout(group)
         g_layout.setSpacing(8)
@@ -279,7 +280,6 @@ class RunSelectionWidget(QWidget):
         btn_pending.setToolTip("PENDING / ERROR 状態のケースだけを選択します")
         btn_pending.clicked.connect(self._select_pending)
 
-        # UX改善④ 第5回: エラーのみ選択ボタン
         btn_errors = QPushButton("❌ エラーのみ選択")
         btn_errors.setToolTip(
             "エラーが発生したケースだけを選択します。\n"
@@ -301,21 +301,17 @@ class RunSelectionWidget(QWidget):
 
         self._list = QListWidget()
         self._list.setMaximumHeight(150)
-        # UX改善（新）: チェック状態変化時にボタンラベルをリアルタイム更新
         self._list.itemChanged.connect(self._update_run_button_label)
-        # UX改善④ 第5回: チェック変化時に集計ラベルも更新
         self._list.itemChanged.connect(self._update_case_status_label)
-        # UX改善（第9回②）: チェック変化時に推定所要時間バナーも更新
         self._list.itemChanged.connect(self._update_est_time_banner)
         g_layout.addWidget(self._list)
 
-        # UX改善④ 第5回: ケース状態ライブ集計ラベル
         self._case_status_label = QLabel("　")
         self._case_status_label.setTextFormat(Qt.RichText)
         self._case_status_label.setStyleSheet("font-size: 10px; padding: 1px 4px;")
         g_layout.addWidget(self._case_status_label)
 
-        # ---- UX改善（第9回②）: 選択ケース推定所要時間バナー ----
+        # 推定所要時間バナー
         self._est_time_banner = QFrame()
         self._est_time_banner.setFrameShape(QFrame.NoFrame)
         self._est_time_banner.setStyleSheet(
@@ -343,9 +339,7 @@ class RunSelectionWidget(QWidget):
 
         g_layout.addWidget(self._est_time_banner)
 
-        # ── UX改善（第12回③）: 実行前ケース種別内訳サマリーカード ──────────────────
-        # 選択中のケースを「ダンパー変更あり / 配置変更あり / ベースライン / 要確認」に
-        # 分類してコンパクトなカードで表示します。何を実行するかを事前に確認できます。
+        # 実行前ケース種別内訳サマリーカード
         self._pre_run_summary_frame = QFrame()
         self._pre_run_summary_frame.setFrameShape(QFrame.NoFrame)
         self._pre_run_summary_frame.setStyleSheet(
@@ -381,7 +375,7 @@ class RunSelectionWidget(QWidget):
         self._pre_run_warn_lbl.hide()
         _pre_run_layout.addWidget(self._pre_run_warn_lbl)
 
-        self._pre_run_summary_frame.hide()  # 初期は非表示（ケース選択前）
+        self._pre_run_summary_frame.hide()
         g_layout.addWidget(self._pre_run_summary_frame)
 
         self._btn_run = QPushButton("🚀 選択したケースを解析実行")
@@ -394,7 +388,7 @@ class RunSelectionWidget(QWidget):
 
         layout.addWidget(group)
 
-        # ---- UX改善③新: 解析完了バナー ----
+    def _build_completion_banner(self, layout: QVBoxLayout) -> None:
         self._completion_banner = QFrame()
         self._completion_banner.setFrameShape(QFrame.StyledPanel)
         self._completion_banner.setStyleSheet(
@@ -409,10 +403,9 @@ class RunSelectionWidget(QWidget):
         banner_layout.setContentsMargins(12, 8, 12, 8)
         banner_layout.setSpacing(10)
 
-        icon_color_banner = "#ffffff"
         banner_icon = QLabel()
         banner_icon.setPixmap(
-            qta.icon("fa5s.check-circle", color=icon_color_banner).pixmap(24, 24)
+            qta.icon("fa5s.check-circle", color="#ffffff").pixmap(24, 24)
         )
         banner_layout.addWidget(banner_icon)
 
@@ -426,7 +419,6 @@ class RunSelectionWidget(QWidget):
         )
         _banner_text_col.addWidget(self._banner_text)
 
-        # UX改善（新）: ベストケース情報ラベル（初期は非表示）
         self._banner_best_lbl = QLabel("")
         self._banner_best_lbl.setStyleSheet(
             "color: #c8e6c9; font-size: 11px; background: transparent; border: none;"
@@ -455,7 +447,7 @@ class RunSelectionWidget(QWidget):
         self._btn_view_results.clicked.connect(self._on_view_results_clicked)
         banner_layout.addWidget(self._btn_view_results)
 
-        # ---- UX改善②新: 自動遷移カウントダウンUI ----
+        # 自動遷移カウントダウンUI
         _countdown_col = QVBoxLayout()
         _countdown_col.setSpacing(2)
         _countdown_col.setContentsMargins(0, 0, 0, 0)
@@ -508,12 +500,10 @@ class RunSelectionWidget(QWidget):
         btn_close_banner.clicked.connect(self._close_banner)
         banner_layout.addWidget(btn_close_banner)
 
-        self._completion_banner.hide()  # 初期状態は非表示
+        self._completion_banner.hide()
         layout.addWidget(self._completion_banner)
 
-        # ---- UX改善（エラー診断パネル）: エラーケース診断ガイドパネル ----
-        # エラー状態のケースが存在するとき、よくある原因と対策を折りたたみ形式で表示します。
-        # ユーザーが「なぜ失敗したか」「何をすれば解決できるか」を一目で把握できます。
+    def _build_error_panel(self, layout: QVBoxLayout) -> None:
         self._error_panel = QFrame()
         self._error_panel.setFrameShape(QFrame.StyledPanel)
         self._error_panel.setStyleSheet(
@@ -527,7 +517,6 @@ class RunSelectionWidget(QWidget):
         _ep_layout.setContentsMargins(10, 8, 10, 8)
         _ep_layout.setSpacing(4)
 
-        # ヘッダー行
         _ep_header = QHBoxLayout()
         _ep_header.setSpacing(6)
 
@@ -557,7 +546,6 @@ class RunSelectionWidget(QWidget):
         _ep_header.addWidget(self._error_toggle_btn)
         _ep_layout.addLayout(_ep_header)
 
-        # 折りたたみ診断エリア
         self._error_detail_widget = QWidget()
         self._error_detail_widget.setStyleSheet("background: transparent;")
         _ed_layout = QVBoxLayout(self._error_detail_widget)
@@ -594,11 +582,8 @@ class RunSelectionWidget(QWidget):
         _ep_layout.addWidget(self._error_detail_widget)
         self._error_detail_widget.hide()
 
-        self._error_panel.hide()  # エラーケースが存在するときだけ表示
+        self._error_panel.hide()
         layout.addWidget(self._error_panel)
-
-        # 初期チェック
-        self._refresh_checklist()
 
     # ------------------------------------------------------------------
     # UX改善（エラー診断パネル）: エラーケース診断ガイドパネル制御

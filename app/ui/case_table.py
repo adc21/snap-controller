@@ -380,7 +380,21 @@ class CaseTableWidget(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
 
-        # ヘッダー
+        icon_color = "#d4d4d4" if ThemeManager.is_dark() else "#333333"
+
+        self._build_header(layout)
+        self._build_dup_flash_banner(layout)
+        self._build_completion_bar(layout)
+        self._build_filter_bar(layout, icon_color)
+        self._build_stack(layout, icon_color)
+        self._build_shortcuts()
+        layout.addWidget(self._stack)
+        self._build_action_bar(layout, icon_color)
+        self._build_base_case_badge(layout)
+        self._build_summary_panel(layout)
+        self._build_status_footer(layout)
+
+    def _build_header(self, layout: QVBoxLayout) -> None:
         header = QHBoxLayout()
         self._header_label = QLabel("<b>解析ケース</b>")
         header.addWidget(self._header_label)
@@ -390,7 +404,6 @@ class CaseTableWidget(QWidget):
         self._btn_add_header.setIcon(qta.icon("fa5s.plus", color="white"))
         self._btn_add_header.setStyleSheet("QPushButton { font-weight: bold; padding: 4px 12px; }")
         self._btn_add_header.clicked.connect(self.add_case)
-        # UX改善②: 初期状態は無効（モデルロード後に有効化）
         self._btn_add_header.setEnabled(False)
         self._btn_add_header.setToolTip(
             "STEP1でs8iファイルを読み込むと有効になります"
@@ -405,7 +418,7 @@ class CaseTableWidget(QWidget):
 
         layout.addLayout(header)
 
-        # ---- UX改善（第11回④）: 複製後インライン誘導フラッシュバナー ----
+    def _build_dup_flash_banner(self, layout: QVBoxLayout) -> None:
         self._dup_flash_frame = QFrame()
         self._dup_flash_frame.setFrameShape(QFrame.StyledPanel)
         self._dup_flash_frame.setStyleSheet(
@@ -439,7 +452,7 @@ class CaseTableWidget(QWidget):
         self._dup_flash_frame.hide()
         layout.addWidget(self._dup_flash_frame)
 
-        # ---- UX改善③新: 解析完了進捗プログレスバー ----
+    def _build_completion_bar(self, layout: QVBoxLayout) -> None:
         self._completion_bar = QProgressBar()
         self._completion_bar.setMaximumHeight(7)
         self._completion_bar.setTextVisible(False)
@@ -460,9 +473,7 @@ class CaseTableWidget(QWidget):
         self._completion_bar.setToolTip("完了した解析ケースの割合（完了件数 / 全件数）")
         layout.addWidget(self._completion_bar)
 
-        icon_color = "#d4d4d4" if ThemeManager.is_dark() else "#333333"
-
-        # ---- 改善①: 検索/フィルターバー ----
+    def _build_filter_bar(self, layout: QVBoxLayout, icon_color: str) -> None:
         filter_row = QHBoxLayout()
         filter_row.setContentsMargins(0, 2, 0, 2)
         filter_icon = QLabel()
@@ -478,7 +489,6 @@ class CaseTableWidget(QWidget):
         self._filter_edit.textChanged.connect(self._on_filter_changed)
         filter_row.addWidget(self._filter_edit)
 
-        # ---- UX改善A: ステータスフィルタードロップダウン ----
         status_icon = QLabel()
         status_icon.setPixmap(qta.icon("fa5s.filter", color=icon_color).pixmap(14, 14))
         status_icon.setToolTip("ステータスで絞り込み")
@@ -494,7 +504,6 @@ class CaseTableWidget(QWidget):
         self._status_filter.currentIndexChanged.connect(self._on_filter_changed)
         filter_row.addWidget(self._status_filter)
 
-        # ---- UX改善①新: 全選択/全解除ボタン ----
         _sel_style = "QPushButton { font-size: 11px; padding: 1px 5px; }"
         btn_sel_all = QPushButton("全選択")
         btn_sel_all.setMaximumWidth(52)
@@ -517,7 +526,7 @@ class CaseTableWidget(QWidget):
 
         layout.addLayout(filter_row)
 
-        # スタックウィジェット（空状態 / テーブル切り替え）
+    def _build_stack(self, layout: QVBoxLayout, icon_color: str) -> None:
         self._stack = QStackedWidget()
 
         # ---- 空状態ガイダンス (index 0) ----
@@ -568,7 +577,6 @@ class CaseTableWidget(QWidget):
                 border-color: palette(mid);
             }
         """)
-        # UX改善②: 初期状態は無効（モデルロード後に有効化）
         self._empty_add_btn.setEnabled(False)
         self._empty_add_btn.setToolTip(
             "STEP1でs8iファイルを読み込むと有効になります"
@@ -591,7 +599,6 @@ class CaseTableWidget(QWidget):
         self._table.horizontalHeader().setSectionResizeMode(
             _COL_NAME, QHeaderView.ResizeToContents
         )
-        # UX改善③: 「変更点」列はコンテンツに合わせてリサイズ（最初は150px固定）
         self._table.horizontalHeader().setSectionResizeMode(
             _COL_CHANGES, QHeaderView.Interactive
         )
@@ -601,10 +608,8 @@ class CaseTableWidget(QWidget):
         self._table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self._table.setAlternatingRowColors(True)
         self._table.verticalHeader().setVisible(False)
-        # UX改善5: 列ヘッダークリックでソート（case_id は UserRole に保存されるので安全）
         self._table.setSortingEnabled(True)
         self._table.horizontalHeader().setSortIndicatorShown(True)
-        # ---- UX改善（新②）: 列ヘッダーに建築専門用語の説明ツールチップを追加 ----
         _col_tooltips = {
             _COL_NAME: "ケース名",
             _COL_GROUP: "グループ",
@@ -631,18 +636,15 @@ class CaseTableWidget(QWidget):
         self._table.customContextMenuRequested.connect(self._show_context_menu)
         self._table.doubleClicked.connect(self._on_double_click)
         self._table.itemSelectionChanged.connect(self._on_selection_changed)
-        # 改善⑧: ホバーツールチップ用イベントフィルターをビューポートに設置
         self._table.viewport().installEventFilter(self)
         self._table.setMouseTracking(True)
         self._table.viewport().setMouseTracking(True)
         self._stack.addWidget(self._table)  # index 1: テーブル
 
-        # UX改善③: 列幅変更時に自動保存
         self._table.horizontalHeader().sectionResized.connect(self._save_column_widths)
-        # UX改善③: 起動時に列幅を復元
         self._restore_column_widths()
 
-        # ---- キーボードショートカット ----
+    def _build_shortcuts(self) -> None:
         # Enter: 選択ケースを編集
         sc_enter = QShortcut(QKeySequence(Qt.Key_Return), self._table)
         sc_enter.setContext(Qt.WidgetShortcut)
@@ -671,20 +673,17 @@ class CaseTableWidget(QWidget):
         sc_dup.setContext(Qt.WidgetShortcut)
         sc_dup.activated.connect(self._shortcut_duplicate)
 
-        # UX改善②新: Ctrl+Shift+D: 複製して編集
+        # Ctrl+Shift+D: 複製して編集
         sc_dup_edit = QShortcut(QKeySequence("Ctrl+Shift+D"), self._table)
         sc_dup_edit.setContext(Qt.WidgetShortcut)
         sc_dup_edit.activated.connect(self._shortcut_duplicate_and_edit)
 
-        # UX改善②: F2: ケース名クイックリネーム
+        # F2: ケース名クイックリネーム
         sc_rename = QShortcut(QKeySequence(Qt.Key_F2), self._table)
         sc_rename.setContext(Qt.WidgetShortcut)
         sc_rename.activated.connect(self._shortcut_rename)
 
-        # UX改善④新: Ctrl+F でフィルター検索バーにフォーカス
-        # テーブルウィジェット全体スコープで Ctrl+F を捕捉し、
-        # フィルター入力欄にフォーカスを移動します。
-        # ESC でフィルターをクリアしてテーブルにフォーカスを戻します。
+        # Ctrl+F: フィルター検索バーにフォーカス
         sc_search = QShortcut(QKeySequence("Ctrl+F"), self)
         sc_search.setContext(Qt.WidgetWithChildrenShortcut)
         sc_search.activated.connect(self._focus_filter)
@@ -694,9 +693,7 @@ class CaseTableWidget(QWidget):
         sc_esc.setContext(Qt.WidgetShortcut)
         sc_esc.activated.connect(self._clear_filter_and_focus_table)
 
-        layout.addWidget(self._stack)
-
-        # ---- 改善②: インラインアクションバー ----
+    def _build_action_bar(self, layout: QVBoxLayout, icon_color: str) -> None:
         action_frame = QFrame()
         action_frame.setFrameShape(QFrame.StyledPanel)
         action_layout = QHBoxLayout(action_frame)
@@ -724,9 +721,6 @@ class CaseTableWidget(QWidget):
         self._btn_dup.clicked.connect(self._shortcut_duplicate)
         action_layout.addWidget(self._btn_dup)
 
-        # UX改善⑨新: 「複製して編集」ボタンをアクションバーに追加
-        # Ctrl+Shift+D とコンテキストメニューには既に機能があったが、
-        # 視認性の高いボタンを追加して機能を発見しやすくします。
         self._btn_dup_edit = QPushButton(" 複製して編集")
         self._btn_dup_edit.setIcon(qta.icon("fa5s.clone", color="#1976d2"))
         self._btn_dup_edit.setToolTip(
@@ -742,7 +736,6 @@ class CaseTableWidget(QWidget):
         self._btn_dup_edit.clicked.connect(self._shortcut_duplicate_and_edit)
         action_layout.addWidget(self._btn_dup_edit)
 
-        # UX改善⑥新: 並び順変更ボタン（↑上へ / ↓下へ）
         self._btn_move_up = QPushButton("↑")
         self._btn_move_up.setToolTip(
             "選択ケースを1つ上に移動します\n"
@@ -767,13 +760,12 @@ class CaseTableWidget(QWidget):
 
         self._action_hint = QLabel("ケースを選択してください")
         self._action_hint.setStyleSheet("color: gray; font-size: 11px;")
-        self._action_hint.setTextFormat(Qt.RichText)  # UX改善C: リッチテキスト対応
+        self._action_hint.setTextFormat(Qt.RichText)
         action_layout.addWidget(self._action_hint)
 
         layout.addWidget(action_frame)
 
-        # ---- UX改善⑤新: 基点ケースバッジ ----
-        # 基点ケース設定時のみ表示される帯。「基点: ケース名」を示す。
+    def _build_base_case_badge(self, layout: QVBoxLayout) -> None:
         self._base_case_badge = QFrame()
         self._base_case_badge.setFrameShape(QFrame.NoFrame)
         _badge_row = QHBoxLayout(self._base_case_badge)
@@ -800,9 +792,7 @@ class CaseTableWidget(QWidget):
         self._base_case_badge.hide()
         layout.addWidget(self._base_case_badge)
 
-        # ---- UX改善①新: 選択ケースのインラインパラメータサマリーパネル ----
-        # トグルボタンで展開/折り畳み可能なパネル。
-        # 選択中のケースのダンパーパラメータ・解析結果を一目で確認できます。
+    def _build_summary_panel(self, layout: QVBoxLayout) -> None:
         self._summary_toggle_btn = QPushButton("▼  選択ケースの詳細")
         self._summary_toggle_btn.setCheckable(True)
         self._summary_toggle_btn.setChecked(False)
@@ -824,7 +814,7 @@ class CaseTableWidget(QWidget):
         self._summary_panel = QFrame()
         self._summary_panel.setFrameShape(QFrame.StyledPanel)
         self._summary_panel.setMaximumHeight(130)
-        self._summary_panel.hide()  # 初期状態は折り畳み
+        self._summary_panel.hide()
         _summary_layout = QVBoxLayout(self._summary_panel)
         _summary_layout.setContentsMargins(0, 0, 0, 0)
         self._summary_browser = QTextBrowser()
@@ -837,10 +827,7 @@ class CaseTableWidget(QWidget):
         _summary_layout.addWidget(self._summary_browser)
         layout.addWidget(self._summary_panel)
 
-        # ---- UX改善（新）: ケース状態サマリーフッター ----
-        # ケーステーブル最下部に全ケースの状態別件数を常時表示します。
-        # 「⏳ 待機: N | ▶ 実行中: N | ✅ 完了: N | ❌ エラー: N | 合計: N件」
-        # ケース数が多い場合でも現在の解析進捗を一目で把握できます。
+    def _build_status_footer(self, layout: QVBoxLayout) -> None:
         self._status_footer = QFrame()
         self._status_footer.setFrameShape(QFrame.NoFrame)
         self._status_footer.setStyleSheet(
@@ -850,7 +837,6 @@ class CaseTableWidget(QWidget):
         _footer_h.setContentsMargins(6, 2, 6, 2)
         _footer_h.setSpacing(12)
 
-        # 各状態のカウントラベル
         self._footer_pending_lbl  = QLabel("⏳ 待機: 0")
         self._footer_running_lbl  = QLabel("▶ 実行中: 0")
         self._footer_done_lbl     = QLabel("✅ 完了: 0")
