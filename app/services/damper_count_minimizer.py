@@ -82,6 +82,7 @@ class MinimizationResult:
     history: List[MinimizationStep] = field(default_factory=list)
     evaluations: int = 0
     note: str = ""
+    final_floor_responses: List[FloorResponse] = field(default_factory=list)
 
     def summary_text(self) -> str:
         lines = [
@@ -216,6 +217,7 @@ def minimize_floor_add(
         final_margin=result.worst_margin,
         history=history,
         evaluations=evaluations,
+        final_floor_responses=result.floor_responses,
     )
 
 
@@ -255,6 +257,7 @@ def minimize_floor_remove(
             history=history,
             evaluations=evaluations,
             note="初期配置で基準を満たしていません。",
+        final_floor_responses=result.floor_responses,
         )
 
     for iteration in range(1, max_iterations + 1):
@@ -302,6 +305,7 @@ def minimize_floor_remove(
         final_margin=result.worst_margin,
         history=history,
         evaluations=evaluations,
+        final_floor_responses=result.floor_responses,
     )
 
 
@@ -357,6 +361,7 @@ def minimize_binary_search(
             history=history,
             evaluations=evaluations,
             note="最大本数でも基準を満たせません。",
+        final_floor_responses=result.floor_responses,
         )
 
     final_q = {k: best_feasible_n for k in floor_keys}
@@ -374,6 +379,7 @@ def minimize_binary_search(
         final_margin=best_result.worst_margin,
         history=history,
         evaluations=evaluations,
+        final_floor_responses=best_result.floor_responses,
     )
 
 
@@ -424,6 +430,7 @@ def minimize_linear_search(
             history=history,
             evaluations=evaluations,
             note="どの本数でも基準を満たせません。",
+        final_floor_responses=[],
         )
 
     final_q = {k: last_feasible_n for k in floor_keys}
@@ -442,6 +449,7 @@ def minimize_linear_search(
         final_margin=last_feasible_result.worst_margin,
         history=history,
         evaluations=evaluations,
+        final_floor_responses=last_feasible_result.floor_responses,
     )
 
 
@@ -568,6 +576,7 @@ def minimize_ga(
         final_margin=best_result.worst_margin,
         history=history,
         evaluations=evaluations,
+        final_floor_responses=best_result.floor_responses,
     )
 
 
@@ -667,6 +676,7 @@ def minimize_sa(
         final_margin=best_result.worst_margin,
         history=history,
         evaluations=evaluations,
+        final_floor_responses=best_result.floor_responses,
     )
 
 
@@ -764,6 +774,7 @@ def minimize_pso(
         final_margin=g_best_result.worst_margin,
         history=history,
         evaluations=evaluations,
+        final_floor_responses=g_best_result.floor_responses,
     )
 
 
@@ -873,6 +884,7 @@ def minimize_de(
         final_margin=best_result.worst_margin,
         history=history,
         evaluations=evaluations,
+        final_floor_responses=best_result.floor_responses,
     )
 
 
@@ -952,6 +964,7 @@ def minimize_sqp(
         final_margin=final_result.worst_margin,
         history=history,
         evaluations=evaluations,
+        final_floor_responses=final_result.floor_responses,
     )
 
 
@@ -1035,6 +1048,7 @@ def minimize_nelder_mead(
         final_margin=final_result.worst_margin,
         history=history,
         evaluations=evaluations,
+        final_floor_responses=final_result.floor_responses,
     )
 
 
@@ -1149,6 +1163,7 @@ def minimize_bayesian(
         final_margin=best_result.worst_margin,
         history=history,
         evaluations=evaluations,
+        final_floor_responses=best_result.floor_responses,
     )
 
 
@@ -1214,6 +1229,7 @@ def minimize_random(
         final_margin=best_result.worst_margin,
         history=history,
         evaluations=evaluations,
+        final_floor_responses=best_result.floor_responses,
     )
 
 

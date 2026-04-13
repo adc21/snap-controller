@@ -2041,3 +2041,118 @@ class TestOptimizerDialogValidationAndETA:
         text = dlg._est_run_label.text()
         assert "推定" in text
         dlg.close()
+
+
+class TestMinimizerFloorMargins:
+    """MinimizerDialog結果テーブルの階別マージン表示テスト。"""
+
+    def test_table_with_floor_margins(self, qapp):
+        """FloorResponse付き結果でマージン列が表示される。"""
+        from app.ui.minimizer_dialog import MinimizerDialog
+        from app.services.damper_count_minimizer import (
+            FloorResponse, MinimizationResult,
+        )
+        dlg = MinimizerDialog(["F1", "F2"], {"F1": 5, "F2": 3}, {"F1": 10, "F2": 6})
+        result = MinimizationResult(
+            strategy="floor_add",
+            initial_quantities={"F1": 0, "F2": 0},
+            final_quantities={"F1": 3, "F2": 2},
+            final_count=5,
+            is_feasible=True,
+            final_margin=0.02,
+            final_floor_responses=[
+                FloorResponse(floor_key="F1", values={"margin_max_drift": 0.08, "margin_max_acc": 0.15}, damper_count=3),
+                FloorResponse(floor_key="F2", values={"margin_max_drift": 0.02, "margin_max_acc": 0.10}, damper_count=2),
+            ],
+        )
+        dlg._populate_result_table(result)
+        # 5列（階, 最終, 初期, 変化, マージン）
+        assert dlg._table.columnCount() == 5
+        # F1のマージン: 最小は0.08 (max_drift)
+        margin_text = dlg._table.item(0, 4).text()
+        assert "+0.08" in margin_text
+        assert "max_drift" in margin_text
+        # F2のマージン: 最小は0.02 (max_drift)
+        margin_text2 = dlg._table.item(1, 4).text()
+        assert "+0.02" in margin_text2
+        dlg.close()
+
+    def test_table_without_floor_margins(self, qapp):
+        """FloorResponseなし結果でマージン列が非表示。"""
+        from app.ui.minimizer_dialog import MinimizerDialog
+        from app.services.damper_count_minimizer import MinimizationResult
+        dlg = MinimizerDialog(["F1"], {"F1": 5}, {"F1": 10})
+        result = MinimizationResult(
+            strategy="floor_add",
+            initial_quantities={"F1": 0},
+            final_quantities={"F1": 3},
+            final_count=3,
+            is_feasible=True,
+            final_margin=0.1,
+        )
+        dlg._populate_result_table(result)
+        assert dlg._table.columnCount() == 4
+        dlg.close()
+
+    def test_margin_color_coding(self, qapp):
+        """マージン値に応じた色分け(緑/橙/赤)。"""
+        from app.ui.minimizer_dialog import MinimizerDialog
+        from app.services.damper_count_minimizer import (
+            FloorResponse, MinimizationResult,
+        )
+        from PySide6.QtGui import QColor
+        dlg = MinimizerDialog(["F1", "F2", "F3"], {"F1": 5, "F2": 5, "F3": 5}, {"F1": 10, "F2": 10, "F3": 10})
+        result = MinimizationResult(
+            strategy="floor_add",
+            initial_quantities={"F1": 0, "F2": 0, "F3": 0},
+            final_quantities={"F1": 3, "F2": 2, "F3": 1},
+            final_count=6,
+            is_feasible=False,
+            final_margin=-0.01,
+            final_floor_responses=[
+                FloorResponse(floor_key="F1", values={"margin_max_drift": 0.10}, damper_count=3),  # 緑(余裕)
+                FloorResponse(floor_key="F2", values={"margin_max_drift": 0.03}, damper_count=2),  # 橙(僅差)
+                FloorResponse(floor_key="F3", values={"margin_max_drift": -0.01}, damper_count=1), # 赤(違反)
+            ],
+        )
+        dlg._populate_result_table(result)
+        # F1: 緑(60, 179, 113)
+        color1 = dlg._table.item(0, 4).foreground().color()
+        assert color1.green() > 150  # 緑系
+        # F2: 橙(255, 165, 0)
+        color2 = dlg._table.item(1, 4).foreground().color()
+        assert color2.red() > 200 and color2.green() > 100  # 橙系
+        # F3: 赤(220, 50, 50)
+        color3 = dlg._table.item(2, 4).foreground().color()
+        assert color3.red() > 200 and color3.green() < 100  # 赤系
+        dlg.close()
+
+    def test_make_margin_item_no_response(self, qapp):
+        """FloorResponseがNoneの場合「—」表示。"""
+        from app.ui.minimizer_dialog import MinimizerDialog
+        item = MinimizerDialog._make_margin_item(None)
+        assert item.text() == "—"
+
+    def test_total_row_shows_overall_margin(self, qapp):
+        """合計行にoverall marginが表示される。"""
+        from app.ui.minimizer_dialog import MinimizerDialog
+        from app.services.damper_count_minimizer import (
+            FloorResponse, MinimizationResult,
+        )
+        dlg = MinimizerDialog(["F1"], {"F1": 5}, {"F1": 10})
+        result = MinimizationResult(
+            strategy="floor_add",
+            initial_quantities={"F1": 0},
+            final_quantities={"F1": 3},
+            final_count=3,
+            is_feasible=True,
+            final_margin=0.05,
+            final_floor_responses=[
+                FloorResponse(floor_key="F1", values={"margin_max_drift": 0.05}, damper_count=3),
+            ],
+        )
+        dlg._populate_result_table(result)
+        # 合計行(row=1)のマージン列
+        total_margin = dlg._table.item(1, 4).text()
+        assert "+0.0500" in total_margin
+        dlg.close()

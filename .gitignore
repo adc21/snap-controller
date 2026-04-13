@@ -49,6 +49,8 @@ Desktop.ini
 
 # ===== Test results =====
 example_*Case*
+tests/_proc_*.txt
+tests/_check_procs.py
 
 # ===== Claude AI session files =====
 .claude/

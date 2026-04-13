@@ -1853,88 +1853,82 @@ class OptimizerDialog(QDialog):
             f"{len(result.all_candidates)}点評価"
         )
 
-        # 結果テーブルを更新
+        # 結果テーブル・収束グラフ・サマリーカードを更新
         self._populate_result_table(result)
-
-        # 収束グラフを更新
         self._draw_convergence(result)
-
-        # UX改善（第9回④）: ベストソリューションサマリーカードを更新
         self._update_best_summary_card(result)
 
-        # 停滞検出
+        # サマリーテキスト + ボタン有効化
         stagnation = self._detect_stagnation(result.all_candidates)
+        self._result_summary.setText(
+            self._build_result_summary_text(result, stagnation)
+        )
+        self._enable_result_buttons(result)
 
-        # サマリー
-        if result.best:
-            obj_label = result.config.objective_label if result.config else "目的関数"
-            eval_tag = "[SNAP]" if result.evaluation_method == "snap" else "[モック]"
-            summary_text = (
-                f"{eval_tag} 最良解: {obj_label} = {result.best.objective_value:.6g}  |  "
-                f"制約満足: {len(result.feasible_candidates)} / {len(result.all_candidates)} 点"
+    def _build_result_summary_text(
+        self,
+        result: OptimizationResult,
+        stagnation: Optional[dict],
+    ) -> str:
+        """最適化完了後のサマリーテキストを構築する。"""
+        if not result.best:
+            return (
+                "制約を満たす解が見つかりませんでした。"
+                "パラメータ範囲や制約条件を見直してください。"
             )
-            # SNAP評価統計を表示
-            if result.evaluator_stats:
-                s = result.evaluator_stats
-                cache_hits = s.get("cache_hits", 0)
-                if cache_hits > 0:
-                    summary_text += (
-                        f"  |  キャッシュ: {cache_hits}hit"
-                    )
-            # ロバスト摂動統計を表示
-            if result.robustness_stats:
-                rs = result.robustness_stats
-                rate = rs.get("success_rate", 1.0) * 100
-                summary_text += f"  |  ロバスト摂動: {rate:.0f}%成功"
-                if rate < 80:
-                    summary_text += " ⚠ 信頼性低"
-            if stagnation:
-                stag_pct = stagnation["stagnation_length"] / stagnation["total_evals"] * 100
-                summary_text += (
-                    f"  |  ⚠ 停滞検出: 最後の{stagnation['stagnation_length']}回"
-                    f"（{stag_pct:.0f}%）で改善なし"
-                )
-            self._result_summary.setText(summary_text)
+        obj_label = result.config.objective_label if result.config else "目的関数"
+        eval_tag = "[SNAP]" if result.evaluation_method == "snap" else "[モック]"
+        text = (
+            f"{eval_tag} 最良解: {obj_label} = {result.best.objective_value:.6g}  |  "
+            f"制約満足: {len(result.feasible_candidates)} / {len(result.all_candidates)} 点"
+        )
+        if result.evaluator_stats:
+            cache_hits = result.evaluator_stats.get("cache_hits", 0)
+            if cache_hits > 0:
+                text += f"  |  キャッシュ: {cache_hits}hit"
+        if result.robustness_stats:
+            rate = result.robustness_stats.get("success_rate", 1.0) * 100
+            text += f"  |  ロバスト摂動: {rate:.0f}%成功"
+            if rate < 80:
+                text += " ⚠ 信頼性低"
+        if stagnation:
+            stag_pct = stagnation["stagnation_length"] / stagnation["total_evals"] * 100
+            text += (
+                f"  |  ⚠ 停滞検出: 最後の{stagnation['stagnation_length']}回"
+                f"（{stag_pct:.0f}%）で改善なし"
+            )
+        return text
+
+    def _enable_result_buttons(self, result: OptimizationResult) -> None:
+        """最適化結果に応じて分析・出力ボタンを有効化する。"""
+        has_best = result.best is not None
+        has_candidates = len(result.all_candidates) > 0
+        multi_param = (
+            result.config is not None
+            and len(result.config.parameters) >= 2
+            and len(result.all_candidates) >= 3
+        )
+
+        if has_best:
             self._apply_btn.setEnabled(True)
-            self._export_csv_btn.setEnabled(True)
             self._sensitivity_btn.setEnabled(True)
             self._sobol_btn.setEnabled(True)
+            self._copy_params_btn.setEnabled(True)
+
+        if has_best or has_candidates:
+            self._export_csv_btn.setEnabled(True)
             self._save_btn.setEnabled(True)
             self._report_btn.setEnabled(True)
             self._log_export_btn.setEnabled(True)
             self._diagnostics_btn.setEnabled(True)
-            self._copy_params_btn.setEnabled(True)
             self._save_plot_btn.setEnabled(True)
-            # ヒートマップは2パラメータ以上・3候補以上のときのみ有効
-            if (result.config and len(result.config.parameters) >= 2
-                    and len(result.all_candidates) >= 3):
-                self._heatmap_btn.setEnabled(True)
-            # 相関分析は2パラメータ以上・3候補以上のときのみ有効
-            if (result.config and len(result.config.parameters) >= 2
-                    and len(result.all_candidates) >= 3):
-                self._correlation_btn.setEnabled(True)
-            # Paretoボタンは複合目的関数使用時のみ有効
-            if result.config and result.config.objective_weights:
-                self._pareto_btn.setEnabled(True)
-        else:
-            self._result_summary.setText(
-                "制約を満たす解が見つかりませんでした。"
-                "パラメータ範囲や制約条件を見直してください。"
-            )
-            # NG結果でもCSV/JSON/レポート/ログ/診断出力は許可（デバッグ用）
-            if result.all_candidates:
-                self._export_csv_btn.setEnabled(True)
-                self._save_btn.setEnabled(True)
-                self._report_btn.setEnabled(True)
-                self._log_export_btn.setEnabled(True)
-                self._diagnostics_btn.setEnabled(True)
-                self._save_plot_btn.setEnabled(True)
-                if result.best:
-                    self._copy_params_btn.setEnabled(True)
-                if (result.config and len(result.config.parameters) >= 2
-                        and len(result.all_candidates) >= 3):
-                    self._heatmap_btn.setEnabled(True)
-                    self._correlation_btn.setEnabled(True)
+
+        if multi_param:
+            self._heatmap_btn.setEnabled(True)
+            self._correlation_btn.setEnabled(True)
+
+        if has_best and result.config and result.config.objective_weights:
+            self._pareto_btn.setEnabled(True)
 
     def _on_checkpoint(self, intermediate: "OptimizationResult") -> None:
         """チェックポイントシグナルを受けて中間結果を自動保存する。"""

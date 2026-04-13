@@ -12,7 +12,7 @@ import logging
 from typing import Callable, Dict, List, Optional
 
 from PySide6.QtCore import QSize, Qt, QThread, Signal
-from PySide6.QtGui import QFont, QStandardItem
+from PySide6.QtGui import QBrush, QColor, QFont, QStandardItem
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -41,6 +41,7 @@ from matplotlib.figure import Figure
 from app.services.damper_count_minimizer import (
     EvaluateFn,
     EvaluationResult,
+    FloorResponse,
     MinimizationResult,
     MinimizationStep,
     STRATEGIES,
@@ -769,12 +770,29 @@ class MinimizerDialog(QDialog):
         self._canvas_elev.draw()
 
     def _populate_result_table(self, result: MinimizationResult) -> None:
-        """結果テーブル: 各階の本数 + 変化量。"""
+        """結果テーブル: 各階の本数 + 変化量 + マージン。"""
         floors = sorted(result.final_quantities.keys(),
                         key=lambda k: int("".join(c for c in k if c.isdigit()) or "0"))
 
-        self._table.setColumnCount(4)
-        self._table.setHorizontalHeaderLabels(["階", "最終本数", "初期本数", "変化"])
+        # 階→FloorResponseマッピング構築
+        floor_resp_map: Dict[str, FloorResponse] = {}
+        for fr in result.final_floor_responses:
+            floor_resp_map[fr.floor_key] = fr
+
+        has_margins = any(
+            any(k.startswith("margin_") for k in fr.values)
+            for fr in result.final_floor_responses
+        )
+
+        if has_margins:
+            self._table.setColumnCount(5)
+            self._table.setHorizontalHeaderLabels(
+                ["階", "最終本数", "初期本数", "変化", "マージン"])
+        else:
+            self._table.setColumnCount(4)
+            self._table.setHorizontalHeaderLabels(
+                ["階", "最終本数", "初期本数", "変化"])
+
         self._table.setRowCount(len(floors))
         self._table.horizontalHeader().setStretchLastSection(True)
 
@@ -791,6 +809,11 @@ class MinimizerDialog(QDialog):
             diff_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
             self._table.setItem(i, 3, diff_item)
 
+            if has_margins:
+                fr = floor_resp_map.get(fk)
+                margin_item = self._make_margin_item(fr)
+                self._table.setItem(i, 4, margin_item)
+
         # 合計行
         row = len(floors)
         self._table.setRowCount(row + 1)
@@ -803,6 +826,32 @@ class MinimizerDialog(QDialog):
             str(sum(result.initial_quantities.values()))))
         diff_total = sum(result.final_quantities.values()) - sum(result.initial_quantities.values())
         self._table.setItem(row, 3, QTableWidgetItem(f"{diff_total:+d}"))
+        if has_margins:
+            overall_item = QTableWidgetItem(f"{result.final_margin:+.4f}")
+            overall_item.setFont(QFont("", -1, QFont.Weight.Bold))
+            self._table.setItem(row, 4, overall_item)
+
+    @staticmethod
+    def _make_margin_item(fr: Optional[FloorResponse]) -> QTableWidgetItem:
+        """FloorResponseからマージン表示アイテムを生成（色分け付き）。"""
+        if fr is None:
+            return QTableWidgetItem("—")
+        margins = {k: v for k, v in fr.values.items() if k.startswith("margin_")}
+        if not margins:
+            return QTableWidgetItem("—")
+        worst_key = min(margins, key=margins.get)  # type: ignore[arg-type]
+        worst_val = margins[worst_key]
+        label = worst_key.replace("margin_", "")
+        item = QTableWidgetItem(f"{worst_val:+.4f} ({label})")
+        item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+        # 色分け: 緑(余裕あり) / 橙(僅差) / 赤(違反)
+        if worst_val >= 0.05:
+            item.setForeground(QBrush(QColor(60, 179, 113)))   # 緑
+        elif worst_val >= 0.0:
+            item.setForeground(QBrush(QColor(255, 165, 0)))    # 橙
+        else:
+            item.setForeground(QBrush(QColor(220, 50, 50)))    # 赤
+        return item
 
     # -------------------------------------------------------------------
     # エクスポート
@@ -829,12 +878,30 @@ class MinimizerDialog(QDialog):
                 writer.writerow([])
 
                 # 最終配置
-                writer.writerow(["階", "最終本数", "初期本数", "変化"])
+                floor_resp_map: Dict[str, FloorResponse] = {
+                    fr.floor_key: fr for fr in self._result.final_floor_responses
+                }
+                has_margins = any(
+                    any(k.startswith("margin_") for k in fr.values)
+                    for fr in self._result.final_floor_responses
+                )
+                header = ["階", "最終本数", "初期本数", "変化"]
+                if has_margins:
+                    header.append("最小マージン")
+                writer.writerow(header)
                 for fk in sorted(self._result.final_quantities.keys(),
                                  key=lambda k: int("".join(c for c in k if c.isdigit()) or "0")):
                     final = self._result.final_quantities.get(fk, 0)
                     initial = self._result.initial_quantities.get(fk, 0)
-                    writer.writerow([fk, final, initial, final - initial])
+                    row_data = [fk, final, initial, final - initial]
+                    if has_margins:
+                        fr = floor_resp_map.get(fk)
+                        if fr:
+                            m = [v for k, v in fr.values.items() if k.startswith("margin_")]
+                            row_data.append(f"{min(m):+.4f}" if m else "—")
+                        else:
+                            row_data.append("—")
+                    writer.writerow(row_data)
 
                 # ステップ履歴
                 if self._result.history:
