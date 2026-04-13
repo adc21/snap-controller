@@ -1252,22 +1252,23 @@ class MainWindow(_MainWindowDialogsMixin, QMainWindow):
         pass
 
     def _update_sidebar_badges(self) -> None:
-        """
-        UX改善1: サイドバーの各ステップバッジをプロジェクト状態に合わせて更新します。
-
-        STEP1: モデルファイル名（ロード済みの場合）
-        STEP2: 総ケース数バッジ
-        STEP3: 完了/合計件数バッジ
-        STEP4: 完了件数バッジ
-
-        UX改善（新）: 各ステップの完了状態インジケーター（✓/▶/○）も同時に更新します。
-        """
+        """サイドバーの各ステップバッジ・状態インジケーター・フッターボタンを更新。"""
         if self._project is None:
             for i in range(4):
                 self._sidebar.update_badge(i, "")
                 self._sidebar.set_step_state(i, "pending")
             return
 
+        total_cases = len(self._project.cases)
+        completed = sum(1 for c in self._project.cases if c.result_summary)
+
+        self._update_step_badges(total_cases, completed)
+        self._update_global_progress()
+        self._update_step_footers(total_cases, completed)
+        self._update_sidebar_summary(total_cases, completed)
+
+    def _update_step_badges(self, total_cases: int, completed: int) -> None:
+        """STEP1〜4のバッジテキストと状態インジケーターを更新。"""
         # STEP1: モデルファイル状態
         if self._project.s8i_path:
             model_name = Path(self._project.s8i_path).name
@@ -1278,21 +1279,16 @@ class MainWindow(_MainWindowDialogsMixin, QMainWindow):
             self._sidebar.set_step_state(0, "pending")
 
         # STEP2: ケース件数
-        total_cases = len(self._project.cases)
         if total_cases > 0:
             self._sidebar.update_badge(1, f"{total_cases} ケース")
             self._sidebar.set_step_state(1, "done")
         else:
             self._sidebar.update_badge(1, "ケースなし")
-            # モデルがロード済みならSTEP2はアクティブ（着手可能）、未ロードなら未着手
-            if self._project.s8i_path:
-                self._sidebar.set_step_state(1, "active")
-            else:
-                self._sidebar.set_step_state(1, "pending")
+            self._sidebar.set_step_state(
+                1, "active" if self._project.s8i_path else "pending"
+            )
 
         # STEP3: 完了/合計件数
-        from app.models import AnalysisCaseStatus
-        completed = sum(1 for c in self._project.cases if c.result_summary)
         error = sum(
             1 for c in self._project.cases
             if hasattr(c, "status") and c.status and
@@ -1307,12 +1303,9 @@ class MainWindow(_MainWindowDialogsMixin, QMainWindow):
         elif error > 0:
             self._sidebar.update_badge(2, f"{completed}/{total_cases}完了 ⚠{error}エラー")
             self._sidebar.set_step_state(2, "active")
-        elif completed > 0:
-            self._sidebar.update_badge(2, f"{completed}/{total_cases}完了")
-            self._sidebar.set_step_state(2, "active")
         else:
-            self._sidebar.update_badge(2, f"0/{total_cases}完了")
-            # ケースがあるなら実行可能（アクティブ）
+            badge = f"{completed}/{total_cases}完了" if completed > 0 else f"0/{total_cases}完了"
+            self._sidebar.update_badge(2, badge)
             self._sidebar.set_step_state(2, "active")
 
         # STEP4: 完了件数
@@ -1323,11 +1316,8 @@ class MainWindow(_MainWindowDialogsMixin, QMainWindow):
             self._sidebar.update_badge(3, "")
             self._sidebar.set_step_state(3, "pending")
 
-        # UX改善④新: グローバル進捗インジケーターを更新
-        self._update_global_progress()
-
-        # UX改善②新: StepNavFooter の「次へ」ボタンをプロジェクト状態に合わせて制御
-        # STEP1→STEP2: s8iファイルが読み込まれていると「次へ」が有効
+    def _update_step_footers(self, total_cases: int, completed: int) -> None:
+        """StepNavFooter の「次へ」ボタンをプロジェクト状態に合わせて制御。"""
         model_loaded = bool(self._project.s8i_path)
         if hasattr(self, "_step1_footer"):
             self._step1_footer.set_next_enabled(model_loaded)
@@ -1335,7 +1325,6 @@ class MainWindow(_MainWindowDialogsMixin, QMainWindow):
                 "" if model_loaded
                 else "STEP1でs8iファイルを読み込むとSTEP2へ進めます"
             )
-        # STEP2→STEP3: ケースが1件以上あると「次へ」が有効
         has_cases = total_cases > 0
         if hasattr(self, "_step2_footer"):
             self._step2_footer.set_next_enabled(has_cases)
@@ -1343,7 +1332,6 @@ class MainWindow(_MainWindowDialogsMixin, QMainWindow):
                 "" if has_cases
                 else "STEP2で解析ケースを1件以上追加するとSTEP3へ進めます"
             )
-        # STEP3→STEP4: 解析が完了しているケースがあると「次へ」が有効
         if hasattr(self, "_step3_footer"):
             self._step3_footer.set_next_enabled(completed > 0)
             self._step3_footer.setToolTip(
@@ -1351,7 +1339,8 @@ class MainWindow(_MainWindowDialogsMixin, QMainWindow):
                 else "解析を実行して結果が出るとSTEP4へ進めます"
             )
 
-        # UX改善（新）: サイドバー下部のプロジェクト状態サマリーを更新
+    def _update_sidebar_summary(self, total_cases: int, completed: int) -> None:
+        """サイドバー下部のプロジェクト状態サマリーを更新。"""
         if hasattr(self, "_sidebar") and hasattr(self._sidebar, "update_project_summary"):
             s8i_name = ""
             if self._project and self._project.s8i_path:

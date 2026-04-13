@@ -181,8 +181,12 @@ class MinimizerDialog(_MinimizerResultActionsMixin, QDialog):
 
     def _build_settings_panel(self, root: QVBoxLayout) -> None:
         settings_layout = QHBoxLayout()
+        settings_layout.addWidget(self._build_floor_group(), stretch=1)
+        settings_layout.addWidget(self._build_algo_group(), stretch=1)
+        root.addLayout(settings_layout)
 
-        # 左: 階別現在本数テーブル
+    def _build_floor_group(self) -> QGroupBox:
+        """左パネル: 階別現在本数テーブル。"""
         floor_group = QGroupBox("ダンパー配置（.s8iから読取）")
         floor_layout = QVBoxLayout(floor_group)
         self._floor_table = QTableWidget()
@@ -207,26 +211,36 @@ class MinimizerDialog(_MinimizerResultActionsMixin, QDialog):
         )
         total_label.setStyleSheet("font-weight: bold;")
         floor_layout.addWidget(total_label)
-        settings_layout.addWidget(floor_group, stretch=1)
+        return floor_group
 
-        # 右: アルゴリズム選択 + パラメータ
+    def _build_algo_group(self) -> QGroupBox:
+        """右パネル: アルゴリズム選択 + パラメータ。"""
         algo_group = QGroupBox("探索設定")
         algo_layout = QVBoxLayout(algo_group)
 
-        # アルゴリズム選択（カテゴリ別グループ表示）
-        algo_layout.addWidget(QLabel("探索戦略:"))
+        self._build_strategy_combo(algo_layout)
+        self._build_iter_and_eval(algo_layout)
+        self._build_advanced_params(algo_layout)
+
+        self._combo_strategy.currentIndexChanged.connect(self._on_strategy_changed)
+        self._on_strategy_changed()
+
+        algo_layout.addStretch()
+        return algo_group
+
+    def _build_strategy_combo(self, parent: QVBoxLayout) -> None:
+        """アルゴリズム選択コンボボックス（カテゴリ別グループ表示）。"""
+        parent.addWidget(QLabel("探索戦略:"))
         self._combo_strategy = QComboBox()
         model = self._combo_strategy.model()
         first_selectable_idx = -1
         for cat_name, cat_keys in STRATEGY_CATEGORIES.items():
-            # カテゴリヘッダー（選択不可）
             header_item = QStandardItem(f"── {cat_name} ──")
             header_item.setEnabled(False)
             f = header_item.font()
             f.setBold(True)
             header_item.setFont(f)
             model.appendRow(header_item)
-            # 戦略アイテム
             for key in cat_keys:
                 label = STRATEGIES[key]
                 self._combo_strategy.addItem(f"  {label}", key)
@@ -234,18 +248,18 @@ class MinimizerDialog(_MinimizerResultActionsMixin, QDialog):
                     first_selectable_idx = model.rowCount() - 1
         if first_selectable_idx >= 0:
             self._combo_strategy.setCurrentIndex(first_selectable_idx)
-        algo_layout.addWidget(self._combo_strategy)
+        parent.addWidget(self._combo_strategy)
 
-        # 反復回数
+    def _build_iter_and_eval(self, parent: QVBoxLayout) -> None:
+        """反復回数スピナー + 評価方式ラベル。"""
         iter_layout = QHBoxLayout()
         iter_layout.addWidget(QLabel("最大反復数:"))
         self._iter_spin = QSpinBox()
         self._iter_spin.setRange(10, 5000)
         self._iter_spin.setValue(100)
         iter_layout.addWidget(self._iter_spin)
-        algo_layout.addLayout(iter_layout)
+        parent.addLayout(iter_layout)
 
-        # 評価方式表示
         eval_layout = QHBoxLayout()
         eval_layout.addWidget(QLabel("評価方式:"))
         self._lbl_eval_mode = QLabel()
@@ -256,9 +270,10 @@ class MinimizerDialog(_MinimizerResultActionsMixin, QDialog):
             self._lbl_eval_mode.setText("未接続")
             self._lbl_eval_mode.setStyleSheet("color: #f44336; font-weight: bold;")
         eval_layout.addWidget(self._lbl_eval_mode)
-        algo_layout.addLayout(eval_layout)
+        parent.addLayout(eval_layout)
 
-        # 詳細パラメータパネル（戦略ごとに表示/非表示切替）
+    def _build_advanced_params(self, parent: QVBoxLayout) -> None:
+        """詳細パラメータパネル（戦略ごとに表示/非表示切替）。"""
         self._adv_group = QGroupBox("詳細パラメータ")
         adv_layout = QVBoxLayout(self._adv_group)
 
@@ -302,15 +317,7 @@ class MinimizerDialog(_MinimizerResultActionsMixin, QDialog):
         self._chk_de_adaptive.setToolTip("個体ごとにF, CRを自動調整（Brest et al. 2006）")
         adv_layout.addWidget(self._chk_de_adaptive)
 
-        algo_layout.addWidget(self._adv_group)
-
-        # 戦略切替時にパネルを更新
-        self._combo_strategy.currentIndexChanged.connect(self._on_strategy_changed)
-        self._on_strategy_changed()
-
-        algo_layout.addStretch()
-        settings_layout.addWidget(algo_group, stretch=1)
-        root.addLayout(settings_layout)
+        parent.addWidget(self._adv_group)
 
     def _build_exec_controls(self, root: QVBoxLayout) -> None:
         exec_layout = QHBoxLayout()
@@ -650,11 +657,8 @@ class MinimizerDialog(_MinimizerResultActionsMixin, QDialog):
             return
 
         try:
-            import matplotlib.patches as patches
-
             ax = self._fig_elev.add_subplot(111)
 
-            # 階をソート（数値順）
             floors = sorted(
                 result.final_quantities.keys(),
                 key=lambda k: int("".join(c for c in k if c.isdigit()) or "0"),
@@ -664,99 +668,19 @@ class MinimizerDialog(_MinimizerResultActionsMixin, QDialog):
                 self._canvas_elev.draw()
                 return
 
-            max_count = max(result.final_quantities.get(f, 0) for f in floors)
-            max_count = max(max_count, 1)
-
-            floor_h = 1.0  # 各階の高さ
-            bldg_w = 4.0   # 建物幅
+            floor_h = 1.0
+            bldg_w = 4.0
             x_center = 0.0
 
             for i, fk in enumerate(floors):
                 y_base = i * floor_h
+                self._draw_floor_frame(ax, x_center, y_base, bldg_w, floor_h)
                 count = result.final_quantities.get(fk, 0)
                 initial = result.initial_quantities.get(fk, 0)
+                self._draw_damper_marks(ax, x_center, y_base, bldg_w, floor_h, count)
+                self._draw_floor_labels(ax, x_center, y_base, bldg_w, floor_h, fk, count, initial)
 
-                # 床スラブ（水平線）
-                ax.plot(
-                    [x_center - bldg_w / 2, x_center + bldg_w / 2],
-                    [y_base, y_base],
-                    color="#555", linewidth=1.5,
-                )
-
-                # 柱（左右の縦線）
-                ax.plot(
-                    [x_center - bldg_w / 2, x_center - bldg_w / 2],
-                    [y_base, y_base + floor_h],
-                    color="#888", linewidth=1.0,
-                )
-                ax.plot(
-                    [x_center + bldg_w / 2, x_center + bldg_w / 2],
-                    [y_base, y_base + floor_h],
-                    color="#888", linewidth=1.0,
-                )
-
-                # ダンパーを×印で表現（階の中央に横並び）
-                if count > 0:
-                    # ダンパー間隔を均等配分
-                    damper_w = bldg_w * 0.7
-                    if count == 1:
-                        x_positions = [x_center]
-                    else:
-                        x_positions = [
-                            x_center - damper_w / 2 + j * damper_w / (count - 1)
-                            for j in range(count)
-                        ]
-
-                    y_mid = y_base + floor_h / 2
-                    sz = floor_h * 0.2
-                    for xp in x_positions:
-                        # ×印でダンパー表現
-                        ax.plot(
-                            [xp - sz, xp + sz], [y_mid - sz, y_mid + sz],
-                            color="#d32f2f", linewidth=1.5,
-                        )
-                        ax.plot(
-                            [xp + sz, xp - sz], [y_mid - sz, y_mid + sz],
-                            color="#d32f2f", linewidth=1.5,
-                        )
-
-                # 階ラベル（左側）
-                ax.text(
-                    x_center - bldg_w / 2 - 0.3,
-                    y_base + floor_h / 2,
-                    fk,
-                    ha="right", va="center", fontsize=8,
-                )
-
-                # 本数ラベル（右側）
-                diff = count - initial
-                diff_str = f" ({diff:+d})" if diff != 0 else ""
-                color = "#d32f2f" if count > 0 else "#999"
-                ax.text(
-                    x_center + bldg_w / 2 + 0.3,
-                    y_base + floor_h / 2,
-                    f"{count}本{diff_str}",
-                    ha="left", va="center", fontsize=8, color=color,
-                )
-
-            # 屋上スラブ
-            ax.plot(
-                [x_center - bldg_w / 2, x_center + bldg_w / 2],
-                [n_floors * floor_h, n_floors * floor_h],
-                color="#555", linewidth=2.0,
-            )
-
-            # 地盤面
-            ax.fill_between(
-                [x_center - bldg_w / 2 - 1.0, x_center + bldg_w / 2 + 1.0],
-                -0.3, 0,
-                color="#8d6e63", alpha=0.3,
-            )
-            ax.plot(
-                [x_center - bldg_w / 2 - 1.0, x_center + bldg_w / 2 + 1.0],
-                [0, 0],
-                color="#5d4037", linewidth=2.0,
-            )
+            self._draw_roof_and_ground(ax, x_center, bldg_w, n_floors, floor_h)
 
             total = sum(result.final_quantities.get(f, 0) for f in floors)
             total_init = sum(result.initial_quantities.get(f, 0) for f in floors)
@@ -773,6 +697,73 @@ class MinimizerDialog(_MinimizerResultActionsMixin, QDialog):
         except Exception:
             logger.warning("立面ダイアグラムの描画に失敗", exc_info=True)
         self._canvas_elev.draw()
+
+    @staticmethod
+    def _draw_floor_frame(ax, x_center: float, y_base: float, bldg_w: float, floor_h: float) -> None:
+        """床スラブ（水平線）と柱（左右の縦線）を描画。"""
+        ax.plot(
+            [x_center - bldg_w / 2, x_center + bldg_w / 2],
+            [y_base, y_base],
+            color="#555", linewidth=1.5,
+        )
+        for sign in (-1, 1):
+            ax.plot(
+                [x_center + sign * bldg_w / 2] * 2,
+                [y_base, y_base + floor_h],
+                color="#888", linewidth=1.0,
+            )
+
+    @staticmethod
+    def _draw_damper_marks(ax, x_center: float, y_base: float, bldg_w: float, floor_h: float, count: int) -> None:
+        """ダンパーを×印で表現（階の中央に横並び）。"""
+        if count <= 0:
+            return
+        damper_w = bldg_w * 0.7
+        if count == 1:
+            x_positions = [x_center]
+        else:
+            x_positions = [
+                x_center - damper_w / 2 + j * damper_w / (count - 1)
+                for j in range(count)
+            ]
+        y_mid = y_base + floor_h / 2
+        sz = floor_h * 0.2
+        for xp in x_positions:
+            ax.plot([xp - sz, xp + sz], [y_mid - sz, y_mid + sz], color="#d32f2f", linewidth=1.5)
+            ax.plot([xp + sz, xp - sz], [y_mid - sz, y_mid + sz], color="#d32f2f", linewidth=1.5)
+
+    @staticmethod
+    def _draw_floor_labels(ax, x_center: float, y_base: float, bldg_w: float, floor_h: float,
+                           fk: str, count: int, initial: int) -> None:
+        """階ラベル（左側）と本数ラベル（右側）を描画。"""
+        ax.text(
+            x_center - bldg_w / 2 - 0.3, y_base + floor_h / 2,
+            fk, ha="right", va="center", fontsize=8,
+        )
+        diff = count - initial
+        diff_str = f" ({diff:+d})" if diff != 0 else ""
+        color = "#d32f2f" if count > 0 else "#999"
+        ax.text(
+            x_center + bldg_w / 2 + 0.3, y_base + floor_h / 2,
+            f"{count}本{diff_str}", ha="left", va="center", fontsize=8, color=color,
+        )
+
+    @staticmethod
+    def _draw_roof_and_ground(ax, x_center: float, bldg_w: float, n_floors: int, floor_h: float) -> None:
+        """屋上スラブと地盤面を描画。"""
+        ax.plot(
+            [x_center - bldg_w / 2, x_center + bldg_w / 2],
+            [n_floors * floor_h, n_floors * floor_h],
+            color="#555", linewidth=2.0,
+        )
+        ax.fill_between(
+            [x_center - bldg_w / 2 - 1.0, x_center + bldg_w / 2 + 1.0],
+            -0.3, 0, color="#8d6e63", alpha=0.3,
+        )
+        ax.plot(
+            [x_center - bldg_w / 2 - 1.0, x_center + bldg_w / 2 + 1.0],
+            [0, 0], color="#5d4037", linewidth=2.0,
+        )
 
     def _populate_result_table(self, result: MinimizationResult) -> None:
         """結果テーブル: 各階の本数 + 変化量 + マージン。"""
