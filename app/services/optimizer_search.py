@@ -305,23 +305,13 @@ class _SearchAlgorithmsMixin:
         """
         ベイズ最適化で最適化を実行します。
 
-        ガウス過程回帰（GP）と Expected Improvement（EI）獲得関数を使用して
+        ガウス過程回帰（GP）と獲得関数（EI/PI/UCB）を使用して
         効率的にパラメータ空間を探索します。
 
         戦略:
-          1. 初期探索フェーズ（~10点）: ランダムサンプリング
-          2. ベイズフェーズ: GP学習 → EI評価 → 最良点選択 → 評価
-          3. 最後までループして候補を蓄積
-
-        Parameters
-        ----------
-        config : OptimizationConfig
-            最適化設定。
-
-        Returns
-        -------
-        OptimizationResult
-            最適化結果。
+          1. ウォームスタート: 既存候補を初期データとして注入
+          2. 初期探索フェーズ（~10点）: ランダムサンプリング
+          3. ベイズフェーズ: GP学習 → 獲得関数評価 → 最良点選択 → 評価
         """
         if not config.parameters:
             return OptimizationResult(message="探索パラメータが設定されていません。")
@@ -330,60 +320,99 @@ class _SearchAlgorithmsMixin:
         all_candidates: List[OptimizationCandidate] = []
         best: Optional[OptimizationCandidate] = None
 
-        # パラメータ標準化用の情報を保持
         param_keys = [pr.key for pr in config.parameters]
         param_mins = np.array([pr.min_val for pr in config.parameters])
         param_ranges = np.array([pr.max_val - pr.min_val for pr in config.parameters])
 
-        # ウォームスタート: 前回結果を初期データとして注入
-        warm_count = 0
-        X_warm = []
-        y_warm = []
-        warm_candidates: List[OptimizationCandidate] = []
-        if config.warm_start_candidates:
-            for wc in config.warm_start_candidates:
-                if all(k in wc.params for k in param_keys):
-                    raw = np.array([wc.params[k] for k in param_keys])
-                    x_norm = (raw - param_mins) / np.where(param_ranges == 0, 1.0, param_ranges)
-                    X_warm.append(x_norm)
-                    y_warm.append(wc.objective_value)
-                    warm_candidates.append(wc)
-            warm_count = len(X_warm)
+        # Phase 0: ウォームスタート
+        X_init, y_init, warm_count, best = self._bayesian_warmstart(
+            config, param_keys, param_mins, param_ranges, all_candidates, total,
+        )
 
-        # 初期探索フェーズの回数（全体の10%または最小10回）- ウォーム分を差し引き
+        # Phase 1: 初期ランダム探索
         n_init = max(0, min(10, max(10, total // 10)) - warm_count)
+        best = self._bayesian_init_phase(
+            config, param_keys, param_mins, param_ranges,
+            X_init, y_init, all_candidates, best,
+            n_init, warm_count, total,
+        )
+
+        # Phase 2: ベイズ最適化
         n_bayesian = total - n_init - warm_count
+        best = self._bayesian_gp_phase(
+            config, param_keys, param_mins, param_ranges,
+            X_init, y_init, all_candidates, best,
+            n_init, n_bayesian, total,
+        )
 
-        # 初期サンプル用のデータ（ウォームスタートデータを先に追加）
-        X_init = list(X_warm)  # 正規化されたパラメータ
-        y_init = list(y_warm)  # 目的関数値
-        raw_X_init = []  # 元のスケールのパラメータ (warm-start分は再評価不要)
+        result = OptimizationResult(
+            best=best,
+            all_candidates=all_candidates,
+            converged=True,
+            message=f"ベイズ最適化完了: {len(all_candidates)} 点を評価（初期:{n_init}点+ベイズ:{len(all_candidates)-n_init}点）" +
+                    (f", 制約満足 {len([c for c in all_candidates if c.is_feasible])} 点"
+                     if config.constraints or config.criteria else ""),
+        )
+        return result
 
-        # ウォームスタート候補を結果に追加
-        for idx, wc in enumerate(warm_candidates):
-            all_candidates.append(wc)
-            self.candidate_found.emit(wc)
-            if wc.is_feasible and (best is None or wc.objective_value < best.objective_value):
-                best = wc
+    def _bayesian_warmstart(
+        self,
+        config: OptimizationConfig,
+        param_keys: List[str],
+        param_mins: np.ndarray,
+        param_ranges: np.ndarray,
+        all_candidates: List[OptimizationCandidate],
+        total: int,
+    ) -> Tuple[List[np.ndarray], List[float], int, Optional[OptimizationCandidate]]:
+        """ウォームスタート候補を正規化して初期データに注入する。"""
+        X_init: List[np.ndarray] = []
+        y_init: List[float] = []
+        best: Optional[OptimizationCandidate] = None
+
+        if not config.warm_start_candidates:
+            return X_init, y_init, 0, best
+
+        for wc in config.warm_start_candidates:
+            if all(k in wc.params for k in param_keys):
+                raw = np.array([wc.params[k] for k in param_keys])
+                x_norm = (raw - param_mins) / np.where(param_ranges == 0, 1.0, param_ranges)
+                X_init.append(x_norm)
+                y_init.append(wc.objective_value)
+                all_candidates.append(wc)
+                self.candidate_found.emit(wc)
+                if wc.is_feasible and (best is None or wc.objective_value < best.objective_value):
+                    best = wc
+
+        warm_count = len(X_init)
         if warm_count > 0:
             self.progress.emit(warm_count, total,
                                f"ウォームスタート: {warm_count}点を引き継ぎ")
+        return X_init, y_init, warm_count, best
 
-        # === Phase 1: 初期ランダム探索 ===
+    def _bayesian_init_phase(
+        self,
+        config: OptimizationConfig,
+        param_keys: List[str],
+        param_mins: np.ndarray,
+        param_ranges: np.ndarray,
+        X_init: List[np.ndarray],
+        y_init: List[float],
+        all_candidates: List[OptimizationCandidate],
+        best: Optional[OptimizationCandidate],
+        n_init: int,
+        warm_count: int,
+        total: int,
+    ) -> Optional[OptimizationCandidate]:
+        """初期ランダム探索フェーズを実行する。"""
         for i in range(n_init):
             if self._cancelled:
                 break
 
-            # ランダムパラメータ生成
             params = {pr.key: pr.random_value() for pr in config.parameters}
             raw_params = np.array([params[k] for k in param_keys])
-
-            # 正規化
             x_normalized = (raw_params - param_mins) / param_ranges
             X_init.append(x_normalized)
-            raw_X_init.append(raw_params)
 
-            # 評価
             response = self._evaluate_fn(params)
             obj_val = config.compute_objective(response, params)
             is_feasible, margins = self._check_constraints(response, config)
@@ -404,7 +433,6 @@ class _SearchAlgorithmsMixin:
             if is_feasible and (best is None or obj_val < best.objective_value):
                 best = candidate
 
-            # 進捗報告
             if i % max(1, n_init // 10) == 0 or i == n_init - 1:
                 msg = f"初期探索: {i+1}/{n_init}"
                 if warm_count > 0:
@@ -413,136 +441,144 @@ class _SearchAlgorithmsMixin:
                     msg += f" | 暫定最良: {best.objective_value:.6g}"
                 self.progress.emit(warm_count + i + 1, total, msg)
 
-        # === Phase 2: ベイズ最適化フェーズ ===
-        if len(X_init) > 0 and n_bayesian > 0:
-            try:
-                X_history = np.array(X_init)
-                y_history = np.array(y_init)
+        return best
 
-                gp = _GaussianProcessRegressor(length_scale=1.0, noise=1e-6)
+    def _bayesian_gp_phase(
+        self,
+        config: OptimizationConfig,
+        param_keys: List[str],
+        param_mins: np.ndarray,
+        param_ranges: np.ndarray,
+        X_init: List[np.ndarray],
+        y_init: List[float],
+        all_candidates: List[OptimizationCandidate],
+        best: Optional[OptimizationCandidate],
+        n_init: int,
+        n_bayesian: int,
+        total: int,
+    ) -> Optional[OptimizationCandidate]:
+        """GP + 獲得関数によるベイズ最適化フェーズを実行する。"""
+        if len(X_init) == 0 or n_bayesian <= 0:
+            return best
 
-                for i in range(n_bayesian):
-                    if self._cancelled:
-                        break
+        try:
+            X_history = np.array(X_init)
+            y_history = np.array(y_init)
+            gp = _GaussianProcessRegressor(length_scale=1.0, noise=1e-6)
 
-                    # GP学習
-                    gp.fit(X_history, y_history)
+            for i in range(n_bayesian):
+                if self._cancelled:
+                    break
 
-                    # 獲得関数の評価用に候補点をサンプル
-                    n_candidates = min(500, max(100, total * 2))
-                    X_candidates = np.random.uniform(0, 1, (n_candidates, len(param_keys)))
+                gp.fit(X_history, y_history)
 
-                    # 予測
-                    mu, sigma = gp.predict(X_candidates)
+                n_candidates = min(500, max(100, total * 2))
+                X_candidates = np.random.uniform(0, 1, (n_candidates, len(param_keys)))
+                mu, sigma = gp.predict(X_candidates)
+                y_best = float(np.min(y_history))
 
-                    # 目的関数の最小値
-                    y_best = float(np.min(y_history))
+                acq_values = _compute_acquisition(
+                    config.acquisition_function,
+                    mu, sigma, y_best,
+                    xi=0.01,
+                    kappa=config.acquisition_kappa,
+                )
 
-                    # 獲得関数の評価
-                    acq_values = _compute_acquisition(
-                        config.acquisition_function,
-                        mu, sigma, y_best,
-                        xi=0.01,
-                        kappa=config.acquisition_kappa,
-                    )
+                best_idx = int(np.argmax(acq_values))
+                x_next = X_candidates[best_idx].copy()
+                raw_params = x_next * param_ranges + param_mins
 
-                    # 最高の獲得関数値を持つ点を選択
-                    best_idx = int(np.argmax(acq_values))
-                    x_next = X_candidates[best_idx].copy()
+                params = {}
+                for j, key in enumerate(param_keys):
+                    val = raw_params[j]
+                    pr = config.parameters[j]
+                    if pr.is_integer:
+                        val = round(val)
+                    elif pr.step > 0:
+                        val = round(val / pr.step) * pr.step
+                    params[key] = val
 
-                    # 元のスケールに戻す
-                    raw_params = x_next * param_ranges + param_mins
+                response = self._evaluate_fn(params)
+                obj_val = config.compute_objective(response, params)
+                is_feasible, margins = self._check_constraints(response, config)
 
-                    # パラメータを丸める（整数パラメータの場合）
-                    params = {}
-                    for j, key in enumerate(param_keys):
-                        val = raw_params[j]
-                        pr = config.parameters[j]
-                        if pr.is_integer:
-                            val = round(val)
-                        elif pr.step > 0:
-                            val = round(val / pr.step) * pr.step
-                        params[key] = val
+                candidate = OptimizationCandidate(
+                    params=params,
+                    objective_value=obj_val,
+                    response_values=response,
+                    is_feasible=is_feasible,
+                    iteration=n_init + i,
+                    constraint_margins=margins,
+                )
+                all_candidates.append(candidate)
+                self.candidate_found.emit(candidate)
 
-                    # 評価
-                    response = self._evaluate_fn(params)
-                    obj_val = config.compute_objective(response, params)
-                    is_feasible, margins = self._check_constraints(response, config)
+                if is_feasible and (best is None or obj_val < best.objective_value):
+                    best = candidate
 
-                    candidate = OptimizationCandidate(
-                        params=params,
-                        objective_value=obj_val,
-                        response_values=response,
-                        is_feasible=is_feasible,
-                        iteration=n_init + i,
-                        constraint_margins=margins,
-                    )
-                    all_candidates.append(candidate)
-                    self.candidate_found.emit(candidate)
+                y_penalized = self._penalized_objective(obj_val, margins, config)
+                x_next_normalized = (raw_params - param_mins) / param_ranges
+                X_history = np.vstack([X_history, x_next_normalized])
+                y_history = np.hstack([y_history, y_penalized])
 
-                    if is_feasible and (best is None or obj_val < best.objective_value):
-                        best = candidate
+                if (n_init + i) % max(1, total // 100) == 0 or (n_init + i) == total - 1:
+                    msg = f"ベイズ探索: {n_init + i + 1}/{total}"
+                    if best:
+                        msg += f" | 暫定最良: {best.objective_value:.6g}"
+                    self.progress.emit(n_init + i + 1, total, msg)
 
-                    # GPの履歴を更新（ペナルティ付き値でモデリング）
-                    y_penalized = self._penalized_objective(obj_val, margins, config)
-                    x_next_normalized = (raw_params - param_mins) / param_ranges
-                    X_history = np.vstack([X_history, x_next_normalized])
-                    y_history = np.hstack([y_history, y_penalized])
+                self._maybe_checkpoint(all_candidates, best, config)
 
-                    # 進捗報告
-                    if (n_init + i) % max(1, total // 100) == 0 or (n_init + i) == total - 1:
-                        msg = f"ベイズ探索: {n_init + i + 1}/{total}"
-                        if best:
-                            msg += f" | 暫定最良: {best.objective_value:.6g}"
-                        self.progress.emit(n_init + i + 1, total, msg)
+        except Exception as e:
+            logger.warning("Bayesian optimization failed (%s), falling back to random search", e)
+            best = self._bayesian_fallback_random(
+                config, all_candidates, best, n_init, n_bayesian, total,
+            )
 
-                    # チェックポイント
-                    self._maybe_checkpoint(all_candidates, best, config)
+        return best
 
-            except Exception as e:
-                # ベイズ最適化に失敗した場合、残りはランダムサーチでフォールバック
-                logger.warning("Bayesian optimization failed (%s), falling back to random search", e)
-                for i in range(n_bayesian):
-                    if self._cancelled:
-                        break
+    def _bayesian_fallback_random(
+        self,
+        config: OptimizationConfig,
+        all_candidates: List[OptimizationCandidate],
+        best: Optional[OptimizationCandidate],
+        n_init: int,
+        n_bayesian: int,
+        total: int,
+    ) -> Optional[OptimizationCandidate]:
+        """ベイズ最適化失敗時のランダムサーチフォールバック。"""
+        for i in range(n_bayesian):
+            if self._cancelled:
+                break
 
-                    params = {pr.key: pr.random_value() for pr in config.parameters}
-                    response = self._evaluate_fn(params)
-                    obj_val = config.compute_objective(response, params)
-                    is_feasible, margins = self._check_constraints(response, config)
+            params = {pr.key: pr.random_value() for pr in config.parameters}
+            response = self._evaluate_fn(params)
+            obj_val = config.compute_objective(response, params)
+            is_feasible, margins = self._check_constraints(response, config)
 
-                    candidate = OptimizationCandidate(
-                        params=params,
-                        objective_value=obj_val,
-                        response_values=response,
-                        is_feasible=is_feasible,
-                        iteration=n_init + i,
-                        constraint_margins=margins,
-                    )
-                    all_candidates.append(candidate)
-                    self.candidate_found.emit(candidate)
+            candidate = OptimizationCandidate(
+                params=params,
+                objective_value=obj_val,
+                response_values=response,
+                is_feasible=is_feasible,
+                iteration=n_init + i,
+                constraint_margins=margins,
+            )
+            all_candidates.append(candidate)
+            self.candidate_found.emit(candidate)
 
-                    if is_feasible and (best is None or obj_val < best.objective_value):
-                        best = candidate
+            if is_feasible and (best is None or obj_val < best.objective_value):
+                best = candidate
 
-                    if (n_init + i) % max(1, total // 100) == 0:
-                        msg = f"ベイズ検索（フォールバック）: {n_init + i + 1}/{total}"
-                        if best:
-                            msg += f" | 暫定最良: {best.objective_value:.6g}"
-                        self.progress.emit(n_init + i + 1, total, msg)
+            if (n_init + i) % max(1, total // 100) == 0:
+                msg = f"ベイズ検索（フォールバック）: {n_init + i + 1}/{total}"
+                if best:
+                    msg += f" | 暫定最良: {best.objective_value:.6g}"
+                self.progress.emit(n_init + i + 1, total, msg)
 
-                    # チェックポイント
-                    self._maybe_checkpoint(all_candidates, best, config)
+            self._maybe_checkpoint(all_candidates, best, config)
 
-        result = OptimizationResult(
-            best=best,
-            all_candidates=all_candidates,
-            converged=True,
-            message=f"ベイズ最適化完了: {len(all_candidates)} 点を評価（初期:{n_init}点+ベイズ:{len(all_candidates)-n_init}点）" +
-                    (f", 制約満足 {len([c for c in all_candidates if c.is_feasible])} 点"
-                     if config.constraints or config.criteria else ""),
-        )
-        return result
+        return best
 
     # ------------------------------------------------------------------
     # 遺伝的アルゴリズム (GA)

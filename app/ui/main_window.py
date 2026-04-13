@@ -2076,115 +2076,122 @@ class MainWindow(_MainWindowDialogsMixin, QMainWindow):
         if running:
             self._act_pause.setText("⏸ 一時停止")
             self._act_pause.setToolTip("バッチ実行を一時停止します")
-            # 改善④: 解析開始時は「実行キュー」タブへ自動切り替え（進捗を確認しやすく）
             _BATCH_QUEUE_TAB = 9
             if self._right_tabs.isTabEnabled(_BATCH_QUEUE_TAB):
                 self._right_tabs.setCurrentIndex(_BATCH_QUEUE_TAB)
-            # UX改善③新: 解析開始時はバナーを隠す
             self._run_selection.hide_completion_banner()
         else:
             self._act_pause.setText("⏸ 一時停止")
             self._act_pause.setToolTip("バッチ実行を一時停止します")
-            # UX改善（スマートデフォルト）: 解析完了時のタブ自動選択を文脈に応じて最適化
-            # - 1件のみ完了: 「解析結果」タブ（そのケースの詳細グラフ）
-            # - 2件以上 + 性能基準設定あり: 「ランキング」タブ（合否判定を即確認）
-            # - 2件以上 + 基準なし: 「ケース比較」タブ（差分を視覚的に比較）
-            # - 0件: 切り替えない（エラーのみ等）
-            if self._project and any(c.result_summary for c in self._project.cases):
-                _completed_cases = [c for c in self._project.cases if c.result_summary]
-                _completed_n = len(_completed_cases)
-                _TAB_DASHBOARD    = 0  # ダッシュボード
-                _TAB_RESULT       = 1  # 解析結果（単一ケース）
-                _TAB_COMPARE      = 2  # ケース比較（複数ケース）
-                _TAB_RANKING      = 6  # ランキング（性能基準あり時に最適）
-                _has_criteria = (
-                    self._project.criteria is not None
-                    and (
-                        getattr(self._project.criteria, "max_drift", None) is not None
-                        or getattr(self._project.criteria, "max_acc", None) is not None
-                    )
-                )
-                if _completed_n == 1:
-                    # 単独ケース → 解析結果タブで詳細を確認
-                    _best_tab = _TAB_RESULT
-                elif _has_criteria:
-                    # 複数ケース + 基準あり → ランキングで合否を確認
-                    _best_tab = _TAB_RANKING if self._right_tabs.isTabEnabled(_TAB_RANKING) else _TAB_COMPARE
-                else:
-                    # 複数ケース → ケース比較で差分を確認
-                    _best_tab = _TAB_COMPARE if self._right_tabs.isTabEnabled(_TAB_COMPARE) else _TAB_DASHBOARD
-                if self._right_tabs.isTabEnabled(_best_tab):
-                    self._right_tabs.setCurrentIndex(_best_tab)
-            # UX改善1+3: バッジ更新 & 結果があればSTEP4へ自動ナビゲート（設定依存）
+            self._on_batch_finished_select_tab()
+            self._on_batch_finished_navigate_step4()
+            self._on_batch_finished_show_banner()
+            self._on_batch_finished_tray_notify()
+
+    def _on_batch_finished_select_tab(self) -> None:
+        """解析完了時のタブ自動選択を文脈に応じて最適化する。"""
+        if not (self._project and any(c.result_summary for c in self._project.cases)):
             self._update_sidebar_badges()
-            if self._project and any(c.result_summary for c in self._project.cases):
-                completed_n = sum(1 for c in self._project.cases if c.result_summary)
-                # UX改善⑤: 設定で自動遷移が有効な場合のみSTEP4へ移動
-                _auto_step4 = load_settings().get("auto_step4", True)
-                if _auto_step4:
-                    self._sidebar.set_current_step(3)
-                    self.statusBar().showMessage(
-                        f"✅ 解析完了: {completed_n}件  "
-                        f"→ STEP4 で結果を確認してください",
-                        7000,
-                    )
-                else:
-                    self.statusBar().showMessage(
-                        f"✅ 解析完了: {completed_n}件  "
-                        f"（STEP4「結果・戦略」タブで結果を確認できます）",
-                        7000,
-                    )
-            # UX改善③新: STEP3 解析完了バナーを表示（STEP4へのCTAボタン付き）
-            if self._project:
-                completed_n = sum(1 for c in self._project.cases if c.result_summary)
-                error_count = sum(
-                    1 for c in self._project.cases
-                    if c.status and hasattr(c.status, "name") and c.status.name == "ERROR"
+            return
+        completed_n = sum(1 for c in self._project.cases if c.result_summary)
+        _TAB_RESULT = 1
+        _TAB_COMPARE = 2
+        _TAB_DASHBOARD = 0
+        _TAB_RANKING = 6
+        _has_criteria = (
+            self._project.criteria is not None
+            and (
+                getattr(self._project.criteria, "max_drift", None) is not None
+                or getattr(self._project.criteria, "max_acc", None) is not None
+            )
+        )
+        if completed_n == 1:
+            _best_tab = _TAB_RESULT
+        elif _has_criteria:
+            _best_tab = _TAB_RANKING if self._right_tabs.isTabEnabled(_TAB_RANKING) else _TAB_COMPARE
+        else:
+            _best_tab = _TAB_COMPARE if self._right_tabs.isTabEnabled(_TAB_COMPARE) else _TAB_DASHBOARD
+        if self._right_tabs.isTabEnabled(_best_tab):
+            self._right_tabs.setCurrentIndex(_best_tab)
+        self._update_sidebar_badges()
+
+    def _on_batch_finished_navigate_step4(self) -> None:
+        """解析完了時にSTEP4へ自動ナビゲートする（設定依存）。"""
+        if not (self._project and any(c.result_summary for c in self._project.cases)):
+            return
+        completed_n = sum(1 for c in self._project.cases if c.result_summary)
+        _auto_step4 = load_settings().get("auto_step4", True)
+        if _auto_step4:
+            self._sidebar.set_current_step(3)
+            self.statusBar().showMessage(
+                f"✅ 解析完了: {completed_n}件  "
+                f"→ STEP4 で結果を確認してください",
+                7000,
+            )
+        else:
+            self.statusBar().showMessage(
+                f"✅ 解析完了: {completed_n}件  "
+                f"（STEP4「結果・戦略」タブで結果を確認できます）",
+                7000,
+            )
+
+    def _on_batch_finished_show_banner(self) -> None:
+        """解析完了バナーを表示する（ベストケース情報付き）。"""
+        if not self._project:
+            return
+        completed_n = sum(1 for c in self._project.cases if c.result_summary)
+        error_count = sum(
+            1 for c in self._project.cases
+            if c.status and hasattr(c.status, "name") and c.status.name == "ERROR"
+        )
+        if completed_n == 0:
+            return
+        best_case_info = ""
+        try:
+            completed_cases = [
+                c for c in self._project.cases
+                if c.result_summary and c.result_summary.get("max_drift") is not None
+            ]
+            if completed_cases:
+                best = min(
+                    completed_cases,
+                    key=lambda c: c.result_summary.get("max_drift", float("inf"))
                 )
-                if completed_n > 0:
-                    # UX改善（新）: ベストケース（最小層間変形角）の情報を計算してバナーに表示
-                    best_case_info = ""
-                    try:
-                        completed_cases = [
-                            c for c in self._project.cases
-                            if c.result_summary and c.result_summary.get("max_drift") is not None
-                        ]
-                        if completed_cases:
-                            best = min(
-                                completed_cases,
-                                key=lambda c: c.result_summary.get("max_drift", float("inf"))
-                            )
-                            drift = best.result_summary.get("max_drift", 0)
-                            best_case_info = (
-                                f"🏆 最良ケース（最小層間変形角）: "
-                                f"<b>{best.name}</b>  —  {drift:.5f} rad"
-                            )
-                    except Exception:
-                        logger.debug("best case info formatting failed", exc_info=True)
-                        best_case_info = ""
-                    self._run_selection.show_completion_banner(
-                        completed_n, error_count, best_case_info
-                    )
-            # 改善C: バッチ解析完了をシステムトレイ通知（最小化中でも即座に確認可能）
-            if self._project:
-                completed = sum(1 for c in self._project.cases if c.result_summary)
-                error_count = sum(
-                    1 for c in self._project.cases
-                    if c.status and hasattr(c.status, "name") and c.status.name == "ERROR"
+                drift = best.result_summary.get("max_drift", 0)
+                best_case_info = (
+                    f"🏆 最良ケース（最小層間変形角）: "
+                    f"<b>{best.name}</b>  —  {drift:.5f} rad"
                 )
-                if completed > 0:
-                    if error_count > 0:
-                        self._tray_notify(
-                            "解析完了（エラーあり）",
-                            f"{completed}件完了、{error_count}件エラー。\nログを確認してください。",
-                            QSystemTrayIcon.Warning,
-                        )
-                    else:
-                        self._tray_notify(
-                            "解析完了",
-                            f"{completed}件の解析が正常に完了しました。\n結果を確認してください。",
-                            QSystemTrayIcon.Information,
-                        )
+        except Exception:
+            logger.debug("best case info formatting failed", exc_info=True)
+            best_case_info = ""
+        self._run_selection.show_completion_banner(
+            completed_n, error_count, best_case_info
+        )
+
+    def _on_batch_finished_tray_notify(self) -> None:
+        """バッチ解析完了をシステムトレイ通知する。"""
+        if not self._project:
+            return
+        completed = sum(1 for c in self._project.cases if c.result_summary)
+        error_count = sum(
+            1 for c in self._project.cases
+            if c.status and hasattr(c.status, "name") and c.status.name == "ERROR"
+        )
+        if completed == 0:
+            return
+        if error_count > 0:
+            self._tray_notify(
+                "解析完了（エラーあり）",
+                f"{completed}件完了、{error_count}件エラー。\nログを確認してください。",
+                QSystemTrayIcon.Warning,
+            )
+        else:
+            self._tray_notify(
+                "解析完了",
+                f"{completed}件の解析が正常に完了しました。\n結果を確認してください。",
+                QSystemTrayIcon.Information,
+            )
 
     def _toggle_pause(self) -> None:
         """一時停止/再開を切り替えます。"""
