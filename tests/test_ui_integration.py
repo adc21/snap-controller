@@ -2156,3 +2156,33 @@ class TestMinimizerFloorMargins:
         total_margin = dlg._table.item(1, 4).text()
         assert "+0.0500" in total_margin
         dlg.close()
+
+
+class TestMinimizerHtmlReport:
+    """MinimizerDialog HTMLレポートボタンのテスト。"""
+
+    def test_html_button_exists_and_disabled_initially(self, qapp):
+        """HTMLレポートボタンが存在し、初期状態は無効。"""
+        from app.ui.minimizer_dialog import MinimizerDialog
+        dlg = MinimizerDialog(["F1"], {"F1": 5}, {"F1": 10})
+        assert hasattr(dlg, "_btn_html")
+        assert dlg._btn_html.text() == "HTMLレポート"
+        assert not dlg._btn_html.isEnabled()
+        dlg.close()
+
+    def test_html_button_enabled_after_result(self, qapp):
+        """結果取得後にHTMLレポートボタンが有効化される。"""
+        from app.ui.minimizer_dialog import MinimizerDialog
+        from app.services.damper_count_minimizer import MinimizationResult
+        dlg = MinimizerDialog(["F1"], {"F1": 5}, {"F1": 10})
+        result = MinimizationResult(
+            strategy="floor_add",
+            initial_quantities={"F1": 0},
+            final_quantities={"F1": 3},
+            final_count=3,
+            is_feasible=True,
+            final_margin=0.05,
+        )
+        dlg._on_finished(result)
+        assert dlg._btn_html.isEnabled()
+        dlg.close()

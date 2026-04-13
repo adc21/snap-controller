@@ -3784,3 +3784,127 @@ class TestSnapTimeoutConfig:
         """古いJSONでもsnap_timeoutデフォルト値で動作。"""
         config = OptimizationConfig.from_dict({})
         assert config.snap_timeout == 300
+
+
+# ===========================================================================
+# ダンパー本数最小化 HTML レポートテスト
+# ===========================================================================
+
+
+class TestMinimizerReport:
+    """generate_minimizer_report のテスト。"""
+
+    def _make_result(self):
+        from app.services.damper_count_minimizer import (
+            FloorResponse, MinimizationResult, MinimizationStep,
+        )
+        steps = [
+            MinimizationStep(
+                iteration=0, quantities={"F1": 4, "F2": 4}, total_count=8,
+                is_feasible=True, worst_margin=0.05, action="init",
+            ),
+            MinimizationStep(
+                iteration=1, quantities={"F1": 3, "F2": 4}, total_count=7,
+                is_feasible=True, worst_margin=0.02, action="remove",
+                changed_floor="F1", note="F1 から1本削減",
+            ),
+            MinimizationStep(
+                iteration=2, quantities={"F1": 2, "F2": 4}, total_count=6,
+                is_feasible=False, worst_margin=-0.01, action="remove",
+                changed_floor="F1",
+            ),
+            MinimizationStep(
+                iteration=3, quantities={"F1": 3, "F2": 4}, total_count=7,
+                is_feasible=True, worst_margin=0.02, action="add",
+                changed_floor="F1", note="復元",
+            ),
+        ]
+        return MinimizationResult(
+            strategy="floor_remove",
+            initial_quantities={"F1": 4, "F2": 4},
+            final_quantities={"F1": 3, "F2": 4},
+            final_count=7,
+            is_feasible=True,
+            final_margin=0.02,
+            history=steps,
+            evaluations=4,
+            final_floor_responses=[
+                FloorResponse(floor_key="F1", values={"margin_max_drift": 0.02}, damper_count=3),
+                FloorResponse(floor_key="F2", values={"margin_max_drift": 0.05}, damper_count=4),
+            ],
+        )
+
+    def test_minimizer_report_returns_html(self):
+        """レポートが有効な HTML を返す。"""
+        from app.services.report_generator import generate_minimizer_report
+        result = self._make_result()
+        html = generate_minimizer_report(result)
+        assert "<!DOCTYPE html>" in html
+        assert "ダンパー本数最小化レポート" in html
+
+    def test_minimizer_report_contains_summary(self):
+        """概要セクションが含まれる。"""
+        from app.services.report_generator import generate_minimizer_report
+        result = self._make_result()
+        html = generate_minimizer_report(result, is_snap=True)
+        assert "SNAP" in html
+        assert "最終合計本数" in html
+
+    def test_minimizer_report_contains_floor_table(self):
+        """階別テーブルが含まれる。"""
+        from app.services.report_generator import generate_minimizer_report
+        result = self._make_result()
+        html = generate_minimizer_report(result)
+        assert "階別ダンパー配置" in html
+        assert "F1" in html
+        assert "F2" in html
+
+    def test_minimizer_report_contains_history(self):
+        """探索履歴テーブルが含まれる。"""
+        from app.services.report_generator import generate_minimizer_report
+        result = self._make_result()
+        html = generate_minimizer_report(result)
+        assert "探索履歴" in html
+        assert "remove" in html
+
+    def test_minimizer_report_contains_chart(self):
+        """探索推移チャート(base64 PNG)が含まれる。"""
+        from app.services.report_generator import generate_minimizer_report
+        result = self._make_result()
+        html = generate_minimizer_report(result, include_charts=True)
+        assert "探索推移チャート" in html
+        assert "data:image/png;base64," in html
+
+    def test_minimizer_report_no_chart(self):
+        """include_charts=False でチャートが含まれない。"""
+        from app.services.report_generator import generate_minimizer_report
+        result = self._make_result()
+        html = generate_minimizer_report(result, include_charts=False)
+        assert "探索推移チャート" not in html
+
+    def test_minimizer_report_saves_to_file(self, tmp_path):
+        """ファイル出力が正常に動作する。"""
+        from app.services.report_generator import generate_minimizer_report
+        result = self._make_result()
+        out = tmp_path / "report.html"
+        html = generate_minimizer_report(result, output_path=str(out))
+        assert out.exists()
+        content = out.read_text(encoding="utf-8")
+        assert "<!DOCTYPE html>" in content
+
+    def test_minimizer_report_infeasible_result(self):
+        """基準未充足の結果でも正常に生成できる。"""
+        from app.services.report_generator import generate_minimizer_report
+        from app.services.damper_count_minimizer import MinimizationResult
+        result = MinimizationResult(
+            strategy="ga",
+            initial_quantities={"F1": 4},
+            final_quantities={"F1": 2},
+            final_count=2,
+            is_feasible=False,
+            final_margin=-0.03,
+            evaluations=10,
+        )
+        html = generate_minimizer_report(result)
+        assert "NG" in html
+        assert "<!DOCTYPE html>" in html

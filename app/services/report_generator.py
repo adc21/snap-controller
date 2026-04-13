@@ -1177,6 +1177,294 @@ def _wrap_html(title: str, body: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# ダンパー本数最小化レポート
+# ---------------------------------------------------------------------------
+
+def generate_minimizer_report(
+    result: "MinimizationResult",
+    output_path: Optional[str] = None,
+    include_charts: bool = True,
+    title: Optional[str] = None,
+    is_snap: bool = False,
+) -> str:
+    """
+    ダンパー本数最小化結果を HTML レポートとして生成します。
+
+    Parameters
+    ----------
+    result : MinimizationResult
+        最小化結果オブジェクト。
+    output_path : str, optional
+        出力先ファイルパス。None の場合は HTML 文字列のみ返却。
+    include_charts : bool
+        チャート画像を含めるかどうか (matplotlib 必須)。
+    title : str, optional
+        レポートタイトル。
+    is_snap : bool
+        SNAP 実解析で得た結果かどうか。
+
+    Returns
+    -------
+    str
+        生成された HTML 文字列。
+    """
+    from app.services.damper_count_minimizer import (
+        MinimizationResult, MinimizationStep, FloorResponse, STRATEGIES,
+    )
+
+    report_title = title or "ダンパー本数最小化レポート"
+    now = datetime.now().strftime("%Y-%m-%d %H:%M")
+
+    sections: List[str] = []
+    sections.append(_build_header(report_title, now))
+    sections.append(_build_minimizer_summary(result, is_snap))
+    sections.append(_build_minimizer_floor_table(result))
+    if result.history:
+        sections.append(_build_minimizer_history_table(result))
+    if include_charts and _MPL_AVAILABLE and result.history:
+        chart = _build_minimizer_chart(result)
+        if chart:
+            sections.append(chart)
+    sections.append(_build_footer(now))
+
+    html_content = _wrap_html(report_title, "\n".join(sections))
+
+    if output_path:
+        Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+        Path(output_path).write_text(html_content, encoding="utf-8")
+
+    return html_content
+
+
+def _build_minimizer_summary(result: Any, is_snap: bool) -> str:
+    """最小化結果の概要セクション。"""
+    from app.services.damper_count_minimizer import STRATEGIES
+
+    strategy_name = STRATEGIES.get(result.strategy, result.strategy)
+    eval_tag = "SNAP 実解析" if is_snap else "モック評価"
+    feasible_text = "OK" if result.is_feasible else "NG"
+    feasible_color = "#2e7d32" if result.is_feasible else "#c62828"
+    initial_total = sum(result.initial_quantities.values())
+    reduction = initial_total - result.final_count
+
+    return f"""
+    <section class="opt-best-card" style="margin-top: 16px;">
+        <div class="opt-best-header" style="background: {'#e8f5e9' if result.is_feasible else '#ffebee'};">
+            <h2>{'✅' if result.is_feasible else '⚠️'} 最小化結果</h2>
+        </div>
+        <div class="opt-best-body">
+            <div class="opt-best-item">
+                <div class="opt-best-label">戦略</div>
+                <div class="opt-best-value">{_esc(strategy_name)}</div>
+            </div>
+            <div class="opt-best-item">
+                <div class="opt-best-label">評価方式</div>
+                <div class="opt-best-value">{_esc(eval_tag)}</div>
+            </div>
+            <div class="opt-best-item">
+                <div class="opt-best-label">初期合計本数</div>
+                <div class="opt-best-value">{initial_total}</div>
+            </div>
+            <div class="opt-best-item">
+                <div class="opt-best-label">最終合計本数</div>
+                <div class="opt-best-value" style="font-size: 1.5em; font-weight: bold;">{result.final_count}</div>
+            </div>
+            <div class="opt-best-item">
+                <div class="opt-best-label">削減数</div>
+                <div class="opt-best-value">{reduction:+d}</div>
+            </div>
+            <div class="opt-best-item">
+                <div class="opt-best-label">基準充足</div>
+                <div class="opt-best-value" style="color: {feasible_color}; font-weight: bold;">{feasible_text}</div>
+            </div>
+            <div class="opt-best-item">
+                <div class="opt-best-label">最終マージン</div>
+                <div class="opt-best-value">{result.final_margin:+.4f}</div>
+            </div>
+            <div class="opt-best-item">
+                <div class="opt-best-label">評価回数</div>
+                <div class="opt-best-value">{result.evaluations}</div>
+            </div>
+        </div>
+    </section>
+    """
+
+
+def _build_minimizer_floor_table(result: Any) -> str:
+    """階別ダンパー配置テーブル。"""
+    floor_resp_map = {
+        fr.floor_key: fr for fr in getattr(result, "final_floor_responses", [])
+    }
+
+    rows: List[str] = []
+    for fk in sorted(
+        result.final_quantities.keys(),
+        key=lambda k: int("".join(c for c in k if c.isdigit()) or "0"),
+    ):
+        final = result.final_quantities.get(fk, 0)
+        initial = result.initial_quantities.get(fk, 0)
+        diff = final - initial
+        diff_text = f"{diff:+d}" if diff != 0 else "±0"
+        diff_color = "#c62828" if diff < 0 else ("#2e7d32" if diff > 0 else "#666")
+
+        margin_text = "—"
+        margin_color = "#666"
+        fr = floor_resp_map.get(fk)
+        if fr:
+            margins = [v for k, v in fr.values.items() if k.startswith("margin_")]
+            if margins:
+                m = min(margins)
+                margin_text = f"{m:+.4f}"
+                if m >= 0.05:
+                    margin_color = "#2e7d32"
+                elif m >= 0.0:
+                    margin_color = "#e65100"
+                else:
+                    margin_color = "#c62828"
+
+        rows.append(
+            f"<tr>"
+            f"<td>{_esc(fk)}</td>"
+            f"<td style='text-align:right;'>{final}</td>"
+            f"<td style='text-align:right;'>{initial}</td>"
+            f"<td style='text-align:right; color:{diff_color};'>{diff_text}</td>"
+            f"<td style='text-align:right; color:{margin_color};'>{margin_text}</td>"
+            f"</tr>"
+        )
+
+    total_final = result.final_count
+    total_initial = sum(result.initial_quantities.values())
+    total_diff = total_final - total_initial
+    total_diff_text = f"{total_diff:+d}" if total_diff != 0 else "±0"
+
+    return f"""
+    <section class="opt-ranking-section">
+        <h2>階別ダンパー配置</h2>
+        <table>
+            <thead>
+                <tr>
+                    <th>階</th>
+                    <th style='text-align:right;'>最終本数</th>
+                    <th style='text-align:right;'>初期本数</th>
+                    <th style='text-align:right;'>変化</th>
+                    <th style='text-align:right;'>マージン</th>
+                </tr>
+            </thead>
+            <tbody>
+                {"".join(rows)}
+                <tr style='font-weight:bold; border-top:2px solid #333;'>
+                    <td>合計</td>
+                    <td style='text-align:right;'>{total_final}</td>
+                    <td style='text-align:right;'>{total_initial}</td>
+                    <td style='text-align:right;'>{total_diff_text}</td>
+                    <td style='text-align:right;'>{result.final_margin:+.4f}</td>
+                </tr>
+            </tbody>
+        </table>
+    </section>
+    """
+
+
+def _build_minimizer_history_table(result: Any) -> str:
+    """探索履歴テーブル（上位30ステップ）。"""
+    steps = result.history[:30]
+    rows: List[str] = []
+    for step in steps:
+        feasible_color = "#2e7d32" if step.is_feasible else "#c62828"
+        verdict = "OK" if step.is_feasible else "NG"
+        rows.append(
+            f"<tr>"
+            f"<td style='text-align:center;'>{step.iteration}</td>"
+            f"<td>{_esc(step.action)}</td>"
+            f"<td style='text-align:right;'>{step.total_count}</td>"
+            f"<td style='text-align:center; color:{feasible_color};'>{verdict}</td>"
+            f"<td style='text-align:right;'>{step.worst_margin:+.4f}</td>"
+            f"<td>{_esc(step.note)}</td>"
+            f"</tr>"
+        )
+
+    more = ""
+    if len(result.history) > 30:
+        more = f"<p style='color:#666; font-size:12px;'>... 他 {len(result.history) - 30} ステップ省略</p>"
+
+    return f"""
+    <section class="opt-ranking-section">
+        <h2>探索履歴</h2>
+        <table>
+            <thead>
+                <tr>
+                    <th style='text-align:center;'>ステップ</th>
+                    <th>操作</th>
+                    <th style='text-align:right;'>合計本数</th>
+                    <th style='text-align:center;'>判定</th>
+                    <th style='text-align:right;'>マージン</th>
+                    <th>備考</th>
+                </tr>
+            </thead>
+            <tbody>
+                {"".join(rows)}
+            </tbody>
+        </table>
+        {more}
+    </section>
+    """
+
+
+def _build_minimizer_chart(result: Any) -> Optional[str]:
+    """本数推移・マージン推移チャート (base64 PNG)。"""
+    if not _MPL_AVAILABLE or not result.history:
+        return None
+
+    try:
+        fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(8, 5), dpi=100)
+
+        iters = [s.iteration for s in result.history]
+        counts = [s.total_count for s in result.history]
+        margins = [s.worst_margin for s in result.history]
+        colors = ["#2e7d32" if s.is_feasible else "#c62828" for s in result.history]
+
+        ax1.scatter(iters, counts, c=colors, s=15, zorder=3)
+        ax1.plot(iters, counts, color="#1565c0", alpha=0.5, linewidth=1)
+        ax1.set_ylabel("合計本数")
+        ax1.set_title("本数推移", fontsize=10)
+        ax1.grid(linestyle="--", alpha=0.3)
+
+        ax2.scatter(iters, margins, c=colors, s=15, zorder=3)
+        ax2.plot(iters, margins, color="#1565c0", alpha=0.5, linewidth=1)
+        ax2.axhline(y=0, color="#e65100", linestyle="--", linewidth=1, alpha=0.7)
+        ax2.set_ylabel("最小マージン")
+        ax2.set_xlabel("ステップ")
+        ax2.set_title("マージン推移", fontsize=10)
+        ax2.grid(linestyle="--", alpha=0.3)
+
+        try:
+            fig.tight_layout()
+        except Exception:
+            pass
+
+        buf = io.BytesIO()
+        fig.savefig(buf, format="png", dpi=100, bbox_inches="tight")
+        plt.close(fig)
+        buf.seek(0)
+        img_data = base64.b64encode(buf.read()).decode("ascii")
+
+        return f"""
+        <section class="opt-chart-section">
+            <h2>探索推移チャート</h2>
+            <div class="chart-container">
+                <img src="data:image/png;base64,{img_data}" alt="探索推移チャート"
+                     style="max-width:100%;">
+            </div>
+            <p style="font-size:11px; color:#666;">
+                緑=基準充足 / 赤=基準違反。オレンジ破線=マージンゼロ。
+            </p>
+        </section>
+        """
+    except Exception:
+        return None
+
+
+# ---------------------------------------------------------------------------
 # CSS
 # ---------------------------------------------------------------------------
 

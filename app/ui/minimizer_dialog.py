@@ -382,6 +382,10 @@ class MinimizerDialog(QDialog):
         self._btn_csv.setEnabled(False)
         self._btn_csv.clicked.connect(self._export_csv)
         bottom.addWidget(self._btn_csv)
+        self._btn_html = QPushButton("HTMLレポート")
+        self._btn_html.setEnabled(False)
+        self._btn_html.clicked.connect(self._export_html_report)
+        bottom.addWidget(self._btn_html)
         self._btn_copy = QPushButton("結果コピー")
         self._btn_copy.setEnabled(False)
         self._btn_copy.clicked.connect(self._copy_result)
@@ -523,6 +527,7 @@ class MinimizerDialog(QDialog):
         self._btn_run.setEnabled(True)
         self._btn_cancel.setEnabled(False)
         self._btn_csv.setEnabled(True)
+        self._btn_html.setEnabled(True)
         self._btn_copy.setEnabled(True)
         self._btn_apply.setEnabled(bool(self._model_path and self._floor_rd_map))
 
@@ -917,6 +922,32 @@ class MinimizerDialog(QDialog):
             QMessageBox.information(self, "CSV出力", f"保存しました:\n{path}")
         except Exception as exc:
             QMessageBox.critical(self, "CSV出力エラー", str(exc))
+
+    def _export_html_report(self) -> None:
+        """最小化結果をHTMLレポートとして出力します。"""
+        if self._result is None:
+            return
+        path, _ = QFileDialog.getSaveFileName(
+            self, "HTMLレポート出力", "minimizer_report.html",
+            "HTML (*.html);;すべて (*)",
+        )
+        if not path:
+            return
+        try:
+            from app.services.report_generator import generate_minimizer_report
+            generate_minimizer_report(
+                result=self._result,
+                output_path=path,
+                include_charts=True,
+                is_snap=self._is_snap,
+            )
+            QMessageBox.information(
+                self, "HTMLレポート出力",
+                f"レポートを出力しました:\n{path}",
+            )
+        except Exception as exc:
+            logger.exception("HTMLレポート出力エラー")
+            QMessageBox.critical(self, "HTMLレポート出力エラー", str(exc))
 
     def _copy_result(self) -> None:
         if self._result is None:
