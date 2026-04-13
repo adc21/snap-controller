@@ -72,258 +72,10 @@ class _AnalysisWorker(QThread):
             if not src.exists():
                 raise FileNotFoundError(f"入力ファイルが見つかりません: {src}")
 
-            # ---- 出力ディレクトリの決定・作成 ----
-            # SNAP はカレントディレクトリ (CWD) に結果ファイルを直接書き出す。
-            # そのため out_dir を CWD にして SNAP を実行する。
-            out_dir = Path(case.output_dir) if case.output_dir else src.parent / case.name
-            out_dir.mkdir(parents=True, exist_ok=True)
-            case.result_path = str(out_dir)
-
-            # ---- サポートファイルを out_dir にコピー ----
-            # SNAP は .s8i と同じディレクトリにある .NAP / .GEM / .WAV 等を参照する。
-            _SUPPORT_EXTS = {".nap", ".gem", ".wav", ".txt"}
-            for f in src.parent.iterdir():
-                if f.is_file() and f.suffix.lower() in _SUPPORT_EXTS and f != src:
-                    dest = out_dir / f.name
-                    if not dest.exists():  # 既存ファイルは上書きしない（ユーザー編集を保護）
-                        shutil.copy2(f, dest)
-
-            # ---- 入力ファイルを out_dir に配置（パラメータ変更を適用）----
-            # 原本を変更せず、out_dir 内のコピーにのみ変更を加える。
-            # 複数ケースが同じ s8i を使うと SNAP の出力フォルダ
-            # (snap_work_dir/{stem}/D{N}/) が共有されてしまい、
-            # 後続ケースの実行で前のケースの結果が上書きされる。
-            # これを避けるため、ケース名を混ぜたユニークなファイル名に
-            # リネームすることで SNAP の出力フォルダをケースごとに分離する。
-            safe_case_name = _sanitize_for_filename(case.name or case.id[:8])
-            run_input_name = f"{src.stem}__{safe_case_name}{src.suffix}"
-            run_input = out_dir / run_input_name
-
-            has_overrides = bool(case.damper_params) or bool(
-                case.parameters.get("_rd_overrides")
-            ) or bool(getattr(case, "extra_defs", None))
-
-            if has_overrides:
-                model = parse_s8i(str(src))
-
-                # ダンパー定義パラメータの上書き
-                if case.damper_params:
-                    for def_name, overrides in case.damper_params.items():
-                        ddef = model.get_damper_def(def_name)
-                        if ddef is None:
-                            self.log_emitted.emit(
-                                f"  [WARN] ダンパー定義 '{def_name}' が見つかりません"
-                            )
-                            continue
-                        for idx_str, new_val in overrides.items():
-                            idx = int(idx_str) - 1  # damper_params は 1-indexed で保存されている
-                            if 0 <= idx < len(ddef.values):
-                                old_val = ddef.values[idx]
-                                ddef.values[idx] = str(new_val)
-                                self.log_emitted.emit(
-                                    f"  {def_name}[{idx + 1}]: {old_val} → {new_val}"
-                                )
-
-                # 追加ダンパー定義（コピー元から派生 or 新規作成）
-                for edef in getattr(case, "extra_defs", []):
-                    base_name = edef.get("base_name", "")
-                    new_name = edef.get("name", "")
-                    keyword = edef.get("keyword", "")
-                    overrides = edef.get("overrides", {})
-
-                    if base_name == "(新規)":
-                        # 完全新規定義
-                        new_def = model.add_damper_def_new(
-                            keyword=keyword,
-                            new_name=new_name,
-                            overrides=overrides,
-                        )
-                        self.log_emitted.emit(
-                            f"  新規定義: {new_def.name} ({keyword})"
-                        )
-                    else:
-                        # コピー元から派生
-                        new_def = model.add_damper_def_copy(
-                            base_name=base_name,
-                            new_name=new_name,
-                            overrides=overrides,
-                        )
-                        if new_def:
-                            self.log_emitted.emit(
-                                f"  追加定義: {new_def.name} (ベース: {base_name})"
-                            )
-                        else:
-                            self.log_emitted.emit(
-                                f"  [WARN] 追加定義のベース '{base_name}' が見つかりません"
-                            )
-
-                # RD 配置・基数変更
-                rd_overrides = case.parameters.get("_rd_overrides", {})
-                if rd_overrides:
-                    for row_str, changes in rd_overrides.items():
-                        row_idx = int(row_str)
-                        model.update_damper_element(
-                            row_idx,
-                            node_i=changes.get("node_i"),
-                            node_j=changes.get("node_j"),
-                            quantity=changes.get("quantity"),
-                            damper_def_name=changes.get("damper_def_name"),
-                        )
-                        elem = model.damper_elements[row_idx] if row_idx < len(model.damper_elements) else None
-                        if elem:
-                            self.log_emitted.emit(
-                                f"  RD[{row_idx}] {elem.name}: "
-                                + ", ".join(
-                                    f"{k}={v}" for k, v in changes.items()
-                                    if v is not None
-                                )
-                            )
-                        else:
-                            self.log_emitted.emit(f"  RD[{row_idx}] 変更: {changes}")
-
-                model.write(str(run_input))
-                self.log_emitted.emit("  パラメータ変更を適用しました")
-            else:
-                shutil.copy2(src, run_input)
-
-            self.log_emitted.emit(f"入力ファイル: {run_input}")
-            self.log_emitted.emit(f"出力ディレクトリ (CWD): {out_dir}")
-            self.log_emitted.emit(f"SNAP.exe: {self._snap_exe_path}")
-
-            # ---- SNAP 実行（CWD = out_dir）----
-            # snap_exec は cwd=inp_path.parent を使うため、
-            # run_input を out_dir 内に置くことで CWD = out_dir になる。
-            result = snap_exec(
-                snap_exe=self._snap_exe_path,
-                input_file=str(run_input),
-                stdout_callback=lambda line: self.log_emitted.emit(line),
-            )
-            case.return_code = result.returncode
-
-            # ---- DYC ケースごとの結果フォルダを特定してパース ----
-            # SNAP は snap_work_dir/{s8i_stem}/D{N}/ に結果を書き出す。
-            # stem は実際に SNAP に渡したファイル名のもの (run_input) を使う。
-            # こうすることで複数ケースが別フォルダに分離される。
-            s8i_stem = run_input.stem  # ケース名を含むユニーク名
-
-            # DYC ケース情報を取得（パラメータ変更後のファイルから再パース）
-            dyc_model = parse_s8i(str(run_input))
-            dyc_cases = dyc_model.dyc_cases
-
-            # snap_work_dir/{s8i_stem}/ : SNAP がバイナリ+テキスト結果を書く場所
-            snap_model_dir: Optional[Path] = None
-            if self._snap_work_dir:
-                candidate = Path(self._snap_work_dir) / s8i_stem
-                if candidate.exists():
-                    snap_model_dir = candidate
-                    self.log_emitted.emit(f"  snap_work_dir モデルフォルダ: {snap_model_dir}")
-                else:
-                    self.log_emitted.emit(
-                        f"  [INFO] snap_work_dir/{s8i_stem} が見つかりません: {candidate}"
-                    )
-
-            # DYC ケースごとにパース
-            dyc_results = []
-            main_result_set = False  # 最初に結果が取れたケースを case.result_summary に使う
-
-            if dyc_cases:
-                for dyc in dyc_cases:
-                    dr: dict = {
-                        "case_no":       dyc.case_no,
-                        "case_name":     dyc.name,
-                        "run_flag":      dyc.run_flag,
-                        "has_result":    False,
-                        "result_data":   {},
-                        "result_summary": {},
-                    }
-
-                    if dyc.is_run:
-                        # 検索順: snap_work_dir/D{N}/ → out_dir
-                        search_dirs: list = []
-                        if snap_model_dir:
-                            d_folder = snap_model_dir / dyc.folder_name
-                            search_dirs.append(d_folder)
-                        search_dirs.append(out_dir)
-
-                        for rdir in search_dirs:
-                            floor_files = list(rdir.glob("Floor*.txt")) if rdir.exists() else []
-                            self.log_emitted.emit(
-                                f"  [D{dyc.case_no}:{dyc.name}] 検索: {rdir} → Floor*.txt: {[f.name for f in floor_files]}"
-                            )
-                            if floor_files:
-                                res = Result(str(rdir))
-                                for log_line in getattr(res, "parse_log", []):
-                                    self.log_emitted.emit(log_line)
-                                if res.max_disp or res.max_acc:
-                                    dr["has_result"] = True
-                                    dr["result_data"] = res.get_all()
-                                    dr["result_summary"] = self._build_summary_dict(res)
-                                    # SNAP 入力ファイル名にケース名を混ぜているため、
-                                    # rdir はケース固有のフォルダとなり、後続ケースの
-                                    # 実行で上書きされることはない。
-                                    dr["result_dir"] = str(rdir)
-                                    self.log_emitted.emit(
-                                        f"  [D{dyc.case_no}:{dyc.name}] ✓ 結果取得 "
-                                        f"({len(res.max_disp)}層, フォルダ: {rdir})"
-                                    )
-                                    if not main_result_set:
-                                        self._store_summary(case, res)
-                                        case.binary_result_dir = str(rdir)
-                                        main_result_set = True
-                                    break
-                        if not dr["has_result"]:
-                            self.log_emitted.emit(
-                                f"  [D{dyc.case_no}:{dyc.name}] ✗ 結果なし (run_flag=1 だが Floor*.txt 未検出)"
-                            )
-                    else:
-                        self.log_emitted.emit(
-                            f"  [D{dyc.case_no}:{dyc.name}] スキップ (run_flag=0)"
-                        )
-
-                    dyc_results.append(dr)
-
-            else:
-                # DYC 行が存在しない s8i: 従来通り out_dir から直接パース
-                self.log_emitted.emit("  [INFO] DYC ケース未定義 → out_dir から直接パース")
-                # out_dir だけでなく snap_model_dir/D1/ も試みる
-                search_dirs_legacy: list = [out_dir]
-                if snap_model_dir:
-                    d1 = snap_model_dir / "D1"
-                    if d1.exists():
-                        search_dirs_legacy.insert(0, d1)
-                for rdir in search_dirs_legacy:
-                    floor_files = list(rdir.glob("Floor*.txt")) if rdir.exists() else []
-                    self.log_emitted.emit(
-                        f"  検索: {rdir} → Floor*.txt: {[f.name for f in floor_files]}"
-                    )
-                    if floor_files:
-                        res = Result(str(rdir))
-                        for log_line in getattr(res, "parse_log", []):
-                            self.log_emitted.emit(log_line)
-                        if res.max_disp or res.max_acc:
-                            self._store_summary(case, res)
-                            case.binary_result_dir = str(rdir)
-                            main_result_set = True
-                            self.log_emitted.emit(
-                                f"  ✓ 結果取得 ({len(res.max_disp)}層, フォルダ: {rdir})"
-                            )
-                            break
-
-            case.dyc_results = dyc_results
-
-            # パース結果サマリーをログ出力
-            rs = case.result_summary
-            if rs.get("max_disp"):
-                self.log_emitted.emit(f"  → 最大相対変位: {rs['max_disp']:.5g} m")
-            if rs.get("max_acc"):
-                self.log_emitted.emit(f"  → 最大絶対加速度: {rs['max_acc']:.5g} m/s²")
-            if rs.get("max_drift"):
-                self.log_emitted.emit(f"  → 最大層間変形角: {rs['max_drift']:.5g}")
-            if not main_result_set:
-                self.log_emitted.emit(
-                    "  [WARN] 結果が読み取れませんでした。"
-                    "snap_work_dir の設定と D{N} フォルダの有無を確認してください。"
-                )
+            out_dir, run_input = self._prepare_input(case, src)
+            self._execute_snap(run_input)
+            main_result_set = self._parse_results(case, run_input, out_dir)
+            self._log_summary(case, main_result_set)
 
             case.status = AnalysisCaseStatus.COMPLETED
             self.log_emitted.emit(f"=== 解析完了: {case.name} (終了コード {case.return_code}) ===")
@@ -337,6 +89,284 @@ class _AnalysisWorker(QThread):
             self.log_emitted.emit(traceback.format_exc())
             self.status_changed.emit(f"エラー: {case.name}")
             self.case_finished.emit(case.id, False)
+
+    def _prepare_input(self, case: AnalysisCase, src: Path) -> tuple:
+        """出力ディレクトリ作成・サポートファイルコピー・パラメータ適用を行います。
+
+        Returns
+        -------
+        tuple of (out_dir, run_input)
+        """
+        # ---- 出力ディレクトリの決定・作成 ----
+        out_dir = Path(case.output_dir) if case.output_dir else src.parent / case.name
+        out_dir.mkdir(parents=True, exist_ok=True)
+        case.result_path = str(out_dir)
+
+        # ---- サポートファイルを out_dir にコピー ----
+        _SUPPORT_EXTS = {".nap", ".gem", ".wav", ".txt"}
+        for f in src.parent.iterdir():
+            if f.is_file() and f.suffix.lower() in _SUPPORT_EXTS and f != src:
+                dest = out_dir / f.name
+                if not dest.exists():
+                    shutil.copy2(f, dest)
+
+        # ---- 入力ファイルを out_dir に配置 ----
+        safe_case_name = _sanitize_for_filename(case.name or case.id[:8])
+        run_input_name = f"{src.stem}__{safe_case_name}{src.suffix}"
+        run_input = out_dir / run_input_name
+
+        has_overrides = bool(case.damper_params) or bool(
+            case.parameters.get("_rd_overrides")
+        ) or bool(getattr(case, "extra_defs", None))
+
+        if has_overrides:
+            model = parse_s8i(str(src))
+            self._apply_damper_overrides(case, model)
+            self._apply_extra_defs(case, model)
+            self._apply_rd_overrides(case, model)
+            model.write(str(run_input))
+            self.log_emitted.emit("  パラメータ変更を適用しました")
+        else:
+            shutil.copy2(src, run_input)
+
+        self.log_emitted.emit(f"入力ファイル: {run_input}")
+        self.log_emitted.emit(f"出力ディレクトリ (CWD): {out_dir}")
+        self.log_emitted.emit(f"SNAP.exe: {self._snap_exe_path}")
+        return out_dir, run_input
+
+    def _apply_damper_overrides(self, case: AnalysisCase, model) -> None:
+        """ダンパー定義パラメータの上書きを適用します。"""
+        if not case.damper_params:
+            return
+        for def_name, overrides in case.damper_params.items():
+            ddef = model.get_damper_def(def_name)
+            if ddef is None:
+                self.log_emitted.emit(
+                    f"  [WARN] ダンパー定義 '{def_name}' が見つかりません"
+                )
+                continue
+            for idx_str, new_val in overrides.items():
+                idx = int(idx_str) - 1  # damper_params は 1-indexed
+                if 0 <= idx < len(ddef.values):
+                    old_val = ddef.values[idx]
+                    ddef.values[idx] = str(new_val)
+                    self.log_emitted.emit(
+                        f"  {def_name}[{idx + 1}]: {old_val} → {new_val}"
+                    )
+
+    def _apply_extra_defs(self, case: AnalysisCase, model) -> None:
+        """追加ダンパー定義（コピー元から派生 or 新規作成）を適用します。"""
+        for edef in getattr(case, "extra_defs", []):
+            base_name = edef.get("base_name", "")
+            new_name = edef.get("name", "")
+            keyword = edef.get("keyword", "")
+            overrides = edef.get("overrides", {})
+
+            if base_name == "(新規)":
+                new_def = model.add_damper_def_new(
+                    keyword=keyword,
+                    new_name=new_name,
+                    overrides=overrides,
+                )
+                self.log_emitted.emit(
+                    f"  新規定義: {new_def.name} ({keyword})"
+                )
+            else:
+                new_def = model.add_damper_def_copy(
+                    base_name=base_name,
+                    new_name=new_name,
+                    overrides=overrides,
+                )
+                if new_def:
+                    self.log_emitted.emit(
+                        f"  追加定義: {new_def.name} (ベース: {base_name})"
+                    )
+                else:
+                    self.log_emitted.emit(
+                        f"  [WARN] 追加定義のベース '{base_name}' が見つかりません"
+                    )
+
+    def _apply_rd_overrides(self, case: AnalysisCase, model) -> None:
+        """RD 配置・基数変更を適用します。"""
+        rd_overrides = case.parameters.get("_rd_overrides", {})
+        if not rd_overrides:
+            return
+        for row_str, changes in rd_overrides.items():
+            row_idx = int(row_str)
+            model.update_damper_element(
+                row_idx,
+                node_i=changes.get("node_i"),
+                node_j=changes.get("node_j"),
+                quantity=changes.get("quantity"),
+                damper_def_name=changes.get("damper_def_name"),
+            )
+            elem = model.damper_elements[row_idx] if row_idx < len(model.damper_elements) else None
+            if elem:
+                self.log_emitted.emit(
+                    f"  RD[{row_idx}] {elem.name}: "
+                    + ", ".join(
+                        f"{k}={v}" for k, v in changes.items()
+                        if v is not None
+                    )
+                )
+            else:
+                self.log_emitted.emit(f"  RD[{row_idx}] 変更: {changes}")
+
+    def _execute_snap(self, run_input: Path) -> None:
+        """SNAP を実行し、return_code をケースに記録します。"""
+        result = snap_exec(
+            snap_exe=self._snap_exe_path,
+            input_file=str(run_input),
+            stdout_callback=lambda line: self.log_emitted.emit(line),
+        )
+        self._case.return_code = result.returncode
+
+    def _parse_results(self, case: AnalysisCase, run_input: Path, out_dir: Path) -> bool:
+        """DYC ケースごとの結果フォルダを特定してパースします。
+
+        Returns
+        -------
+        bool
+            結果が取得できたかどうか。
+        """
+        s8i_stem = run_input.stem
+
+        dyc_model = parse_s8i(str(run_input))
+        dyc_cases = dyc_model.dyc_cases
+
+        snap_model_dir: Optional[Path] = None
+        if self._snap_work_dir:
+            candidate = Path(self._snap_work_dir) / s8i_stem
+            if candidate.exists():
+                snap_model_dir = candidate
+                self.log_emitted.emit(f"  snap_work_dir モデルフォルダ: {snap_model_dir}")
+            else:
+                self.log_emitted.emit(
+                    f"  [INFO] snap_work_dir/{s8i_stem} が見つかりません: {candidate}"
+                )
+
+        main_result_set = False
+
+        if dyc_cases:
+            dyc_results, main_result_set = self._parse_dyc_results(
+                case, dyc_cases, snap_model_dir, out_dir
+            )
+        else:
+            dyc_results = []
+            main_result_set = self._parse_legacy_results(
+                case, snap_model_dir, out_dir
+            )
+
+        case.dyc_results = dyc_results
+        return main_result_set
+
+    def _parse_dyc_results(
+        self, case: AnalysisCase, dyc_cases, snap_model_dir: Optional[Path], out_dir: Path
+    ) -> tuple:
+        """DYC ケースごとに結果をパースします。
+
+        Returns
+        -------
+        tuple of (dyc_results, main_result_set)
+        """
+        dyc_results = []
+        main_result_set = False
+
+        for dyc in dyc_cases:
+            dr: dict = {
+                "case_no":       dyc.case_no,
+                "case_name":     dyc.name,
+                "run_flag":      dyc.run_flag,
+                "has_result":    False,
+                "result_data":   {},
+                "result_summary": {},
+            }
+
+            if dyc.is_run:
+                search_dirs: list = []
+                if snap_model_dir:
+                    d_folder = snap_model_dir / dyc.folder_name
+                    search_dirs.append(d_folder)
+                search_dirs.append(out_dir)
+
+                for rdir in search_dirs:
+                    floor_files = list(rdir.glob("Floor*.txt")) if rdir.exists() else []
+                    self.log_emitted.emit(
+                        f"  [D{dyc.case_no}:{dyc.name}] 検索: {rdir} → Floor*.txt: {[f.name for f in floor_files]}"
+                    )
+                    if floor_files:
+                        res = Result(str(rdir))
+                        for log_line in getattr(res, "parse_log", []):
+                            self.log_emitted.emit(log_line)
+                        if res.max_disp or res.max_acc:
+                            dr["has_result"] = True
+                            dr["result_data"] = res.get_all()
+                            dr["result_summary"] = self._build_summary_dict(res)
+                            dr["result_dir"] = str(rdir)
+                            self.log_emitted.emit(
+                                f"  [D{dyc.case_no}:{dyc.name}] ✓ 結果取得 "
+                                f"({len(res.max_disp)}層, フォルダ: {rdir})"
+                            )
+                            if not main_result_set:
+                                self._store_summary(case, res)
+                                case.binary_result_dir = str(rdir)
+                                main_result_set = True
+                            break
+                if not dr["has_result"]:
+                    self.log_emitted.emit(
+                        f"  [D{dyc.case_no}:{dyc.name}] ✗ 結果なし (run_flag=1 だが Floor*.txt 未検出)"
+                    )
+            else:
+                self.log_emitted.emit(
+                    f"  [D{dyc.case_no}:{dyc.name}] スキップ (run_flag=0)"
+                )
+
+            dyc_results.append(dr)
+
+        return dyc_results, main_result_set
+
+    def _parse_legacy_results(
+        self, case: AnalysisCase, snap_model_dir: Optional[Path], out_dir: Path
+    ) -> bool:
+        """DYC 行が存在しない s8i の結果をパースします。"""
+        self.log_emitted.emit("  [INFO] DYC ケース未定義 → out_dir から直接パース")
+        search_dirs: list = [out_dir]
+        if snap_model_dir:
+            d1 = snap_model_dir / "D1"
+            if d1.exists():
+                search_dirs.insert(0, d1)
+        for rdir in search_dirs:
+            floor_files = list(rdir.glob("Floor*.txt")) if rdir.exists() else []
+            self.log_emitted.emit(
+                f"  検索: {rdir} → Floor*.txt: {[f.name for f in floor_files]}"
+            )
+            if floor_files:
+                res = Result(str(rdir))
+                for log_line in getattr(res, "parse_log", []):
+                    self.log_emitted.emit(log_line)
+                if res.max_disp or res.max_acc:
+                    self._store_summary(case, res)
+                    case.binary_result_dir = str(rdir)
+                    self.log_emitted.emit(
+                        f"  ✓ 結果取得 ({len(res.max_disp)}層, フォルダ: {rdir})"
+                    )
+                    return True
+        return False
+
+    def _log_summary(self, case: AnalysisCase, main_result_set: bool) -> None:
+        """パース結果サマリーをログ出力します。"""
+        rs = case.result_summary
+        if rs.get("max_disp"):
+            self.log_emitted.emit(f"  → 最大相対変位: {rs['max_disp']:.5g} m")
+        if rs.get("max_acc"):
+            self.log_emitted.emit(f"  → 最大絶対加速度: {rs['max_acc']:.5g} m/s²")
+        if rs.get("max_drift"):
+            self.log_emitted.emit(f"  → 最大層間変形角: {rs['max_drift']:.5g}")
+        if not main_result_set:
+            self.log_emitted.emit(
+                "  [WARN] 結果が読み取れませんでした。"
+                "snap_work_dir の設定と D{N} フォルダの有無を確認してください。"
+            )
 
     @staticmethod
     def _build_summary_dict(res: Result) -> dict:

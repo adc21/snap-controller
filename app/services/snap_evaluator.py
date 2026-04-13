@@ -684,10 +684,7 @@ def create_minimizer_evaluate_fn(
     callable or None
         evaluate_fn。SNAP が利用不可の場合は None。
     """
-    from app.services.damper_count_minimizer import (
-        EvaluationResult,
-        FloorResponse,
-    )
+    from app.services.damper_count_minimizer import EvaluationResult
 
     if not snap_exe_path or not Path(snap_exe_path).exists():
         if log_callback:
@@ -709,116 +706,20 @@ def create_minimizer_evaluate_fn(
             )
 
         try:
-            model = parse_s8i(base_s8i_path)
-
-            # DYC ケースの run_flag=2（解析済み）を 1（解析する）にリセット
-            # → SNAP バッチ実行時の「解析済みのケースを計算しますか」ダイアログを回避
-            for dyc in model.dyc_cases:
-                if dyc.run_flag == 2:
-                    dyc.run_flag = 1
-                    dyc.values[1] = "1"
-
-            # フロアキーに基づいてRD要素のquantityを設定
-            for floor_key, rd_indices in floor_rd_map.items():
-                qty = quantities.get(floor_key, 0)
-                n_rd = len(rd_indices)
-                if n_rd == 0:
-                    continue
-                # 本数をRD要素数で分配（均等割）
-                base_qty = qty // n_rd
-                remainder = qty % n_rd
-                for i, rd_idx in enumerate(rd_indices):
-                    elem_qty = base_qty + (1 if i < remainder else 0)
-                    model.update_damper_element(rd_idx, quantity=elem_qty)
-
-            # 一時ディレクトリで SNAP 実行
-            # ファイル名にユニークIDを含め、SNAP work dir の既存結果との衝突を回避
-            tmp_dir = tempfile.mkdtemp(prefix="snap_min_")
-            try:
-                tmp_path = Path(tmp_dir)
-                src = Path(base_s8i_path)
-                unique_stem = f"{src.stem}_min{_eval_count[0]}"
-                tmp_input = tmp_path / f"{unique_stem}{src.suffix}"
-                model.write(str(tmp_input))
-
-                # サポートファイル (.NAP, .GEM 等) をコピー
-                # s8iと同名の .NAP はリネームが必要（SNAPが同名NAPを参照する）
-                for sf in src.parent.iterdir():
-                    if sf.is_file() and sf.suffix.lower() in {".nap", ".gem", ".wav"}:
-                        if sf.stem == src.stem:
-                            # 元のs8iと同名 → リネームしてコピー
-                            dest = tmp_path / f"{unique_stem}{sf.suffix}"
-                        else:
-                            dest = tmp_path / sf.name
-                        shutil.copy2(sf, dest)
-
-                result = snap_exec(
-                    snap_exe=snap_exe_path,
-                    input_file=str(tmp_input),
-                    timeout=timeout,
-                    stdout_callback=lambda line: None,
-                )
-
-                if result.returncode != 0:
-                    raise RuntimeError(f"SNAP 異常終了 (code={result.returncode})")
-
-                # 結果フォルダを探索
-                result_dir = _find_minimizer_result_dir(
-                    tmp_input, tmp_path, snap_work_dir
-                )
-                res = Result(str(result_dir))
-                summary = _extract_minimizer_response(res)
-            finally:
-                shutil.rmtree(tmp_dir, ignore_errors=True)
-                # SNAP work dir に生成された一時結果フォルダをクリーンアップ
-                if snap_work_dir:
-                    work_result = Path(snap_work_dir) / unique_stem
-                    if work_result.exists():
-                        shutil.rmtree(str(work_result), ignore_errors=True)
-
-            # 性能基準で判定
-            is_pass = criteria.is_all_pass(summary)
-            is_feasible = is_pass is True
-
-            # マージン計算
-            margin = _compute_margin(summary, criteria)
-
-            # 層別応答を構築
-            floor_responses = []
-            # Result の max_story_drift 等は floor_no (1-indexed) をキーとする
-            # floor_rd_map のキーとの対応を取る
-            sorted_floor_keys = sorted(
-                quantities.keys(),
-                key=lambda k: int("".join(c for c in k if c.isdigit()) or "0"),
+            model = _prepare_minimizer_model(
+                base_s8i_path, quantities, floor_rd_map
             )
-            for i, fk in enumerate(sorted_floor_keys):
-                floor_no = i + 1  # Result は 1-indexed
-                values: Dict[str, float] = {}
-                _floor_fields = [
-                    ("max_drift", res.max_story_drift),
-                    ("max_acc", res.max_acc),
-                    ("max_disp", res.max_disp),
-                    ("max_story_disp", res.max_story_disp),
-                ]
-                for fkey, fdict in _floor_fields:
-                    if fdict and floor_no in fdict:
-                        v = fdict[floor_no]
-                        if v is not None:
-                            values[fkey] = v
-                # マージン計算（各基準項目）
-                for item in criteria.items:
-                    if not item.enabled or item.limit_value is None:
-                        continue
-                    val = values.get(item.key)
-                    if val is not None and item.limit_value != 0:
-                        m = (item.limit_value - val) / abs(item.limit_value)
-                        values[f"margin_{item.key}"] = m
 
-                floor_responses.append(FloorResponse(
-                    floor_key=fk,
-                    values=values,
-                    damper_count=quantities.get(fk, 0),
-                ))
+            res, summary = _run_snap_in_tmpdir(
+                model, base_s8i_path, snap_exe_path, snap_work_dir,
+                timeout, _eval_count[0],
+            )
+
+            is_feasible = criteria.is_all_pass(summary) is True
+            margin = _compute_margin(summary, criteria)
+            floor_responses = _build_floor_responses(
+                quantities, res, criteria
+            )
 
             return EvaluationResult(
                 floor_responses=floor_responses,
@@ -838,6 +739,122 @@ def create_minimizer_evaluate_fn(
             )
 
     return evaluate_fn
+
+
+def _prepare_minimizer_model(
+    base_s8i_path: str,
+    quantities: Dict[str, int],
+    floor_rd_map: Dict[str, List[int]],
+):
+    """ベース .s8i をパースし、フロア別本数を RD 要素に適用したモデルを返します。"""
+    model = parse_s8i(base_s8i_path)
+
+    # DYC run_flag=2 → 1 リセット
+    for dyc in model.dyc_cases:
+        if dyc.run_flag == 2:
+            dyc.run_flag = 1
+            dyc.values[1] = "1"
+
+    # フロアキーに基づいてRD要素のquantityを設定
+    for floor_key, rd_indices in floor_rd_map.items():
+        qty = quantities.get(floor_key, 0)
+        n_rd = len(rd_indices)
+        if n_rd == 0:
+            continue
+        base_qty = qty // n_rd
+        remainder = qty % n_rd
+        for i, rd_idx in enumerate(rd_indices):
+            elem_qty = base_qty + (1 if i < remainder else 0)
+            model.update_damper_element(rd_idx, quantity=elem_qty)
+
+    return model
+
+
+def _run_snap_in_tmpdir(
+    model, base_s8i_path: str, snap_exe_path: str, snap_work_dir: str,
+    timeout: int, eval_count: int,
+) -> tuple:
+    """一時ディレクトリで SNAP を実行し、(Result, summary_dict) を返します。"""
+    tmp_dir = tempfile.mkdtemp(prefix="snap_min_")
+    src = Path(base_s8i_path)
+    unique_stem = f"{src.stem}_min{eval_count}"
+    try:
+        tmp_path = Path(tmp_dir)
+        tmp_input = tmp_path / f"{unique_stem}{src.suffix}"
+        model.write(str(tmp_input))
+
+        # サポートファイル (.NAP, .GEM 等) をコピー
+        for sf in src.parent.iterdir():
+            if sf.is_file() and sf.suffix.lower() in {".nap", ".gem", ".wav"}:
+                if sf.stem == src.stem:
+                    dest = tmp_path / f"{unique_stem}{sf.suffix}"
+                else:
+                    dest = tmp_path / sf.name
+                shutil.copy2(sf, dest)
+
+        result = snap_exec(
+            snap_exe=snap_exe_path,
+            input_file=str(tmp_input),
+            timeout=timeout,
+            stdout_callback=lambda line: None,
+        )
+
+        if result.returncode != 0:
+            raise RuntimeError(f"SNAP 異常終了 (code={result.returncode})")
+
+        result_dir = _find_minimizer_result_dir(
+            tmp_input, tmp_path, snap_work_dir
+        )
+        res = Result(str(result_dir))
+        summary = _extract_minimizer_response(res)
+        return res, summary
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+        if snap_work_dir:
+            work_result = Path(snap_work_dir) / unique_stem
+            if work_result.exists():
+                shutil.rmtree(str(work_result), ignore_errors=True)
+
+
+def _build_floor_responses(
+    quantities: Dict[str, int], res: Result, criteria,
+) -> list:
+    """層別応答リストを構築します。"""
+    from app.services.damper_count_minimizer import FloorResponse
+
+    floor_responses = []
+    sorted_floor_keys = sorted(
+        quantities.keys(),
+        key=lambda k: int("".join(c for c in k if c.isdigit()) or "0"),
+    )
+    for i, fk in enumerate(sorted_floor_keys):
+        floor_no = i + 1
+        values: Dict[str, float] = {}
+        _floor_fields = [
+            ("max_drift", res.max_story_drift),
+            ("max_acc", res.max_acc),
+            ("max_disp", res.max_disp),
+            ("max_story_disp", res.max_story_disp),
+        ]
+        for fkey, fdict in _floor_fields:
+            if fdict and floor_no in fdict:
+                v = fdict[floor_no]
+                if v is not None:
+                    values[fkey] = v
+        for item in criteria.items:
+            if not item.enabled or item.limit_value is None:
+                continue
+            val = values.get(item.key)
+            if val is not None and item.limit_value != 0:
+                m = (item.limit_value - val) / abs(item.limit_value)
+                values[f"margin_{item.key}"] = m
+
+        floor_responses.append(FloorResponse(
+            floor_key=fk,
+            values=values,
+            damper_count=quantities.get(fk, 0),
+        ))
+    return floor_responses
 
 
 def _find_minimizer_result_dir(
