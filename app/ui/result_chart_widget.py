@@ -256,15 +256,22 @@ class ResultChartWidget(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(4, 4, 4, 4)
 
-        # タイトル行
+        layout.addLayout(self._build_title_row())
+        layout.addWidget(self._build_dyc_panel())
+        self._build_chart_stack(layout)
+        self._build_criteria_banner(layout)
+
+        # 初期状態
+        self.clear()
+
+    def _build_title_row(self) -> QHBoxLayout:
         title_row = QHBoxLayout()
         self._title_label = QLabel("<b>結果グラフ</b>")
         title_row.addWidget(self._title_label)
 
-        # ---- UX改善（第10回②）: ケース選択 + 前後ナビゲーションボタン ----
+        # ケース選択 + 前後ナビゲーションボタン
         title_row.addWidget(QLabel("ケース:"))
 
-        # ◄ 前のケースボタン
         self._btn_prev_case = QPushButton("◄")
         self._btn_prev_case.setFixedSize(28, 24)
         self._btn_prev_case.setToolTip(
@@ -282,7 +289,6 @@ class ResultChartWidget(QWidget):
         self._case_combo.currentIndexChanged.connect(self._on_case_combo_changed)
         title_row.addWidget(self._case_combo)
 
-        # ► 次のケースボタン
         self._btn_next_case = QPushButton("►")
         self._btn_next_case.setFixedSize(28, 24)
         self._btn_next_case.setToolTip(
@@ -294,7 +300,6 @@ class ResultChartWidget(QWidget):
         self._btn_next_case.clicked.connect(self._next_case)
         title_row.addWidget(self._btn_next_case)
 
-        # ケース番号カウンターラベル（例: 「3 / 8」）
         self._case_counter_lbl = QLabel("")
         self._case_counter_lbl.setStyleSheet(
             "color: gray; font-size: 10px; padding: 0 4px;"
@@ -311,10 +316,9 @@ class ResultChartWidget(QWidget):
         self._criteria_cb.stateChanged.connect(self._on_criteria_toggle)
         title_row.addWidget(self._criteria_cb)
 
-        # 応答値選択コンボボックス（UX改善③新: ◄ / ► ボタン付き）
+        # 応答値選択コンボボックス（◄ / ► ボタン付き）
         title_row.addWidget(QLabel("表示項目:"))
 
-        # ◄ 前の指標ボタン
         self._btn_prev_item = QPushButton("◄")
         self._btn_prev_item.setFixedWidth(28)
         self._btn_prev_item.setFixedHeight(24)
@@ -332,7 +336,6 @@ class ResultChartWidget(QWidget):
         self._combo.currentIndexChanged.connect(self._update_chart)
         title_row.addWidget(self._combo)
 
-        # ► 次の指標ボタン
         self._btn_next_item = QPushButton("►")
         self._btn_next_item.setFixedWidth(28)
         self._btn_next_item.setFixedHeight(24)
@@ -344,7 +347,7 @@ class ResultChartWidget(QWidget):
         self._btn_next_item.clicked.connect(self._next_response_item)
         title_row.addWidget(self._btn_next_item)
 
-        # 改善A: グラフ画像クリップボードコピーボタン
+        # グラフ画像クリップボードコピーボタン
         btn_copy_chart = QPushButton("📋 コピー")
         btn_copy_chart.setToolTip("現在のグラフをクリップボードに画像コピーします（Word・メールへ貼り付け可）")
         btn_copy_chart.setFixedHeight(24)
@@ -352,7 +355,7 @@ class ResultChartWidget(QWidget):
         btn_copy_chart.clicked.connect(self._copy_chart_to_clipboard)
         title_row.addWidget(btn_copy_chart)
 
-        # UX改善③新2: グラフ拡大ポップアウトボタン
+        # グラフ拡大ポップアウトボタン
         self._btn_popout = QPushButton("⛶ 拡大")
         self._btn_popout.setToolTip(
             "現在のグラフを大きなウィンドウで拡大表示します\n"
@@ -361,14 +364,13 @@ class ResultChartWidget(QWidget):
         self._btn_popout.setFixedHeight(24)
         self._btn_popout.setMaximumWidth(68)
         self._btn_popout.setStyleSheet("font-size: 11px; padding: 1px 8px;")
-        self._btn_popout.setEnabled(False)  # ケース選択前は無効
+        self._btn_popout.setEnabled(False)
         self._btn_popout.clicked.connect(self._popout_chart)
         title_row.addWidget(self._btn_popout)
 
-        layout.addLayout(title_row)
+        return title_row
 
-        # ---- DYC サブケース選択パネル ----
-        # s8i 内の DYC ケースが複数ある場合に表示されるトグルボタン行
+    def _build_dyc_panel(self) -> QFrame:
         self._dyc_panel = QFrame()
         self._dyc_panel.setFrameShape(QFrame.StyledPanel)
         self._dyc_panel.setStyleSheet("QFrame { background: transparent; }")
@@ -378,7 +380,6 @@ class ResultChartWidget(QWidget):
         self._dyc_label = QLabel("s8i解析ケース:")
         self._dyc_label.setStyleSheet("font-size: 11px; color: gray;")
         dyc_panel_layout.addWidget(self._dyc_label)
-        # スクロール可能なボタンエリア
         self._dyc_scroll = QScrollArea()
         self._dyc_scroll.setWidgetResizable(True)
         self._dyc_scroll.setMaximumHeight(40)
@@ -392,26 +393,26 @@ class ResultChartWidget(QWidget):
         self._dyc_btn_layout.addStretch()
         self._dyc_scroll.setWidget(self._dyc_btn_container)
         dyc_panel_layout.addWidget(self._dyc_scroll, stretch=1)
-        self._dyc_panel.setVisible(False)  # 初期は非表示
-        layout.addWidget(self._dyc_panel)
+        self._dyc_panel.setVisible(False)
+        return self._dyc_panel
 
+    def _build_chart_stack(self, layout: QVBoxLayout) -> None:
         # タブ
         self._tabs = QTabWidget()
 
-        # -- グラフタブ --
+        # グラフタブ
         chart_tab = QWidget()
         chart_layout = QVBoxLayout(chart_tab)
         chart_layout.setContentsMargins(0, 0, 0, 0)
         chart_layout.setSpacing(0)
         self._canvas = _MplCanvas(self)
-        # 改善B: Matplotlibナビゲーションツールバー（ズーム・パン・ホーム・保存）
         self._nav_toolbar = NavigationToolbar(self._canvas, self)
         self._nav_toolbar.setMaximumHeight(30)
         chart_layout.addWidget(self._nav_toolbar)
         chart_layout.addWidget(self._canvas)
         self._tabs.addTab(chart_tab, "グラフ")
 
-        # -- テキストタブ --
+        # テキストタブ
         text_tab = QWidget()
         text_layout = QVBoxLayout(text_tab)
         text_layout.setContentsMargins(0, 0, 0, 0)
@@ -421,10 +422,9 @@ class ResultChartWidget(QWidget):
         text_layout.addWidget(self._text)
         self._tabs.addTab(text_tab, "テキスト")
 
-        # ---- UX改善③新2追加: 空状態/グラフ を切り替えるスタックウィジェット ----
+        # 空状態/グラフ を切り替えるスタックウィジェット
         self._chart_stack = QStackedWidget()
 
-        # -- 空状態ページ (index 0) --
         _empty_page = QWidget()
         _empty_layout = QVBoxLayout(_empty_page)
         _empty_layout.setAlignment(Qt.AlignCenter)
@@ -459,8 +459,7 @@ class ResultChartWidget(QWidget):
 
         layout.addWidget(self._chart_stack)
 
-        # ---- UX改善（新）: 性能基準超過層数バナー ----
-        # グラフ下部に基準との比較結果を常時表示する（性能基準設定時のみ表示）
+    def _build_criteria_banner(self, layout: QVBoxLayout) -> None:
         self._criteria_banner = QFrame()
         self._criteria_banner.setFrameShape(QFrame.StyledPanel)
         self._criteria_banner.setMaximumHeight(32)
@@ -471,9 +470,6 @@ class ResultChartWidget(QWidget):
         _cb_layout.addWidget(self._criteria_banner_label)
         self._criteria_banner.setVisible(False)
         layout.addWidget(self._criteria_banner)
-
-        # 初期状態
-        self.clear()
 
     def _on_criteria_toggle(self, state: int) -> None:
         """基準線表示のオン・オフ切替。"""

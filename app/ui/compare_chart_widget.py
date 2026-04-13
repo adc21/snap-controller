@@ -263,7 +263,16 @@ class CompareChartWidget(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(4, 4, 4, 4)
 
-        # --- 上部コントロール行 ---
+        layout.addLayout(self._build_ctrl_row())
+        self._build_metric_desc(layout)
+        self._build_baseline_row(layout)
+        self._update_metric_description(0)
+        self._build_main_area(layout)
+
+        # 初期描画（空状態パネルを表示）
+        self._chart_stack.setCurrentIndex(0)
+
+    def _build_ctrl_row(self) -> QHBoxLayout:
         ctrl_row = QHBoxLayout()
 
         ctrl_row.addWidget(QLabel("表示項目:"))
@@ -275,7 +284,6 @@ class CompareChartWidget(QWidget):
         ctrl_row.addWidget(self._combo)
         ctrl_row.addStretch()
 
-        # 基準線表示チェックボックス
         self._criteria_cb = QCheckBox("基準線")
         self._criteria_cb.setChecked(True)
         self._criteria_cb.setToolTip("目標性能基準の上限値をグラフに表示")
@@ -292,7 +300,6 @@ class CompareChartWidget(QWidget):
         btn_none.clicked.connect(self._deselect_all)
         ctrl_row.addWidget(btn_none)
 
-        # UX改善④新: 完了ケースのみ選択ボタン
         btn_completed = QPushButton("完了のみ")
         btn_completed.setMaximumWidth(68)
         btn_completed.setToolTip(
@@ -303,7 +310,6 @@ class CompareChartWidget(QWidget):
         btn_completed.clicked.connect(self._select_completed_only)
         ctrl_row.addWidget(btn_completed)
 
-        # 改善A: グラフ画像クリップボードコピーボタン
         btn_copy_chart = QPushButton("📋 コピー")
         btn_copy_chart.setToolTip("現在の比較グラフをクリップボードに画像コピーします（Word・メールへ貼り付け可）")
         btn_copy_chart.setMaximumWidth(80)
@@ -312,9 +318,9 @@ class CompareChartWidget(QWidget):
         btn_copy_chart.clicked.connect(self._copy_chart_to_clipboard)
         ctrl_row.addWidget(btn_copy_chart)
 
-        layout.addLayout(ctrl_row)
+        return ctrl_row
 
-        # ---- UX改善（新①）: 指標説明ラベル ----
+    def _build_metric_desc(self, layout: QVBoxLayout) -> None:
         self._metric_desc_label = QLabel()
         self._metric_desc_label.setWordWrap(True)
         self._metric_desc_label.setStyleSheet(
@@ -322,10 +328,10 @@ class CompareChartWidget(QWidget):
             "background-color: palette(alternate-base); border-radius: 3px;"
         )
         self._metric_desc_label.setTextFormat(Qt.PlainText)
-        self._update_metric_description(0)  # 初期説明を表示
+        self._update_metric_description(0)
         layout.addWidget(self._metric_desc_label)
 
-        # ---- UX改善（第11回②）: ベースラインケース選択行 ----
+    def _build_baseline_row(self, layout: QVBoxLayout) -> None:
         baseline_row = QHBoxLayout()
         baseline_row.setSpacing(6)
         _baseline_lbl = QLabel("📌 比較基準ケース:")
@@ -344,18 +350,14 @@ class CompareChartWidget(QWidget):
         baseline_row.addStretch()
         layout.addLayout(baseline_row)
 
-        self._update_metric_description(0)
+    def _build_case_selector(self) -> QGroupBox:
+        from PySide6.QtWidgets import QLineEdit as _QLineEdit
 
-        # --- メインエリア: チェックリスト（左）+ グラフ右エリア（右）---
-        main_row = QHBoxLayout()
-
-        # ケース選択リスト
         group = QGroupBox("比較するケース")
         group.setMaximumWidth(220)
         group_layout = QVBoxLayout(group)
 
-        # ---- UX改善④: ケース名絞り込みフィルター ----
-        from PySide6.QtWidgets import QLineEdit as _QLineEdit
+        # ケース名絞り込みフィルター
         case_filter_row = QHBoxLayout()
         case_filter_row.setContentsMargins(0, 0, 0, 0)
         case_filter_row.setSpacing(2)
@@ -375,7 +377,7 @@ class CompareChartWidget(QWidget):
         case_filter_row.addWidget(self._case_filter_edit)
         group_layout.addLayout(case_filter_row)
 
-        # UX改善⑤新: グループ別一括選択ドロップダウン
+        # グループ別一括選択ドロップダウン
         from PySide6.QtWidgets import QComboBox as _QComboBox
         group_filter_row = QHBoxLayout()
         group_filter_row.setContentsMargins(0, 0, 0, 0)
@@ -404,7 +406,6 @@ class CompareChartWidget(QWidget):
         self._scroll_area.setWidget(self._check_container)
         group_layout.addWidget(self._scroll_area)
 
-        # UX改善E: 選択件数バッジ（「X件選択中 / Y件完了」）
         self._selection_badge = QLabel("")
         self._selection_badge.setAlignment(Qt.AlignCenter)
         self._selection_badge.setStyleSheet(
@@ -413,26 +414,23 @@ class CompareChartWidget(QWidget):
         self._selection_badge.setTextFormat(Qt.RichText)
         group_layout.addWidget(self._selection_badge)
 
-        main_row.addWidget(group)
+        return group
 
-        # グラフ（ナビゲーションツールバー付き）
+    def _build_chart_area(self) -> QWidget:
+        from PySide6.QtWidgets import QStackedWidget as _QSW
+
         chart_area = QWidget()
         chart_area_layout = QVBoxLayout(chart_area)
         chart_area_layout.setContentsMargins(0, 0, 0, 0)
         chart_area_layout.setSpacing(0)
         self._canvas = _MplCanvas(self)
-        # 改善B: Matplotlibナビゲーションツールバー（ズーム・パン・ホーム・保存）
         self._nav_toolbar = NavigationToolbar(self._canvas, self)
         self._nav_toolbar.setMaximumHeight(30)
         chart_area_layout.addWidget(self._nav_toolbar)
 
-        # UX改善（新）: 空状態 Qt オーバーレイ vs グラフ canvas を QStackedWidget で切替
-        # index 0: 空状態パネル（ケース未選択 / 完了ケースなし）
-        # index 1: matplotlib canvas（描画あり）
-        from PySide6.QtWidgets import QStackedWidget as _QSW
         self._chart_stack = _QSW()
 
-        # -- 空状態パネル --
+        # 空状態パネル
         _empty_panel = QWidget()
         _ep_layout = QVBoxLayout(_empty_panel)
         _ep_layout.setAlignment(Qt.AlignCenter)
@@ -465,12 +463,13 @@ class CompareChartWidget(QWidget):
         self._chart_stack.addWidget(self._canvas)   # index 1: グラフ
 
         chart_area_layout.addWidget(self._chart_stack, stretch=1)
-        main_row.addWidget(chart_area, stretch=1)
+        return chart_area
 
+    def _build_main_area(self, layout: QVBoxLayout) -> None:
+        main_row = QHBoxLayout()
+        main_row.addWidget(self._build_case_selector())
+        main_row.addWidget(self._build_chart_area(), stretch=1)
         layout.addLayout(main_row, stretch=1)
-
-        # 初期描画（空状態パネルを表示）
-        self._chart_stack.setCurrentIndex(0)
 
     # ------------------------------------------------------------------
     # UX改善（新①）: 指標説明ラベル更新
