@@ -346,8 +346,17 @@ class OptimizerDialog(QDialog):
 
     def _setup_ui(self) -> None:
         layout = QVBoxLayout(self)
+        self._build_guide_banner(layout)
+        self._build_settings_section(layout)
+        self._build_advanced_options(layout)
+        self._build_run_controls(layout)
+        self._build_summary_card(layout)
+        self._build_result_section(layout)
+        self._build_button_rows(layout)
 
-        # ---- UX改善（新②）: 折りたたみ式ガイドバナー ----
+    # -- UI sub-builders ------------------------------------------------
+
+    def _build_guide_banner(self, layout: QVBoxLayout) -> None:
         guide_toggle_row = QHBoxLayout()
         self._guide_toggle_btn = QPushButton("▶ 最適化とは？（初めての方へ）")
         self._guide_toggle_btn.setFlat(True)
@@ -378,7 +387,7 @@ class OptimizerDialog(QDialog):
         guide_panel_layout.addWidget(guide_text)
         layout.addWidget(self._guide_panel)
 
-        # ---- 設定セクション ----
+    def _build_settings_section(self, layout: QVBoxLayout) -> None:
         settings_group = QGroupBox("最適化設定")
         settings_layout = QVBoxLayout(settings_group)
 
@@ -493,7 +502,8 @@ class OptimizerDialog(QDialog):
 
         layout.addWidget(settings_group)
 
-        # ---- UX改善（新②）: 推定試行数・時間インジケーター ----
+    def _build_advanced_options(self, layout: QVBoxLayout) -> None:
+        # ---- 推定試行数・時間インジケーター ----
         self._est_run_label = QLabel("")
         self._est_run_label.setStyleSheet("font-size: 11px; color: #1565c0; padding: 2px 4px;")
         layout.addWidget(self._est_run_label)
@@ -751,7 +761,7 @@ class OptimizerDialog(QDialog):
         self._envelope_wave_cases: List[Any] = []  # list of AnalysisCase
         layout.addLayout(envelope_row)
 
-        # ---- 実行ボタン + 進捗 ----
+    def _build_run_controls(self, layout: QVBoxLayout) -> None:
         run_row = QHBoxLayout()
         self._run_btn = QPushButton("最適化を開始")
         self._run_btn.setMinimumHeight(32)
@@ -773,8 +783,7 @@ class OptimizerDialog(QDialog):
 
         layout.addLayout(run_row)
 
-        # ---- UX改善（第9回④）: ベストソリューションサマリーカード ----
-        # 最適化完了後に _update_best_summary_card() で内容を設定して表示します。
+    def _build_summary_card(self, layout: QVBoxLayout) -> None:
         self._best_summary_card = QFrame()
         self._best_summary_card.setFrameShape(QFrame.StyledPanel)
         self._best_summary_card.setStyleSheet(
@@ -823,10 +832,10 @@ class OptimizerDialog(QDialog):
         self._bc_obj_lbl.setMinimumWidth(100)
         _best_card_layout.addWidget(self._bc_obj_lbl)
 
-        self._best_summary_card.hide()  # 最適化完了まで非表示
+        self._best_summary_card.hide()
         layout.addWidget(self._best_summary_card)
 
-        # ---- 結果セクション ----
+    def _build_result_section(self, layout: QVBoxLayout) -> None:
         result_splitter = QSplitter(Qt.Horizontal)
 
         # 結果テーブル（左）
@@ -873,8 +882,7 @@ class OptimizerDialog(QDialog):
         result_splitter.setStretchFactor(1, 1)
         layout.addWidget(result_splitter, stretch=1)
 
-        # ---- ボタン (3行に分類整理) ----
-        # 行1: 分析ツール
+    def _build_button_rows(self, layout: QVBoxLayout) -> None:
         analysis_row = QHBoxLayout()
         analysis_label = QLabel("分析:")
         analysis_label.setStyleSheet("font-weight: bold; color: #888;")

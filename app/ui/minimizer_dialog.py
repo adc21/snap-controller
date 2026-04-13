@@ -171,8 +171,14 @@ class MinimizerDialog(QDialog):
 
     def _build_ui(self) -> None:
         root = QVBoxLayout(self)
+        self._build_settings_panel(root)
+        self._build_exec_controls(root)
+        self._build_result_area(root)
+        self._build_bottom_buttons(root)
 
-        # === 上部: 設定パネル ===
+    # -- UI sub-builders ------------------------------------------------
+
+    def _build_settings_panel(self, root: QVBoxLayout) -> None:
         settings_layout = QHBoxLayout()
 
         # 左: 階別現在本数テーブル
@@ -305,7 +311,7 @@ class MinimizerDialog(QDialog):
         settings_layout.addWidget(algo_group, stretch=1)
         root.addLayout(settings_layout)
 
-        # === 実行ボタン + 中止ボタン + プログレス ===
+    def _build_exec_controls(self, root: QVBoxLayout) -> None:
         exec_layout = QHBoxLayout()
         self._btn_run = QPushButton("実行")
         self._btn_run.setFont(QFont("", -1, QFont.Weight.Bold))
@@ -326,7 +332,7 @@ class MinimizerDialog(QDialog):
         exec_layout.addWidget(self._lbl_status)
         root.addLayout(exec_layout)
 
-        # === 結果エリア（タブ: チャート / テーブル） ===
+    def _build_result_area(self, root: QVBoxLayout) -> None:
         result_group = QGroupBox("結果")
         result_layout = QVBoxLayout(result_group)
 
@@ -369,7 +375,7 @@ class MinimizerDialog(QDialog):
         result_layout.addWidget(self._tabs)
         root.addWidget(result_group, stretch=1)
 
-        # === ボタン行 ===
+    def _build_bottom_buttons(self, root: QVBoxLayout) -> None:
         bottom = QHBoxLayout()
         self._btn_csv = QPushButton("CSV出力")
         self._btn_csv.setEnabled(False)
