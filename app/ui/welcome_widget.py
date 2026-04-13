@@ -154,8 +154,23 @@ class WelcomeWidget(QWidget):
         main_layout = QVBoxLayout(self)
         main_layout.setAlignment(Qt.AlignCenter)
 
-        # ---- UX改善（スマートデフォルト）: SNAP未設定警告バナー ----
-        # 画面最上部に固定表示。show_snap_warning() で外部から制御する。
+        self._build_snap_warning_banner(main_layout)
+
+        container = QWidget()
+        container.setMaximumWidth(700)
+        container_layout = QVBoxLayout(container)
+        container_layout.setSpacing(20)
+
+        self._build_header(container_layout)
+        self._build_quick_actions(container_layout)
+        self._build_recent_projects(container_layout)
+        self._build_recent_buttons(container_layout)
+        self._build_workflow_cards(container_layout)
+
+        main_layout.addWidget(container)
+
+    def _build_snap_warning_banner(self, parent_layout: QVBoxLayout) -> None:
+        """SNAP未設定警告バナーを構築。"""
         self._snap_warning_banner = QFrame()
         self._snap_warning_banner.setStyleSheet(
             "QFrame {"
@@ -197,24 +212,18 @@ class WelcomeWidget(QWidget):
         _snap_warn_btn.clicked.connect(self.snapSettingsRequested.emit)
         _snap_warn_layout.addWidget(_snap_warn_btn)
 
-        # デフォルト非表示（show_snap_warning() で外部から制御）
         self._snap_warning_banner.setVisible(False)
-        main_layout.addWidget(self._snap_warning_banner)
+        parent_layout.addWidget(self._snap_warning_banner)
 
-        # ---- コンテナ ----
-        container = QWidget()
-        container.setMaximumWidth(700)
-        container_layout = QVBoxLayout(container)
-        container_layout.setSpacing(20)
-
-        # ---- ヘッダー ----
+    def _build_header(self, layout: QVBoxLayout) -> None:
+        """ヘッダー（タイトル+サブタイトル）を構築。"""
         header = QLabel("snap-controller")
         header.setAlignment(Qt.AlignCenter)
         header_font = QFont()
         header_font.setPointSize(24)
         header_font.setBold(True)
         header.setFont(header_font)
-        container_layout.addWidget(header)
+        layout.addWidget(header)
 
         subtitle = QLabel("SNAP 免振・制振装置設計支援ツール")
         subtitle.setAlignment(Qt.AlignCenter)
@@ -222,11 +231,12 @@ class WelcomeWidget(QWidget):
         sub_font.setPointSize(12)
         subtitle.setFont(sub_font)
         subtitle.setStyleSheet("color: gray;")
-        container_layout.addWidget(subtitle)
+        layout.addWidget(subtitle)
 
-        container_layout.addSpacing(10)
+        layout.addSpacing(10)
 
-        # ---- クイックアクション ----
+    def _build_quick_actions(self, layout: QVBoxLayout) -> None:
+        """クイックアクションボタン（新規・開く）を構築。"""
         actions_layout = QHBoxLayout()
         actions_layout.setSpacing(16)
 
@@ -247,35 +257,34 @@ class WelcomeWidget(QWidget):
         )
         actions_layout.addWidget(btn_open)
 
-        container_layout.addLayout(actions_layout)
+        layout.addLayout(actions_layout)
+        layout.addSpacing(10)
 
-        container_layout.addSpacing(10)
-
-        # ---- 最近使ったプロジェクト ----
+    def _build_recent_projects(self, layout: QVBoxLayout) -> None:
+        """最近使ったプロジェクト一覧を構築。"""
         recent_label = QLabel("最近使ったプロジェクト")
         recent_font = QFont()
         recent_font.setPointSize(13)
         recent_font.setBold(True)
         recent_label.setFont(recent_font)
-        container_layout.addWidget(recent_label)
+        layout.addWidget(recent_label)
 
-        # UX改善①: ヒントテキストを追加
         recent_hint = QLabel("クリックで選択、ダブルクリックまたは「開く」ボタンで開きます")
         recent_hint.setStyleSheet("color: gray; font-size: 10px; padding-bottom: 2px;")
-        container_layout.addWidget(recent_hint)
+        layout.addWidget(recent_hint)
 
         self._recent_list = QListWidget()
         self._recent_list.setMinimumHeight(200)
         self._recent_list.setAlternatingRowColors(True)
         self._recent_list.setSpacing(2)
         self._recent_list.itemDoubleClicked.connect(self._on_recent_double_click)
-        # UX改善①: シングルクリックで「開く」ボタンの有効/無効を更新
         self._recent_list.currentItemChanged.connect(self._on_recent_selection_changed)
-        container_layout.addWidget(self._recent_list)
+        layout.addWidget(self._recent_list)
 
-        # UX改善①: ボタン行に「開く」ボタンを追加
+    def _build_recent_buttons(self, layout: QVBoxLayout) -> None:
+        """最近使ったプロジェクトのボタン行を構築。"""
         btn_row = QHBoxLayout()
-        # 「開く」ボタン（シングルクリック選択後に押せる）
+
         self._open_btn = QPushButton("開く (.snapproj)")
         self._open_btn.setToolTip(
             "選択したプロジェクトファイル (.snapproj) を開きます。\n"
@@ -284,8 +293,8 @@ class WelcomeWidget(QWidget):
             "※ SNAP の入力ファイル (.s8i) を読み込む場合は、\n"
             "  新規プロジェクト作成後に STEP1 の「.s8i ファイルを読み込む」を使用してください。"
         )
-        self._open_btn.setEnabled(False)  # 選択されるまで無効
-        self._open_btn.setDefault(True)   # Enterキーで発火
+        self._open_btn.setEnabled(False)
+        self._open_btn.setDefault(True)
         self._open_btn.setStyleSheet("""
             QPushButton {
                 font-weight: bold;
@@ -306,7 +315,6 @@ class WelcomeWidget(QWidget):
         btn_row.addWidget(self._open_btn)
         btn_row.addStretch()
 
-        # UX改善（第7回①）: 「見つからない項目を削除」ボタン
         self._cleanup_btn = QPushButton("❌ 見つからない項目を削除")
         self._cleanup_btn.setMaximumWidth(210)
         self._cleanup_btn.setToolTip(
@@ -329,13 +337,14 @@ class WelcomeWidget(QWidget):
         self._clear_btn.setMaximumWidth(120)
         self._clear_btn.clicked.connect(self._on_clear_recent)
         btn_row.addWidget(self._clear_btn)
-        container_layout.addLayout(btn_row)
+        layout.addLayout(btn_row)
 
-        # ---- UX改善（新④）: ワークフロー概要カード ----
+    def _build_workflow_cards(self, layout: QVBoxLayout) -> None:
+        """ワークフロー概要カード（4ステップ）を構築。"""
         separator = QFrame()
         separator.setFrameShape(QFrame.HLine)
         separator.setFrameShadow(QFrame.Sunken)
-        container_layout.addWidget(separator)
+        layout.addWidget(separator)
 
         workflow_title = QLabel("基本的な使い方")
         wf_font = QFont()
@@ -343,65 +352,28 @@ class WelcomeWidget(QWidget):
         wf_font.setBold(True)
         workflow_title.setFont(wf_font)
         workflow_title.setStyleSheet("padding: 4px 0px 6px 0px;")
-        container_layout.addWidget(workflow_title)
+        layout.addWidget(workflow_title)
 
-        # 4ステップカードを横並びで表示
         cards_row = QHBoxLayout()
         cards_row.setSpacing(10)
 
         _workflow_steps = [
-            {
-                "number": "①",
-                "title": "モデル設定",
-                "color": "#1976d2",
-                "lines": [
-                    "SNAPの入力ファイル",
-                    "(.s8i) を選択",
-                    "ダンパー定義・節点",
-                    "情報を確認",
-                ],
-            },
-            {
-                "number": "②",
-                "title": "ケース設計",
-                "color": "#7b1fa2",
-                "lines": [
-                    "ダンパー種別・",
-                    "基数・パラメータを",
-                    "複数ケースで設定",
-                    "テンプレート活用可",
-                ],
-            },
-            {
-                "number": "③",
-                "title": "解析実行",
-                "color": "#f57c00",
-                "lines": [
-                    "実行するケースを",
-                    "チェックして一括実行",
-                    "進捗をリアルタイム",
-                    "モニタリング",
-                ],
-            },
-            {
-                "number": "④",
-                "title": "結果・戦略",
-                "color": "#2e7d32",
-                "lines": [
-                    "応答グラフを比較",
-                    "最良ケースを特定",
-                    "次回解析の戦略を",
-                    "メモしてループ",
-                ],
-            },
+            ("①", "モデル設定", "#1976d2",
+             ["SNAPの入力ファイル", "(.s8i) を選択", "ダンパー定義・節点", "情報を確認"]),
+            ("②", "ケース設計", "#7b1fa2",
+             ["ダンパー種別・", "基数・パラメータを", "複数ケースで設定", "テンプレート活用可"]),
+            ("③", "解析実行", "#f57c00",
+             ["実行するケースを", "チェックして一括実行", "進捗をリアルタイム", "モニタリング"]),
+            ("④", "結果・戦略", "#2e7d32",
+             ["応答グラフを比較", "最良ケースを特定", "次回解析の戦略を", "メモしてループ"]),
         ]
 
-        for step in _workflow_steps:
+        for number, title, color, lines in _workflow_steps:
             card = QFrame()
             card.setFrameShape(QFrame.StyledPanel)
             card.setStyleSheet(
                 f"QFrame {{"
-                f"  border: 2px solid {step['color']};"
+                f"  border: 2px solid {color};"
                 f"  border-radius: 6px;"
                 f"  padding: 4px;"
                 f"}}"
@@ -410,27 +382,23 @@ class WelcomeWidget(QWidget):
             card_layout.setContentsMargins(8, 6, 8, 6)
             card_layout.setSpacing(4)
 
-            # ステップ番号 + タイトル
             header_lbl = QLabel(
-                f"<span style='font-size:18px; font-weight:900; color:{step['color']};'>"
-                f"{step['number']}"
+                f"<span style='font-size:18px; font-weight:900; color:{color};'>"
+                f"{number}"
                 f"</span>"
-                f"<span style='font-size:12px; font-weight:bold;'> {step['title']}</span>"
+                f"<span style='font-size:12px; font-weight:bold;'> {title}</span>"
             )
             header_lbl.setTextFormat(Qt.RichText)
             card_layout.addWidget(header_lbl)
 
-            # 説明行
-            for line in step["lines"]:
+            for line in lines:
                 lbl = QLabel(line)
                 lbl.setStyleSheet("color: gray; font-size: 10px;")
                 card_layout.addWidget(lbl)
 
             cards_row.addWidget(card)
 
-        container_layout.addLayout(cards_row)
-
-        main_layout.addWidget(container)
+        layout.addLayout(cards_row)
 
     def _make_action_button(
         self, text: str, tooltip: str, callback, shortcut_hint: str = ""

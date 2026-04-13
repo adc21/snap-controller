@@ -52,6 +52,86 @@ def _ensure_imports():
         _compute_acquisition = _CA
 
 
+# ------------------------------------------------------------------
+# NSGA-II ユーティリティ関数（モジュールレベル）
+# ------------------------------------------------------------------
+
+
+def _nsga2_dominates(obj_a: List[float], obj_b: List[float]) -> bool:
+    """a が b を支配するかどうか（全目的で a<=b かつ少なくとも1つで a<b）。"""
+    at_least_one_better = False
+    for va, vb in zip(obj_a, obj_b):
+        if va > vb:
+            return False
+        if va < vb:
+            at_least_one_better = True
+    return at_least_one_better
+
+
+def _fast_non_dominated_sort(
+    pop_objs: List[List[float]],
+) -> List[List[int]]:
+    """高速非優越ソート。パレートランク別のインデックスリストを返す。"""
+    n = len(pop_objs)
+    domination_count = [0] * n
+    dominated_set: List[List[int]] = [[] for _ in range(n)]
+    fronts: List[List[int]] = [[]]
+
+    for p in range(n):
+        for q in range(n):
+            if p == q:
+                continue
+            if _nsga2_dominates(pop_objs[p], pop_objs[q]):
+                dominated_set[p].append(q)
+            elif _nsga2_dominates(pop_objs[q], pop_objs[p]):
+                domination_count[p] += 1
+        if domination_count[p] == 0:
+            fronts[0].append(p)
+
+    i = 0
+    while fronts[i]:
+        next_front: List[int] = []
+        for p in fronts[i]:
+            for q in dominated_set[p]:
+                domination_count[q] -= 1
+                if domination_count[q] == 0:
+                    next_front.append(q)
+        i += 1
+        fronts.append(next_front)
+
+    # 最後の空フロントを除外
+    return [f for f in fronts if f]
+
+
+def _crowding_distance(
+    front: List[int], pop_objs: List[List[float]], n_objectives: int,
+) -> Dict[int, float]:
+    """クラウディング距離を計算。"""
+    distances: Dict[int, float] = {idx: 0.0 for idx in front}
+    if len(front) <= 2:
+        for idx in front:
+            distances[idx] = float("inf")
+        return distances
+
+    for m in range(n_objectives):
+        sorted_front = sorted(front, key=lambda i: pop_objs[i][m])
+        # 端点は無限大
+        distances[sorted_front[0]] = float("inf")
+        distances[sorted_front[-1]] = float("inf")
+        obj_range = (
+            pop_objs[sorted_front[-1]][m] - pop_objs[sorted_front[0]][m]
+        )
+        if obj_range <= 0:
+            continue
+        for k in range(1, len(sorted_front) - 1):
+            distances[sorted_front[k]] += (
+                pop_objs[sorted_front[k + 1]][m]
+                - pop_objs[sorted_front[k - 1]][m]
+            ) / obj_range
+
+    return distances
+
+
 class _SearchAlgorithmsMixin:
     """探索アルゴリズムを _OptimizationWorker に提供するミックスインクラス。
 
@@ -1211,14 +1291,6 @@ class _SearchAlgorithmsMixin:
           1. 非優越ソートでパレートランクを割り当て
           2. 同ランク内はクラウディング距離で多様性を維持
           3. バイナリトーナメント選択 + BLX-α交叉 + ガウシアン突然変異
-
-        objective_weights が設定されている場合、そのキーを個別の目的関数として扱う。
-        設定されていない場合は objective_key の単一目的で NSGA-II を実行（GA相当）。
-
-        構造設計での典型的な使い方:
-          - 目的1: max_drift（層間変形角） → 最小化
-          - 目的2: max_acc（最大加速度） → 最小化
-          → パレートフロントから設計者がトレードオフを確認して選択
         """
         if not config.parameters:
             return OptimizationResult(message="探索パラメータが設定されていません。")
@@ -1233,274 +1305,161 @@ class _SearchAlgorithmsMixin:
         n_objectives = len(obj_keys)
 
         # 集団サイズ・世代数
-        base_pop = max(20, min(100, config.max_iterations // 5))
-        pop_size = max(base_pop, min(100, 10 * n_params))
-        # NSGA-II は多目的で広く探索するので集団を大きめに
-        pop_size = max(pop_size, 40)
-        # 偶数に揃える（交叉ペア生成のため）
-        if pop_size % 2 != 0:
-            pop_size += 1
+        pop_size = self._nsga2_pop_size(config, n_params)
         n_generations = max(1, config.max_iterations // pop_size)
-
-        crossover_rate = 0.9
-        mutation_rate = 0.1
-        mutation_sigma = 0.1
-        blx_alpha = 0.5
-        tournament_size = 2  # NSGA-II 標準はバイナリトーナメント
 
         all_candidates: List[OptimizationCandidate] = []
         total = pop_size * n_generations
 
-        def _decode(chromosome: np.ndarray) -> Dict[str, float]:
-            params = {}
-            for j, pr in enumerate(config.parameters):
-                val = pr.min_val + chromosome[j] * (pr.max_val - pr.min_val)
-                if pr.is_integer:
-                    val = round(val)
-                elif pr.step > 0:
-                    val = round(val / pr.step) * pr.step
-                val = max(pr.min_val, min(pr.max_val, val))
-                params[pr.key] = val
-            return params
-
-        def _evaluate_individual(
-            chromosome: np.ndarray, iteration: int,
-        ) -> OptimizationCandidate:
-            params = _decode(chromosome)
-            response = self._evaluate_fn(params)
-            obj_val = config.compute_objective(response, params)
-            is_feasible, margins = self._check_constraints(response, config)
-            return OptimizationCandidate(
-                params=params,
-                objective_value=obj_val,
-                response_values=response,
-                is_feasible=is_feasible,
-                iteration=iteration,
-                constraint_margins=margins,
-            )
-
-        def _get_objectives(cand: OptimizationCandidate) -> List[float]:
-            """候補から各目的関数値のベクトルを取得。制約違反は大きな値を付与。"""
-            if not cand.is_feasible and config.constraint_penalty_weight <= 0:
-                return [float("inf")] * n_objectives
-            vals = []
-            for key in obj_keys:
-                v = cand.response_values.get(key, float("inf"))
-                vals.append(v)
-            if config.constraint_penalty_weight > 0 and cand.constraint_margins:
-                penalty = 0.0
-                for margin in cand.constraint_margins.values():
-                    if margin < 0:
-                        penalty += abs(margin)
-                penalty *= config.constraint_penalty_weight
-                vals = [v + penalty for v in vals]
-            return vals
-
-        def _dominates(obj_a: List[float], obj_b: List[float]) -> bool:
-            """a が b を支配するかどうか（全目的で a<=b かつ少なくとも1つで a<b）。"""
-            at_least_one_better = False
-            for va, vb in zip(obj_a, obj_b):
-                if va > vb:
-                    return False
-                if va < vb:
-                    at_least_one_better = True
-            return at_least_one_better
-
-        def _fast_non_dominated_sort(
-            pop_objs: List[List[float]],
-        ) -> List[List[int]]:
-            """高速非優越ソート。パレートランク別のインデックスリストを返す。"""
-            n = len(pop_objs)
-            domination_count = [0] * n
-            dominated_set: List[List[int]] = [[] for _ in range(n)]
-            fronts: List[List[int]] = [[]]
-
-            for p in range(n):
-                for q in range(n):
-                    if p == q:
-                        continue
-                    if _dominates(pop_objs[p], pop_objs[q]):
-                        dominated_set[p].append(q)
-                    elif _dominates(pop_objs[q], pop_objs[p]):
-                        domination_count[p] += 1
-                if domination_count[p] == 0:
-                    fronts[0].append(p)
-
-            i = 0
-            while fronts[i]:
-                next_front: List[int] = []
-                for p in fronts[i]:
-                    for q in dominated_set[p]:
-                        domination_count[q] -= 1
-                        if domination_count[q] == 0:
-                            next_front.append(q)
-                i += 1
-                fronts.append(next_front)
-
-            # 最後の空フロントを除外
-            return [f for f in fronts if f]
-
-        def _crowding_distance(
-            front: List[int], pop_objs: List[List[float]],
-        ) -> Dict[int, float]:
-            """クラウディング距離を計算。"""
-            distances: Dict[int, float] = {idx: 0.0 for idx in front}
-            if len(front) <= 2:
-                for idx in front:
-                    distances[idx] = float("inf")
-                return distances
-
-            for m in range(n_objectives):
-                sorted_front = sorted(front, key=lambda i: pop_objs[i][m])
-                # 端点は無限大
-                distances[sorted_front[0]] = float("inf")
-                distances[sorted_front[-1]] = float("inf")
-                obj_range = (
-                    pop_objs[sorted_front[-1]][m] - pop_objs[sorted_front[0]][m]
-                )
-                if obj_range <= 0:
-                    continue
-                for k in range(1, len(sorted_front) - 1):
-                    distances[sorted_front[k]] += (
-                        pop_objs[sorted_front[k + 1]][m]
-                        - pop_objs[sorted_front[k - 1]][m]
-                    ) / obj_range
-
-            return distances
-
-        def _tournament_select(
-            ranks: List[int],
-            crowding: List[float],
-            pop_size: int,
-        ) -> int:
-            """NSGA-II バイナリトーナメント選択。ランク優先、同ランクならクラウディング距離大を選択。"""
-            indices = random.sample(range(pop_size), tournament_size)
-            best_idx = indices[0]
-            for idx in indices[1:]:
-                if ranks[idx] < ranks[best_idx]:
-                    best_idx = idx
-                elif ranks[idx] == ranks[best_idx] and crowding[idx] > crowding[best_idx]:
-                    best_idx = idx
-            return best_idx
-
         # --- 初期集団生成 ---
         population = self._latin_hypercube_sample(pop_size, n_params)
-        pop_candidates: List[OptimizationCandidate] = []
+        pop_candidates = self._nsga2_init_population(
+            config, population, all_candidates, pop_size, total, n_objectives,
+        )
 
+        # --- 世代ループ ---
+        population, pop_candidates, gen, no_improve_gens = self._nsga2_generation_loop(
+            config, population, pop_candidates, all_candidates,
+            pop_size, n_params, n_objectives, n_generations, obj_keys,
+        )
+
+        # --- 結果集計 ---
+        return self._nsga2_build_result(
+            config, pop_candidates, all_candidates,
+            pop_size, n_objectives, n_generations, obj_keys,
+            gen, no_improve_gens,
+        )
+
+    @staticmethod
+    def _nsga2_pop_size(config, n_params: int) -> int:
+        """NSGA-II の集団サイズを決定。"""
+        base_pop = max(20, min(100, config.max_iterations // 5))
+        pop_size = max(base_pop, min(100, 10 * n_params))
+        pop_size = max(pop_size, 40)
+        if pop_size % 2 != 0:
+            pop_size += 1
+        return pop_size
+
+    def _nsga2_decode(self, config, chromosome: np.ndarray) -> Dict[str, float]:
+        """染色体 [0,1] を実パラメータに変換。"""
+        params = {}
+        for j, pr in enumerate(config.parameters):
+            val = pr.min_val + chromosome[j] * (pr.max_val - pr.min_val)
+            if pr.is_integer:
+                val = round(val)
+            elif pr.step > 0:
+                val = round(val / pr.step) * pr.step
+            val = max(pr.min_val, min(pr.max_val, val))
+            params[pr.key] = val
+        return params
+
+    def _nsga2_evaluate_individual(
+        self, config, chromosome: np.ndarray, iteration: int,
+    ) -> OptimizationCandidate:
+        """個体を評価して OptimizationCandidate を返す。"""
+        params = self._nsga2_decode(config, chromosome)
+        response = self._evaluate_fn(params)
+        obj_val = config.compute_objective(response, params)
+        is_feasible, margins = self._check_constraints(response, config)
+        return OptimizationCandidate(
+            params=params,
+            objective_value=obj_val,
+            response_values=response,
+            is_feasible=is_feasible,
+            iteration=iteration,
+            constraint_margins=margins,
+        )
+
+    @staticmethod
+    def _nsga2_get_objectives(
+        cand, config, obj_keys: List[str], n_objectives: int,
+    ) -> List[float]:
+        """候補から各目的関数値のベクトルを取得。制約違反は大きな値を付与。"""
+        if not cand.is_feasible and config.constraint_penalty_weight <= 0:
+            return [float("inf")] * n_objectives
+        vals = [cand.response_values.get(key, float("inf")) for key in obj_keys]
+        if config.constraint_penalty_weight > 0 and cand.constraint_margins:
+            penalty = sum(
+                abs(m) for m in cand.constraint_margins.values() if m < 0
+            ) * config.constraint_penalty_weight
+            vals = [v + penalty for v in vals]
+        return vals
+
+    def _nsga2_init_population(
+        self, config, population, all_candidates,
+        pop_size: int, total: int, n_objectives: int,
+    ) -> List:
+        """初期集団を評価して候補リストを返す。"""
+        pop_candidates = []
         for i, chromo in enumerate(population):
             if self._cancelled:
                 break
-            cand = _evaluate_individual(chromo, i)
+            cand = self._nsga2_evaluate_individual(config, chromo, i)
             pop_candidates.append(cand)
             all_candidates.append(cand)
             self.candidate_found.emit(cand)
 
         self.progress.emit(
-            pop_size, total, f"NSGA-II: 初期集団評価完了 ({pop_size}個体, {n_objectives}目的)",
+            pop_size, total,
+            f"NSGA-II: 初期集団評価完了 ({pop_size}個体, {n_objectives}目的)",
         )
+        return pop_candidates
 
-        # --- 世代ループ ---
+    def _nsga2_generation_loop(
+        self, config, population, pop_candidates, all_candidates,
+        pop_size: int, n_params: int, n_objectives: int,
+        n_generations: int, obj_keys: List[str],
+    ) -> Tuple:
+        """世代ループを実行。(population, pop_candidates, gen, no_improve_gens) を返す。"""
+        crossover_rate = 0.9
+        mutation_rate = 0.1
+        mutation_sigma = 0.1
+        blx_alpha = 0.5
+        tournament_size = 2
         stagnation_limit = max(5, n_generations // 4)
         no_improve_gens = 0
         prev_front_size = 0
+        total = pop_size * n_generations
+        gen = 0
 
         for gen in range(1, n_generations):
             if self._cancelled:
                 break
 
-            # 非優越ソート + クラウディング距離
-            pop_objs = [_get_objectives(c) for c in pop_candidates]
+            # 非優越ソート + ランク・クラウディング距離の割り当て
+            pop_objs = [
+                self._nsga2_get_objectives(c, config, obj_keys, n_objectives)
+                for c in pop_candidates
+            ]
             fronts = _fast_non_dominated_sort(pop_objs)
-
-            # ランクとクラウディング距離を各個体に割り当て
             ranks = [0] * pop_size
-            crowding = [0.0] * pop_size
+            crowding_vals = [0.0] * pop_size
             for rank, front in enumerate(fronts):
-                cd = _crowding_distance(front, pop_objs)
+                cd = _crowding_distance(front, pop_objs, n_objectives)
                 for idx in front:
                     ranks[idx] = rank
-                    crowding[idx] = cd[idx]
+                    crowding_vals[idx] = cd[idx]
 
             # 子孫生成
-            offspring_chromos = np.zeros((pop_size, n_params))
-            offspring_candidates: List[OptimizationCandidate] = []
+            offspring_chromos, offspring_candidates = self._nsga2_breed(
+                config, population, pop_candidates, all_candidates,
+                ranks, crowding_vals, pop_size, n_params, gen,
+                crossover_rate, mutation_rate, mutation_sigma,
+                blx_alpha, tournament_size,
+            )
 
-            for k in range(0, pop_size, 2):
-                if self._cancelled:
-                    break
+            # 環境選択: 親 + 子 → 次世代
+            population, pop_candidates = self._nsga2_environmental_select(
+                config, population, offspring_chromos, pop_candidates,
+                offspring_candidates, pop_size, n_objectives, obj_keys,
+            )
 
-                p1_idx = _tournament_select(ranks, crowding, pop_size)
-                p2_idx = _tournament_select(ranks, crowding, pop_size)
-                parent1 = population[p1_idx]
-                parent2 = population[p2_idx]
-
-                # BLX-α 交叉
-                if random.random() < crossover_rate:
-                    child1 = np.zeros(n_params)
-                    child2 = np.zeros(n_params)
-                    for j in range(n_params):
-                        lo = min(parent1[j], parent2[j])
-                        hi = max(parent1[j], parent2[j])
-                        d = hi - lo
-                        child1[j] = random.uniform(
-                            lo - blx_alpha * d, hi + blx_alpha * d,
-                        )
-                        child2[j] = random.uniform(
-                            lo - blx_alpha * d, hi + blx_alpha * d,
-                        )
-                else:
-                    child1 = parent1.copy()
-                    child2 = parent2.copy()
-
-                # ガウシアン突然変異
-                for child in (child1, child2):
-                    for j in range(n_params):
-                        if random.random() < mutation_rate:
-                            child[j] += random.gauss(0, mutation_sigma)
-
-                child1 = np.clip(child1, 0.0, 1.0)
-                child2 = np.clip(child2, 0.0, 1.0)
-
-                for ci, child in enumerate((child1, child2)):
-                    idx = k + ci
-                    if idx >= pop_size:
-                        break
-                    iteration = gen * pop_size + idx
-                    cand = _evaluate_individual(child, iteration)
-                    offspring_chromos[idx] = child
-                    offspring_candidates.append(cand)
-                    all_candidates.append(cand)
-                    self.candidate_found.emit(cand)
-
-            # --- 環境選択: 親 + 子 → 次世代 ---
-            combined_chromos = np.vstack([population, offspring_chromos])
-            combined_candidates = pop_candidates + offspring_candidates
-            combined_objs = [_get_objectives(c) for c in combined_candidates]
+            # 停滞検出
+            combined_objs = [
+                self._nsga2_get_objectives(c, config, obj_keys, n_objectives)
+                for c in pop_candidates
+            ]
             combined_fronts = _fast_non_dominated_sort(combined_objs)
-
-            # 次世代の選択（ランク順、同ランクはクラウディング距離順）
-            new_population = np.zeros((pop_size, n_params))
-            new_candidates: List[OptimizationCandidate] = []
-            count = 0
-
-            for front in combined_fronts:
-                if count >= pop_size:
-                    break
-                cd = _crowding_distance(front, combined_objs)
-                sorted_front = sorted(
-                    front, key=lambda i: cd[i], reverse=True,
-                )
-                for idx in sorted_front:
-                    if count >= pop_size:
-                        break
-                    new_population[count] = combined_chromos[idx]
-                    new_candidates.append(combined_candidates[idx])
-                    count += 1
-
-            population = new_population
-            pop_candidates = new_candidates
-
-            # パレートフロント（ランク0）のサイズで停滞検出
             current_front_size = len(combined_fronts[0]) if combined_fronts else 0
             if current_front_size == prev_front_size:
                 no_improve_gens += 1
@@ -1508,15 +1467,11 @@ class _SearchAlgorithmsMixin:
                 no_improve_gens = 0
             prev_front_size = current_front_size
 
-            # 進捗報告
             pareto_count = len(combined_fronts[0]) if combined_fronts else 0
             msg = f"NSGA-II: 世代 {gen+1}/{n_generations} | パレートフロント: {pareto_count}解"
             self.progress.emit(min((gen + 1) * pop_size, total), total, msg)
-
-            # チェックポイント
             self._maybe_checkpoint(all_candidates, None, config)
 
-            # 早期終了
             if no_improve_gens >= stagnation_limit:
                 logger.info(
                     "NSGA-II: %d世代連続でパレートフロント変化なし — 早期終了",
@@ -1524,17 +1479,122 @@ class _SearchAlgorithmsMixin:
                 )
                 break
 
-        # --- 結果集計 ---
-        # 最終パレートフロントの抽出
-        final_objs = [_get_objectives(c) for c in pop_candidates]
+        return population, pop_candidates, gen, no_improve_gens
+
+    def _nsga2_breed(
+        self, config, population, pop_candidates, all_candidates,
+        ranks, crowding_vals, pop_size, n_params, gen,
+        crossover_rate, mutation_rate, mutation_sigma,
+        blx_alpha, tournament_size,
+    ):
+        """BLX-α交叉 + ガウシアン突然変異で子孫を生成。"""
+        offspring_chromos = np.zeros((pop_size, n_params))
+        offspring_candidates = []
+
+        for k in range(0, pop_size, 2):
+            if self._cancelled:
+                break
+
+            # トーナメント選択
+            p1_idx = self._nsga2_tournament(ranks, crowding_vals, pop_size, tournament_size)
+            p2_idx = self._nsga2_tournament(ranks, crowding_vals, pop_size, tournament_size)
+            parent1 = population[p1_idx]
+            parent2 = population[p2_idx]
+
+            # BLX-α 交叉
+            if random.random() < crossover_rate:
+                child1 = np.zeros(n_params)
+                child2 = np.zeros(n_params)
+                for j in range(n_params):
+                    lo = min(parent1[j], parent2[j])
+                    hi = max(parent1[j], parent2[j])
+                    d = hi - lo
+                    child1[j] = random.uniform(lo - blx_alpha * d, hi + blx_alpha * d)
+                    child2[j] = random.uniform(lo - blx_alpha * d, hi + blx_alpha * d)
+            else:
+                child1 = parent1.copy()
+                child2 = parent2.copy()
+
+            # ガウシアン突然変異
+            for child in (child1, child2):
+                for j in range(n_params):
+                    if random.random() < mutation_rate:
+                        child[j] += random.gauss(0, mutation_sigma)
+            child1 = np.clip(child1, 0.0, 1.0)
+            child2 = np.clip(child2, 0.0, 1.0)
+
+            for ci, child in enumerate((child1, child2)):
+                idx = k + ci
+                if idx >= pop_size:
+                    break
+                iteration = gen * pop_size + idx
+                cand = self._nsga2_evaluate_individual(config, child, iteration)
+                offspring_chromos[idx] = child
+                offspring_candidates.append(cand)
+                all_candidates.append(cand)
+                self.candidate_found.emit(cand)
+
+        return offspring_chromos, offspring_candidates
+
+    @staticmethod
+    def _nsga2_tournament(
+        ranks: List[int], crowding: List[float], pop_size: int, tournament_size: int,
+    ) -> int:
+        """NSGA-II バイナリトーナメント選択。"""
+        indices = random.sample(range(pop_size), tournament_size)
+        best_idx = indices[0]
+        for idx in indices[1:]:
+            if ranks[idx] < ranks[best_idx]:
+                best_idx = idx
+            elif ranks[idx] == ranks[best_idx] and crowding[idx] > crowding[best_idx]:
+                best_idx = idx
+        return best_idx
+
+    def _nsga2_environmental_select(
+        self, config, population, offspring_chromos, pop_candidates,
+        offspring_candidates, pop_size, n_objectives, obj_keys,
+    ):
+        """親+子の結合集団からランク順+クラウディング距離順で次世代を選択。"""
+        combined_chromos = np.vstack([population, offspring_chromos])
+        combined_candidates = pop_candidates + offspring_candidates
+        combined_objs = [
+            self._nsga2_get_objectives(c, config, obj_keys, n_objectives)
+            for c in combined_candidates
+        ]
+        combined_fronts = _fast_non_dominated_sort(combined_objs)
+
+        new_population = np.zeros((pop_size, len(population[0])))
+        new_candidates = []
+        count = 0
+
+        for front in combined_fronts:
+            if count >= pop_size:
+                break
+            cd = _crowding_distance(front, combined_objs, n_objectives)
+            sorted_front = sorted(front, key=lambda i: cd[i], reverse=True)
+            for idx in sorted_front:
+                if count >= pop_size:
+                    break
+                new_population[count] = combined_chromos[idx]
+                new_candidates.append(combined_candidates[idx])
+                count += 1
+
+        return new_population, new_candidates
+
+    def _nsga2_build_result(
+        self, config, pop_candidates, all_candidates,
+        pop_size, n_objectives, n_generations, obj_keys,
+        gen, no_improve_gens,
+    ) -> OptimizationResult:
+        """NSGA-II の最終結果を集計して返す。"""
+        final_objs = [
+            self._nsga2_get_objectives(c, config, obj_keys, n_objectives)
+            for c in pop_candidates
+        ]
         final_fronts = _fast_non_dominated_sort(final_objs)
         pareto_front = final_fronts[0] if final_fronts else []
-
-        # パレートフロント上の候補に pareto_rank を付与
         pareto_candidates = [pop_candidates[i] for i in pareto_front]
 
-        # best は制約を満たすパレートフロント候補から、
-        # compute_objective（重み付き和）で最良のものを選択
         best: Optional[OptimizationCandidate] = None
         feasible_pareto = [c for c in pareto_candidates if c.is_feasible]
         if feasible_pareto:
@@ -1542,6 +1602,7 @@ class _SearchAlgorithmsMixin:
         elif pareto_candidates:
             best = min(pareto_candidates, key=lambda c: c.objective_value)
 
+        stagnation_limit = max(5, n_generations // 4)
         actual_gens = gen + 1 if n_generations > 1 else 1
         early_stopped = no_improve_gens >= stagnation_limit
         n_pareto = len(pareto_front)
