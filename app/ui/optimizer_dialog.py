@@ -1627,11 +1627,25 @@ class OptimizerDialog(_OptimizerResultActionsMixin, QDialog):
     def _start_optimization(self) -> None:
         config = self._build_config()
 
-        if not config.parameters:
-            QMessageBox.warning(self, "設定エラー", "探索パラメータが設定されていません。")
+        if not self._validate_config(config):
             return
 
-        # パラメータ範囲バリデーション
+        # D-3: 大量試行時の事前警告ダイアログ
+        if not self._confirm_large_run(config):
+            return
+
+        self._reset_ui_for_optimization()
+
+        evaluate_fn = self._create_evaluate_fn(config)
+
+        self._optimizer.optimize(config, evaluate_fn=evaluate_fn)
+
+    def _validate_config(self, config) -> bool:
+        """パラメータ範囲と目的関数重みのバリデーション。Falseで中止。"""
+        if not config.parameters:
+            QMessageBox.warning(self, "設定エラー", "探索パラメータが設定されていません。")
+            return False
+
         errors: list[str] = []
         for pr in config.parameters:
             if pr.min_val >= pr.max_val:
@@ -1651,9 +1665,8 @@ class OptimizerDialog(_OptimizerResultActionsMixin, QDialog):
                 self, "パラメータ設定エラー",
                 "以下の問題を修正してください:\n\n" + "\n".join(f"• {e}" for e in errors),
             )
-            return
+            return False
 
-        # 複合目的関数の重みバリデーション
         if config.objective_weights:
             total_weight = sum(config.objective_weights.values())
             if total_weight <= 0:
@@ -1662,37 +1675,42 @@ class OptimizerDialog(_OptimizerResultActionsMixin, QDialog):
                     "複合目的関数の重みの合計が0です。\n"
                     "少なくとも1つの目的関数に正の重みを設定してください。",
                 )
-                return
+                return False
 
-        # D-3: 大量試行時の事前警告ダイアログ
+        return True
+
+    def _confirm_large_run(self, config) -> bool:
+        """試行数が多い場合に確認ダイアログを表示。Falseで中止。"""
         n_runs = (self._estimate_grid_runs()
                   if config.method == "grid"
                   else self._iter_spin.value())
-        if n_runs > 50:
-            per_eval = getattr(self, "_avg_eval_sec", 30.0)
-            est_sec = int(n_runs * per_eval)
-            if est_sec < 3600:
-                time_str = f"約 {est_sec // 60} 分"
-            else:
-                h = est_sec // 3600
-                m = (est_sec % 3600) // 60
-                time_str = f"約 {h} 時間 {m} 分"
+        if n_runs <= 50:
+            return True
 
-            basis = (f"1回あたり{per_eval:.0f}秒（実測値）"
-                     if per_eval != 30.0
-                     else "1回あたり30秒と仮定")
-            reply = QMessageBox.question(
-                self, "計算時間の確認",
-                f"推定 {n_runs} 回の解析を実行します。\n"
-                f"所要時間の目安: {time_str}（{basis}）\n\n"
-                f"続行しますか？",
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-                QMessageBox.StandardButton.Yes,
-            )
-            if reply != QMessageBox.StandardButton.Yes:
-                return
+        per_eval = getattr(self, "_avg_eval_sec", 30.0)
+        est_sec = int(n_runs * per_eval)
+        if est_sec < 3600:
+            time_str = f"約 {est_sec // 60} 分"
+        else:
+            h = est_sec // 3600
+            m = (est_sec % 3600) // 60
+            time_str = f"約 {h} 時間 {m} 分"
 
-        # UIリセット
+        basis = (f"1回あたり{per_eval:.0f}秒（実測値）"
+                 if per_eval != 30.0
+                 else "1回あたり30秒と仮定")
+        reply = QMessageBox.question(
+            self, "計算時間の確認",
+            f"推定 {n_runs} 回の解析を実行します。\n"
+            f"所要時間の目安: {time_str}（{basis}）\n\n"
+            f"続行しますか？",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.Yes,
+        )
+        return reply == QMessageBox.StandardButton.Yes
+
+    def _reset_ui_for_optimization(self) -> None:
+        """最適化開始前のUI状態リセット。"""
         self._result_table.setRowCount(0)
         self._convergence_history.clear()
         self._run_btn.setEnabled(False)
@@ -1714,7 +1732,6 @@ class OptimizerDialog(_OptimizerResultActionsMixin, QDialog):
         self._progress_bar.setValue(0)
         self._opt_start_time = time.time()
 
-        # グラフクリア
         self._conv_canvas.ax.clear()
         self._conv_canvas.ax.text(
             0.5, 0.5, "最適化を実行中...",
@@ -1724,72 +1741,9 @@ class OptimizerDialog(_OptimizerResultActionsMixin, QDialog):
         )
         self._conv_canvas.draw()
 
-        # SNAP評価が利用可能か試みる
-        evaluate_fn = None
-        if self._base_case and self._snap_exe_path:
-            # 多波エンベロープモード
-            if config.envelope_mode and self._envelope_wave_cases:
-                from app.services.snap_evaluator import MultiWaveEvaluator
-                evaluators = []
-                for i, wave_case in enumerate(self._envelope_wave_cases):
-                    wave_name = getattr(wave_case, "name", f"wave_{i}")
-                    ev = create_snap_evaluator(
-                        snap_exe_path=self._snap_exe_path,
-                        base_case=wave_case,
-                        param_ranges=config.parameters,
-                        log_callback=lambda msg: self._result_summary.setText(msg),
-                        snap_work_dir=self._snap_work_dir,
-                        timeout=config.snap_timeout,
-                    )
-                    if ev:
-                        evaluators.append((wave_name, ev))
-                if evaluators:
-                    evaluate_fn = MultiWaveEvaluator(
-                        evaluators=evaluators,
-                        aggregation=config.envelope_mode,
-                        log_callback=lambda msg: self._result_summary.setText(msg),
-                    )
-                    n_waves = len(evaluators)
-                    self._result_summary.setText(
-                        f"多波SNAP実行モード（{n_waves}波, {config.envelope_mode}）で最適化を実行中..."
-                    )
-
-            # 単一波モード（エンベロープが無効 or 構築失敗時）
-            if evaluate_fn is None:
-                snap_evaluator = create_snap_evaluator(
-                    snap_exe_path=self._snap_exe_path,
-                    base_case=self._base_case,
-                    param_ranges=config.parameters,
-                    log_callback=lambda msg: self._result_summary.setText(msg),
-                    snap_work_dir=self._snap_work_dir,
-                    timeout=config.snap_timeout,
-                )
-                if snap_evaluator:
-                    evaluate_fn = snap_evaluator
-                    self._result_summary.setText(
-                        "SNAP実行モードで最適化を実行中..."
-                    )
-            if evaluate_fn is None:
-                # 具体的な原因を特定してログ + UI表示
-                reasons: list[str] = []
-                exe = self._snap_exe_path
-                if not exe:
-                    reasons.append("SNAP.exe パスが未設定")
-                elif not Path(exe).exists():
-                    reasons.append(f"SNAP.exe が存在しません: {exe}")
-                model = getattr(self._base_case, "model_path", "")
-                if not model:
-                    reasons.append("モデルファイルが未設定")
-                elif not Path(model).exists():
-                    reasons.append(f"モデルファイルが存在しません: {model}")
-                reason_str = "、".join(reasons) if reasons else "不明なエラー"
-                logger.warning(
-                    "SNAP評価モード不可 → モック評価にフォールバック: %s", reason_str
-                )
-                self._result_summary.setText(
-                    f"モック評価モードで実行中（{reason_str}）"
-                )
-        else:
+    def _create_evaluate_fn(self, config):
+        """SNAP評価関数を構築する。利用不可時はNone（モック評価）を返す。"""
+        if not (self._base_case and self._snap_exe_path):
             missing: list[str] = []
             if not self._base_case:
                 missing.append("解析ケース")
@@ -1804,8 +1758,74 @@ class OptimizerDialog(_OptimizerResultActionsMixin, QDialog):
                 f"モック評価モードで実行中"
                 + (f"（{detail}）" if detail else "")
             )
+            return None
 
-        self._optimizer.optimize(config, evaluate_fn=evaluate_fn)
+        evaluate_fn = None
+
+        # 多波エンベロープモード
+        if config.envelope_mode and self._envelope_wave_cases:
+            from app.services.snap_evaluator import MultiWaveEvaluator
+            evaluators = []
+            for i, wave_case in enumerate(self._envelope_wave_cases):
+                wave_name = getattr(wave_case, "name", f"wave_{i}")
+                ev = create_snap_evaluator(
+                    snap_exe_path=self._snap_exe_path,
+                    base_case=wave_case,
+                    param_ranges=config.parameters,
+                    log_callback=lambda msg: self._result_summary.setText(msg),
+                    snap_work_dir=self._snap_work_dir,
+                    timeout=config.snap_timeout,
+                )
+                if ev:
+                    evaluators.append((wave_name, ev))
+            if evaluators:
+                evaluate_fn = MultiWaveEvaluator(
+                    evaluators=evaluators,
+                    aggregation=config.envelope_mode,
+                    log_callback=lambda msg: self._result_summary.setText(msg),
+                )
+                n_waves = len(evaluators)
+                self._result_summary.setText(
+                    f"多波SNAP実行モード（{n_waves}波, {config.envelope_mode}）で最適化を実行中..."
+                )
+
+        # 単一波モード（エンベロープが無効 or 構築失敗時）
+        if evaluate_fn is None:
+            snap_evaluator = create_snap_evaluator(
+                snap_exe_path=self._snap_exe_path,
+                base_case=self._base_case,
+                param_ranges=config.parameters,
+                log_callback=lambda msg: self._result_summary.setText(msg),
+                snap_work_dir=self._snap_work_dir,
+                timeout=config.snap_timeout,
+            )
+            if snap_evaluator:
+                evaluate_fn = snap_evaluator
+                self._result_summary.setText(
+                    "SNAP実行モードで最適化を実行中..."
+                )
+
+        if evaluate_fn is None:
+            reasons: list[str] = []
+            exe = self._snap_exe_path
+            if not exe:
+                reasons.append("SNAP.exe パスが未設定")
+            elif not Path(exe).exists():
+                reasons.append(f"SNAP.exe が存在しません: {exe}")
+            model = getattr(self._base_case, "model_path", "")
+            if not model:
+                reasons.append("モデルファイルが未設定")
+            elif not Path(model).exists():
+                reasons.append(f"モデルファイルが存在しません: {model}")
+            reason_str = "、".join(reasons) if reasons else "不明なエラー"
+            logger.warning(
+                "SNAP評価モード不可 → モック評価にフォールバック: %s", reason_str
+            )
+            self._result_summary.setText(
+                f"モック評価モードで実行中（{reason_str}）"
+            )
+
+        return evaluate_fn
 
     def _cancel_optimization(self) -> None:
         self._optimizer.cancel()

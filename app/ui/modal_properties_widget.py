@@ -20,6 +20,7 @@ app/ui/modal_properties_widget.py
 
 from __future__ import annotations
 
+import logging
 from typing import Dict, Optional, List
 from pathlib import Path
 
@@ -40,6 +41,9 @@ from PySide6.QtWidgets import (
 from app.models import AnalysisCase
 from app.models.period_reader import PeriodReader
 from .theme import ThemeManager
+
+
+logger = logging.getLogger(__name__)
 
 
 class ModalPropertiesWidget(QWidget):
@@ -93,12 +97,12 @@ class ModalPropertiesWidget(QWidget):
         """
         self._period_data.clear()
 
-        print(f"[Modal] Loading period data for {len(self._cases)} cases")
+        logger.debug(f"Loading period data for {len(self._cases)} cases")
 
         for case in self._cases:
-            print(f"[Modal] Case: {case.name}, status: {case.status.name}")
+            logger.debug(f"Case: {case.name}, status: {case.status.name}")
             if case.status.name != "COMPLETED":
-                print(f"[Modal]   Skipped (status={case.status.name})")
+                logger.debug(f"  Skipped (status={case.status.name})")
                 continue
 
             period_file = None
@@ -126,40 +130,40 @@ class ModalPropertiesWidget(QWidget):
                 candidates.append(Path(self._result_dir) / case.name / "Period.xbn")
                 candidates.append(Path(self._result_dir) / "Period.xbn")
 
-            print(f"[Modal]   Searching in {len(candidates)} locations:")
+            logger.debug(f"  Searching in {len(candidates)} locations:")
             # 候補の中から最初に存在するファイルを使用
             for candidate in candidates:
                 exists = candidate.exists()
-                print(f"[Modal]     {candidate}: {exists}")
+                logger.debug(f"    {candidate}: {exists}")
                 if exists:
                     period_file = candidate
                     break
 
             if not period_file:
-                print(f"[Modal]   Period.xbn not found")
+                logger.debug(f"  Period.xbn not found")
                 continue
 
             try:
-                print(f"[Modal]   Loading from: {period_file}")
+                logger.debug(f"  Loading from: {period_file}")
                 reader = PeriodReader(str(period_file))
                 data = reader.get_all()
                 self._period_data[case.id] = data
-                print(f"[Modal]   Loaded successfully: {len(data.get('periods', {}))} modes")
+                logger.debug(f"  Loaded successfully: {len(data.get('periods', {}))} modes")
             except Exception as e:
                 # ファイル読み込みエラーはスキップ
-                print(f"[Modal] Error loading Period.xbn for {case.name}: {e}")
+                logger.debug(f"Error loading Period.xbn for {case.name}: {e}")
 
     def _populate_table(self) -> None:
         """テーブルにデータを入力します。"""
         self._table.setRowCount(0)
         self._table.setColumnCount(0)
 
-        print(f"[Modal] _populate_table: period_data count = {len(self._period_data)}")
-        print(f"[Modal] Cases count = {len(self._cases)}")
+        logger.debug(f"_populate_table: period_data count = {len(self._period_data)}")
+        logger.debug(f"Cases count = {len(self._cases)}")
 
         if not self._period_data:
             # データなしメッセージを表示
-            print(f"[Modal] No period data available")
+            logger.debug(f"No period data available")
             self._table.insertRow(0)
             self._table.insertColumn(0)
             item = QTableWidgetItem("固有値解析結果がありません")

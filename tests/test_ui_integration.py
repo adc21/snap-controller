@@ -2186,3 +2186,95 @@ class TestMinimizerHtmlReport:
         dlg._on_finished(result)
         assert dlg._btn_html.isEnabled()
         dlg.close()
+
+
+class TestOptimizerStartRefactor:
+    """AV-1: _start_optimization分割後の各サブメソッドのテスト。"""
+
+    def test_validate_config_empty_params(self, qapp):
+        """パラメータ未設定でFalseを返す。"""
+        from app.ui.optimizer_dialog import OptimizerDialog
+        from app.services.optimizer import OptimizationConfig
+        from unittest.mock import patch
+
+        dlg = OptimizerDialog()
+        config = OptimizationConfig(objective_key="max_drift", parameters=[])
+        with patch("app.ui.optimizer_dialog.QMessageBox.warning") as mock_warn:
+            assert dlg._validate_config(config) is False
+            mock_warn.assert_called_once()
+        dlg.close()
+
+    def test_validate_config_valid(self, qapp):
+        """正常な設定でTrueを返す。"""
+        from app.ui.optimizer_dialog import OptimizerDialog
+        from app.services.optimizer import OptimizationConfig, ParameterRange
+        from unittest.mock import patch
+
+        dlg = OptimizerDialog()
+        config = OptimizationConfig(
+            objective_key="max_drift",
+            parameters=[ParameterRange(key="Cd", label="Cd", min_val=100, max_val=1000, step=100)],
+        )
+        with patch("app.ui.optimizer_dialog.QMessageBox.warning") as mock_warn:
+            assert dlg._validate_config(config) is True
+            mock_warn.assert_not_called()
+        dlg.close()
+
+    def test_validate_config_zero_weights(self, qapp):
+        """複合目的関数の重み合計0でFalseを返す。"""
+        from app.ui.optimizer_dialog import OptimizerDialog
+        from app.services.optimizer import OptimizationConfig, ParameterRange
+        from unittest.mock import patch
+
+        dlg = OptimizerDialog()
+        config = OptimizationConfig(
+            objective_key="max_drift",
+            parameters=[ParameterRange(key="Cd", label="Cd", min_val=100, max_val=1000, step=100)],
+            objective_weights={"max_drift": 0.0, "max_acc": 0.0},
+        )
+        with patch("app.ui.optimizer_dialog.QMessageBox.warning"):
+            assert dlg._validate_config(config) is False
+        dlg.close()
+
+    def test_confirm_large_run_small(self, qapp):
+        """50回以下では確認なしでTrue。"""
+        from app.ui.optimizer_dialog import OptimizerDialog
+        from app.services.optimizer import OptimizationConfig, ParameterRange
+
+        dlg = OptimizerDialog()
+        config = OptimizationConfig(
+            objective_key="max_drift",
+            parameters=[ParameterRange(key="Cd", label="Cd", min_val=100, max_val=1000, step=100)],
+            method="random",
+        )
+        dlg._iter_spin.setValue(10)
+        assert dlg._confirm_large_run(config) is True
+        dlg.close()
+
+    def test_reset_ui_for_optimization(self, qapp):
+        """UIリセットで実行ボタン無効、キャンセルボタン有効。"""
+        from app.ui.optimizer_dialog import OptimizerDialog
+        from unittest.mock import patch
+
+        dlg = OptimizerDialog()
+        with patch.object(dlg._conv_canvas, "draw"):
+            dlg._reset_ui_for_optimization()
+        assert not dlg._run_btn.isEnabled()
+        assert dlg._cancel_btn.isEnabled()
+        assert not dlg._apply_btn.isEnabled()
+        dlg.close()
+
+    def test_create_evaluate_fn_no_snap(self, qapp):
+        """SNAP未設定でNone(モック)を返す。"""
+        from app.ui.optimizer_dialog import OptimizerDialog
+        from app.services.optimizer import OptimizationConfig, ParameterRange
+
+        dlg = OptimizerDialog()
+        config = OptimizationConfig(
+            objective_key="max_drift",
+            parameters=[ParameterRange(key="Cd", label="Cd", min_val=100, max_val=1000, step=100)],
+        )
+        result = dlg._create_evaluate_fn(config)
+        assert result is None
+        assert "モック" in dlg._result_summary.text()
+        dlg.close()
