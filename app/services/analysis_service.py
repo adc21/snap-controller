@@ -412,7 +412,7 @@ class _AnalysisWorker(QThread):
                     try:
                         floor_no = int(name[:-1])
                     except ValueError:
-                        pass
+                        logger.debug("階番号パース失敗: %s", name)
                 arr = hst.time_series(r, field_index)
                 entry[str(floor_no)] = arr.tolist()
                 if peak_curve is None or float(np.abs(arr).max()) > float(np.abs(peak_curve).max()):

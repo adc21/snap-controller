@@ -52,6 +52,8 @@ UX改善（新）: 実行ボタンのリアルタイム件数反映。
 """
 
 from __future__ import annotations
+
+import logging
 from typing import Optional, List, Callable
 from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtWidgets import (
@@ -60,6 +62,8 @@ from PySide6.QtWidgets import (
 )
 import qtawesome as qta
 from .theme import ThemeManager
+
+logger = logging.getLogger(__name__)
 
 # UX改善②新: 自動遷移カウントダウン秒数
 _AUTO_TRANSITION_SEC = 5
@@ -128,12 +132,12 @@ class RunSelectionWidget(QWidget):
                     try:
                         parts.append(f"変形角 {float(drift):.4f} rad")
                     except (TypeError, ValueError):
-                        pass
+                        logger.debug("変形角の数値変換失敗: %s", drift)
                 if acc is not None:
                     try:
                         parts.append(f"加速度 {float(acc):.2f} m/s²")
                     except (TypeError, ValueError):
-                        pass
+                        logger.debug("加速度の数値変換失敗: %s", acc)
                 if parts:
                     result_hint = "  [" + " / ".join(parts) + "]"
                 # ツールチップに詳細を表示
@@ -157,7 +161,7 @@ class RunSelectionWidget(QWidget):
                             tooltip_lines.append(f"  {label}: {float(val):.4g}")
                             added_keys.add(key)
                         except (TypeError, ValueError):
-                            pass
+                            logger.debug("ツールチップ値変換失敗: %s=%s", key, val)
                 if len(tooltip_lines) > 1:
                     tooltip_text = "\n".join(tooltip_lines)
             elif case.status.name == "ERROR":

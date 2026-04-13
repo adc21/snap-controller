@@ -1280,7 +1280,7 @@ class CaseTableWidget(QWidget):
                             sign = "+" if pct >= 0 else ""
                             diff_texts.append(f"{sign}{pct:.0f}%")
                         except (TypeError, ValueError):
-                            pass
+                            logger.debug("差分表示の数値変換失敗")
                 if diff_texts:
                     name_item.setToolTip(
                         f"基点ケース「{base.name}」との差分:\n"
@@ -1769,7 +1769,7 @@ class CaseTableWidget(QWidget):
                         parts.append(f"{lbl}: <b>{float(v):{fmt}}</b> {unit}")
                         shown.add(lbl)
                     except (TypeError, ValueError):
-                        pass
+                        logger.debug("ツールチップ値変換失敗: %s=%s", lbl, v)
             if parts:
                 lines.append("<br>" + "　".join(parts))
 
@@ -1794,7 +1794,7 @@ class CaseTableWidget(QWidget):
                                 f"{lbl}: <span style='color:{color};'>{sign}{pct:.1f}%</span>"
                             )
                         except (TypeError, ValueError):
-                            pass
+                            logger.debug("基点比較の数値変換失敗: %s", lbl)
                 if diff_parts:
                     lines.append(
                         "<br><span style='color:#b07d00;'>⭐ 基点比: </span>"

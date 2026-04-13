@@ -1181,7 +1181,7 @@ class OptimizerDialog(_OptimizerResultActionsMixin, QDialog):
                 else:
                     st.setStyleSheet(_OK)
             except (AttributeError, TypeError):
-                pass
+                logger.debug("パラメータ範囲バリデーション例外")
 
     # ------------------------------------------------------------------
     # Parameter range widgets
@@ -2299,7 +2299,7 @@ class OptimizerDialog(_OptimizerResultActionsMixin, QDialog):
         try:
             self._conv_canvas.fig.tight_layout()
         except (MemoryError, ValueError):
-            pass
+            logger.debug("tight_layout失敗")
         self._conv_canvas.draw()
 
     def _draw_param_space(self, ax: Any, result: OptimizationResult) -> None:

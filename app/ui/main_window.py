@@ -1194,7 +1194,7 @@ class MainWindow(_MainWindowDialogsMixin, QMainWindow):
             try:
                 self._case_readiness_toast_timer.stop()
             except Exception:
-                pass
+                logger.debug("トーストタイマー停止失敗")
 
         # 8秒後に自動非表示
         timer = QTimer(self)

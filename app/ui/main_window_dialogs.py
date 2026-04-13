@@ -342,7 +342,7 @@ class _MainWindowDialogsMixin:
                         period_reader = pr
                         break
                 except Exception:
-                    pass
+                    logger.debug("固有値解析結果の読込み失敗", exc_info=True)
         # 層質量: プロジェクトの s8i モデルから取得を試みる
         if self._project and hasattr(self._project, "model") and self._project.model:
             model = self._project.model

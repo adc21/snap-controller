@@ -48,10 +48,14 @@ from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
 import matplotlib.pyplot as plt
 
+import logging
+
 try:
     plt.rcParams["font.family"] = ["MS Gothic", "Meiryo", "IPAGothic", "sans-serif"]
 except Exception:
-    pass
+    logging.getLogger(__name__).debug("日本語フォント設定失敗")
+
+logger = logging.getLogger(__name__)
 
 from app.models import AnalysisCase, AnalysisCaseStatus
 from .theme import ThemeManager, MPL_STYLES

@@ -331,7 +331,7 @@ class SensitivityDialog(QDialog):
         try:
             self._tornado_fig.tight_layout()
         except (MemoryError, ValueError):
-            pass
+            logger.debug("tight_layout失敗")
 
     def _draw_curves(self) -> None:
         """各パラメータの感度曲線（変動率 vs 目的関数値）を描画します。"""
@@ -373,7 +373,7 @@ class SensitivityDialog(QDialog):
         try:
             self._curve_fig.tight_layout()
         except (MemoryError, ValueError):
-            pass
+            logger.debug("tight_layout失敗")
 
 
 class ParetoDialog(QDialog):
@@ -659,7 +659,7 @@ class CorrelationDialog(QDialog):
         try:
             fig.tight_layout()
         except (MemoryError, ValueError):
-            pass
+            logger.debug("tight_layout失敗")
 
 
 class DiagnosticsDialog(QDialog):
@@ -858,7 +858,7 @@ class SobolDialog(QDialog):
         try:
             self._fig.tight_layout()
         except (MemoryError, ValueError):
-            pass
+            logger.debug("tight_layout失敗")
 
 
 class HeatmapDialog(QDialog):
@@ -1038,7 +1038,7 @@ class HeatmapDialog(QDialog):
         try:
             self._fig.tight_layout()
         except (MemoryError, ValueError):
-            pass
+            logger.debug("tight_layout失敗")
         self._canvas.draw()
 
 

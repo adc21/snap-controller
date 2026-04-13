@@ -84,10 +84,14 @@ from matplotlib.figure import Figure
 import matplotlib.pyplot as plt
 
 # 日本語フォント設定（環境依存しないようフォールバック込み）
+import logging
+
 try:
     plt.rcParams["font.family"] = ["MS Gothic", "Meiryo", "IPAGothic", "sans-serif"]
 except Exception:
-    pass
+    logging.getLogger(__name__).debug("日本語フォント設定失敗")
+
+logger = logging.getLogger(__name__)
 
 from app.models import AnalysisCase
 from app.models.performance_criteria import PerformanceCriteria

@@ -1243,7 +1243,7 @@ class CaseEditDialog(QDialog):
                         if o_f != 0:
                             pct = (n_f - o_f) / abs(o_f) * 100.0
                     except (ValueError, ZeroDivisionError):
-                        pass
+                        logger.debug("変更率計算失敗: orig=%s new=%s", orig_v, new_v)
                     rows.append(("🔧 ダンパー定義", ddef.name, label, orig_v, new_v, pct))
 
         # ── 配置計画の変更 ──

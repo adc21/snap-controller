@@ -772,7 +772,7 @@ class KdbReader:
                 try:
                     manufacturer_id = int(code_str[:3])
                 except ValueError:
-                    pass
+                    logger.debug("メーカーID解析失敗: %s", code_str[:3])
 
         # SNAP キーワード・ラベル決定
         if category == "DAMPER":
@@ -815,7 +815,7 @@ class KdbReader:
                     header_found = True
                     continue
                 except ValueError:
-                    pass
+                    logger.debug("ヘッダー判定: parts[1]=%s は整数でない→データ行", parts[1])
 
             try:
                 rec = self._parse_record(parts, category, section_num,

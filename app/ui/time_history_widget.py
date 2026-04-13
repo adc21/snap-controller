@@ -70,10 +70,14 @@ from matplotlib.figure import Figure
 import matplotlib.pyplot as plt
 from io import BytesIO
 
+import logging
+
 try:
     plt.rcParams["font.family"] = ["MS Gothic", "Meiryo", "IPAGothic", "sans-serif"]
 except Exception:
-    pass
+    logging.getLogger(__name__).debug("日本語フォント設定失敗")
+
+logger = logging.getLogger(__name__)
 
 from app.models import AnalysisCase, AnalysisCaseStatus
 from .theme import ThemeManager, MPL_STYLES
@@ -379,7 +383,7 @@ class TimeHistoryWidget(QWidget):
                         break
                     parent = parent.parent()
         except Exception:
-            pass
+            logger.debug("クリップボードコピー後のステータスバー通知失敗")
 
     # ------------------------------------------------------------------
     # Checklist management

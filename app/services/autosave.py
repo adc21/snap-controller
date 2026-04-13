@@ -13,12 +13,15 @@ app/services/autosave.py
 
 from __future__ import annotations
 
+import logging
 import shutil
 from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Optional
 
 from PySide6.QtCore import QObject, QTimer, Signal
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from app.models.project import Project
@@ -158,7 +161,7 @@ class AutoSaveService(QObject):
             try:
                 path.unlink()
             except OSError:
-                pass
+                logger.debug("自動保存ファイル削除失敗: %s", path)
 
     def get_backup_dir(self) -> Optional[Path]:
         """バックアップディレクトリのパスを返します。"""
@@ -310,4 +313,4 @@ class AutoSaveService(QObject):
             try:
                 old_backup.unlink()
             except OSError:
-                pass
+                logger.debug("古いバックアップ削除失敗: %s", old_backup)

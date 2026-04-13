@@ -42,7 +42,7 @@ try:
     import numpy as np
     _MPL_AVAILABLE = True
 except ImportError:
-    pass
+    logger.debug("matplotlib未インストール: レポート生成のグラフ機能が無効")
 
 # Period.xbn リーダー (固有値解析)
 _PERIOD_READER_AVAILABLE = False

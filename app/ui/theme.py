@@ -17,6 +17,7 @@ Fusion スタイルと組み合わせて使用します。
 
 from __future__ import annotations
 
+import logging
 import platform
 import subprocess
 from typing import Literal
@@ -26,6 +27,8 @@ from PySide6.QtGui import QColor, QPalette, QFont
 from PySide6.QtWidgets import QApplication
 
 import qdarktheme
+
+logger = logging.getLogger(__name__)
 
 ThemeMode = Literal["auto", "light", "dark"]
 
@@ -110,7 +113,7 @@ def _detect_os_dark_mode() -> bool:
             winreg.CloseKey(key)
             return value == 0  # 0 = dark, 1 = light
         except Exception:
-            pass
+            logger.debug("Windowsダークモード検出失敗")
     elif system == "Darwin":
         try:
             result = subprocess.run(
@@ -119,7 +122,7 @@ def _detect_os_dark_mode() -> bool:
             )
             return result.stdout.strip().lower() == "dark"
         except Exception:
-            pass
+            logger.debug("macOSダークモード検出失敗")
     return False
 
 

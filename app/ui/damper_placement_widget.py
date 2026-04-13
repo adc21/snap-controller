@@ -31,6 +31,7 @@ UX改善（新）: 配置バランスサマリー + 偏りアラート。
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field, asdict
 from typing import Any, Dict, List, Optional
 
@@ -56,6 +57,8 @@ from PySide6.QtWidgets import (
 )
 
 from .snap_params import DAMPER_TYPES
+
+logger = logging.getLogger(__name__)
 
 # 配置テーブルの列
 _COL_FLOOR = 0
@@ -762,7 +765,7 @@ class DamperPlacementWidget(QWidget):
                         count_spin.setValue(int(float(count_str)))
                         changed_count += 1
                     except ValueError:
-                        pass
+                        logger.debug("貼り付け値の数値変換失敗: %s", count_str)
 
             # 方向（列2）
             if len(cells) >= 3:

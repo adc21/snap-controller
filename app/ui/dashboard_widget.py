@@ -77,10 +77,14 @@ import qtawesome as qta
 from app.models import AnalysisCase, AnalysisCaseStatus
 from .theme import ThemeManager, MPL_STYLES
 
+import logging
+
 try:
     plt.rcParams["font.family"] = ["MS Gothic", "Meiryo", "IPAGothic", "sans-serif"]
 except Exception:
-    pass
+    logging.getLogger(__name__).debug("日本語フォント設定失敗")
+
+logger = logging.getLogger(__name__)
 
 # 応答値の定義 (key, 日本語ラベル, 単位)
 _RESPONSE_ITEMS = [

@@ -192,7 +192,7 @@ class SnapEvaluator:
                             if 0 <= idx < len(ddef.values):
                                 ddef.values[idx] = str(value)
                         except ValueError:
-                            pass
+                            logger.debug("パラメータキーを整数変換できず: %s", param_key)
 
             # RD 配置の変更（固定オーバーライド）
             if self.rd_overrides:
@@ -523,7 +523,7 @@ def create_snap_evaluator(
                     try:
                         param_field_map[pr.key] = int(pr.key)
                     except ValueError:
-                        pass
+                        logger.debug("パラメータキーを整数変換できず: %s", pr.key)
                 # または、フィールドインデックス順にマッピング
                 for idx_str in override_keys:
                     try:
@@ -532,7 +532,7 @@ def create_snap_evaluator(
                         if pr.key.lower() in str(overrides.get(idx_str, "")).lower():
                             param_field_map[pr.key] = idx
                     except (ValueError, TypeError):
-                        pass
+                        logger.debug("overrideキー変換失敗: %s", idx_str)
 
     # RD オーバーライドを取得
     rd_overrides = base_case.parameters.get("_rd_overrides", {})
