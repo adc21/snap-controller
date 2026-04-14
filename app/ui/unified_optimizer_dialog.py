@@ -28,7 +28,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 
-from PySide6.QtCore import Qt, Signal, QTimer
+from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor, QFont
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -151,6 +151,7 @@ class UnifiedOptimizerDialog(QDialog):
         self._result: Optional[OptimizationResult] = None
         self._candidates: List[OptimizationCandidate] = []
         self._start_time: float = 0.0
+        self._avg_eval_sec: float = 30.0  # 1回あたりの平均評価時間（動的更新）
 
         # .s8i 解析結果
         self._damper_defs: List[DamperDefinition] = []
@@ -797,11 +798,9 @@ class UnifiedOptimizerDialog(QDialog):
 
     def _update_estimate(self) -> None:
         n = self._iter_spin.value()
-        sec_per_eval = 30  # SNAP 1回の想定
-        total_sec = n * sec_per_eval
-        mins = total_sec // 60
+        total_sec = n * self._avg_eval_sec
         self._estimate_label.setText(
-            f"推定 {n} 回の評価 (約 {mins} 分)"
+            f"推定 {n} 回の評価 (約 {self._format_duration(total_sec)})"
         )
 
     def _on_start(self) -> None:
@@ -847,14 +846,13 @@ class UnifiedOptimizerDialog(QDialog):
         self._progress.setMaximum(total)
         self._progress.setValue(current)
         elapsed = time.time() - self._start_time
-        elapsed_str = time.strftime("%M:%S", time.gmtime(elapsed))
-        if current > 0:
-            remaining = elapsed / current * (total - current)
-            remain_str = time.strftime("%M:%S", time.gmtime(remaining))
-        else:
-            remain_str = "--:--"
+        eta_str = ""
+        if current > 0 and total > 0 and self._start_time > 0:
+            self._avg_eval_sec = elapsed / current
+            remaining = self._avg_eval_sec * (total - current)
+            eta_str = f"  残り {self._format_duration(remaining)}"
         self._progress_label.setText(
-            f"{current}/{total}  経過 {elapsed_str}  残り {remain_str}"
+            f"{current}/{total}  経過 {self._format_duration(elapsed)}{eta_str}"
         )
 
     def _on_candidate(self, cand: OptimizationCandidate) -> None:
@@ -878,13 +876,24 @@ class UnifiedOptimizerDialog(QDialog):
         self._enable_analysis_buttons()
 
         elapsed = time.time() - self._start_time
-        elapsed_str = time.strftime("%M:%S", time.gmtime(elapsed))
         feasible_count = sum(1 for c in self._candidates if c.is_feasible)
         self._progress_label.setText(
             f"完了 ({len(self._candidates)} 候補, "
             f"実行可能 {feasible_count}, "
-            f"{elapsed_str})"
+            f"{self._format_duration(elapsed)})"
         )
+
+    @staticmethod
+    def _format_duration(seconds: float) -> str:
+        """秒数を人間が読みやすい時間文字列に変換。"""
+        s = int(seconds)
+        if s < 60:
+            return f"{s}秒"
+        m, s = divmod(s, 60)
+        if m < 60:
+            return f"{m}分{s}秒"
+        h, m = divmod(m, 60)
+        return f"{h}時間{m}分"
 
     def _on_pick(self, event) -> None:
         """プロット上のクリックで候補を選択。"""
