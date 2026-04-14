@@ -391,137 +391,145 @@ class EnvelopeChartWidget(QWidget):
             self._show_empty("選択された応答値にデータがありません")
             return
 
-        # 個別ケース線（オプション）
         if self._individual_cb.isChecked():
-            for case in completed:
-                result_data = case.result_summary.get("result_data", {})
-                fd = result_data.get(key, {})
-                if not fd:
-                    scalar = case.result_summary.get(key)
-                    if scalar is not None:
-                        fd = {1: scalar}
-                if fd:
-                    fls = sorted(fd.keys())
-                    vals = [fd[f] for f in fls]
-                    ax.plot(vals, fls, color="gray", alpha=0.25, linewidth=0.8)
+            self._draw_individual_lines(ax, completed, key)
 
-        # 包絡領域（fill_betweenx で水平方向に塗りつぶし）
+        self._draw_envelope_bands(ax, floors, mins, maxs, means)
+        self._apply_axes_labels(ax, label, unit, len(completed), floors)
+        self._draw_criteria_line(ax, key)
+        self._draw_critical_floor_overlay(ax, completed, floors, maxs, key, unit)
+
+        ax.legend(fontsize=8, loc="lower right")
+        self._canvas.fig.tight_layout()
+        self._canvas.draw()
+
+    @staticmethod
+    def _draw_individual_lines(ax, completed, key: str) -> None:
+        for case in completed:
+            result_data = case.result_summary.get("result_data", {})
+            fd = result_data.get(key, {})
+            if not fd:
+                scalar = case.result_summary.get(key)
+                if scalar is not None:
+                    fd = {1: scalar}
+            if fd:
+                fls = sorted(fd.keys())
+                vals = [fd[f] for f in fls]
+                ax.plot(vals, fls, color="gray", alpha=0.25, linewidth=0.8)
+
+    @staticmethod
+    def _draw_envelope_bands(ax, floors, mins, maxs, means) -> None:
         ax.fill_betweenx(
             floors, mins, maxs,
             alpha=0.3, color="#1f77b4",
             label="最小〜最大 範囲",
         )
-
-        # 最小・最大の境界線
         ax.plot(mins, floors, color="#1f77b4", linewidth=1.0,
                 linestyle=":", alpha=0.7, label="最小")
         ax.plot(maxs, floors, color="#1f77b4", linewidth=1.0,
                 linestyle=":", alpha=0.7, label="最大")
-
-        # 平均線
         ax.plot(means, floors, color="#d62728", linewidth=2.0,
                 marker="o", markersize=4, label="平均")
 
+    @staticmethod
+    def _apply_axes_labels(ax, label: str, unit: str, n_cases: int, floors) -> None:
         ax.set_xlabel(f"{label}  [{unit}]", fontsize=9)
         ax.set_ylabel("層", fontsize=9)
         ax.set_title(
-            f"エンベロープ — {label}  ({len(completed)} ケース)",
+            f"エンベロープ — {label}  ({n_cases} ケース)",
             fontsize=10,
         )
         ax.tick_params(labelsize=8)
         ax.grid(linestyle="--", alpha=0.4)
         ax.set_yticks(floors)
 
-        # --- 性能基準線 ---
-        if self._show_criteria and self._criteria is not None:
-            criteria_key = _CHART_KEY_TO_CRITERIA_KEY.get(key)
-            if criteria_key:
-                for item in self._criteria.items:
-                    if (item.key == criteria_key and item.enabled
-                            and item.limit_value is not None):
-                        ax.axvline(
-                            x=item.limit_value,
-                            color="red",
-                            linestyle="--",
-                            linewidth=1.5,
-                            alpha=0.8,
-                            label=f"基準: {item.limit_value:.4g}",
-                        )
-                        break
-
-        # UX改善（新④）: 最大応答発生層（危険層）ハイライト
-        if len(floors) > 0 and len(maxs) > 0:
-            # 地盤面(0層)を除いた中で最大値の層を探す
-            non_zero_indices = [i for i, f in enumerate(floors) if f != 0]
-            if non_zero_indices:
-                critical_idx = max(non_zero_indices, key=lambda i: maxs[i])
-                critical_floor = floors[critical_idx]
-                critical_val = maxs[critical_idx]
-
-                # 水平破線（危険層）
-                ax.axhline(
-                    y=critical_floor,
-                    color="#d32f2f",
-                    linestyle="-.",
-                    linewidth=1.2,
-                    alpha=0.75,
-                    label=f"最大応答層: {critical_floor}層",
-                    zorder=6,
+    def _draw_criteria_line(self, ax, key: str) -> None:
+        if not (self._show_criteria and self._criteria is not None):
+            return
+        criteria_key = _CHART_KEY_TO_CRITERIA_KEY.get(key)
+        if not criteria_key:
+            return
+        for item in self._criteria.items:
+            if (item.key == criteria_key and item.enabled
+                    and item.limit_value is not None):
+                ax.axvline(
+                    x=item.limit_value,
+                    color="red",
+                    linestyle="--",
+                    linewidth=1.5,
+                    alpha=0.8,
+                    label=f"基準: {item.limit_value:.4g}",
                 )
+                break
 
-                # テキスト注釈（グラフ右端の75%位置に配置）
-                x_range = ax.get_xlim()
-                x_pos = x_range[0] + (x_range[1] - x_range[0]) * 0.72 if x_range[1] != x_range[0] else critical_val
-                ax.annotate(
-                    f"🔴 最大応答: {critical_floor}層\n({critical_val:.4g} {unit})",
-                    xy=(critical_val, critical_floor),
-                    xycoords="data",
-                    xytext=(x_pos, critical_floor),
-                    textcoords="data",
-                    fontsize=7,
-                    color="#b71c1c",
-                    va="center",
-                    ha="center",
-                    bbox=dict(boxstyle="round,pad=0.3", fc="#ffebee", alpha=0.85, ec="#d32f2f", lw=0.8),
-                    arrowprops=dict(arrowstyle="->", color="#d32f2f", lw=0.7),
-                )
+    def _draw_critical_floor_overlay(
+        self, ax, completed, floors, maxs, key: str, unit: str
+    ) -> None:
+        if len(floors) == 0 or len(maxs) == 0:
+            return
+        non_zero_indices = [i for i, f in enumerate(floors) if f != 0]
+        if not non_zero_indices:
+            self._critical_floor_label.setText("")
+            self._worst_case_lbl.setVisible(False)
+            return
 
-                # サマリーラベル更新
-                self._critical_floor_label.setText(
-                    f"🔴 最大応答発生層: {critical_floor}層  "
-                    f"（最大エンベロープ: {critical_val:.4g} {unit}）  "
-                    f"← ダンパー優先配置を検討してください"
-                )
+        critical_idx = max(non_zero_indices, key=lambda i: maxs[i])
+        critical_floor = floors[critical_idx]
+        critical_val = maxs[critical_idx]
 
-                # UX改善（第10回⑤）: 最大応答を出したケースを特定して表示
-                worst_case_name = ""
-                worst_case_val = -float("inf")
-                for case in completed:
-                    result_data = case.result_summary.get("result_data", {})
-                    fd = result_data.get(key, {})
-                    if not fd:
-                        scalar = case.result_summary.get(key)
-                        if scalar is not None:
-                            fd = {1: scalar}
-                    v = fd.get(critical_floor)
-                    if v is not None and float(v) > worst_case_val:
-                        worst_case_val = float(v)
-                        worst_case_name = case.name
-                if worst_case_name:
-                    self._worst_case_lbl.setText(
-                        f"⚠ {critical_floor}層の最大応答ケース: 「{worst_case_name}」"
-                        f"  {worst_case_val:.4g} {unit}"
-                    )
-                    self._worst_case_lbl.setVisible(True)
-                else:
-                    self._worst_case_lbl.setVisible(False)
-            else:
-                self._critical_floor_label.setText("")
-                self._worst_case_lbl.setVisible(False)
+        ax.axhline(
+            y=critical_floor,
+            color="#d32f2f",
+            linestyle="-.",
+            linewidth=1.2,
+            alpha=0.75,
+            label=f"最大応答層: {critical_floor}層",
+            zorder=6,
+        )
+        x_range = ax.get_xlim()
+        x_pos = x_range[0] + (x_range[1] - x_range[0]) * 0.72 if x_range[1] != x_range[0] else critical_val
+        ax.annotate(
+            f"🔴 最大応答: {critical_floor}層\n({critical_val:.4g} {unit})",
+            xy=(critical_val, critical_floor),
+            xycoords="data",
+            xytext=(x_pos, critical_floor),
+            textcoords="data",
+            fontsize=7,
+            color="#b71c1c",
+            va="center",
+            ha="center",
+            bbox=dict(boxstyle="round,pad=0.3", fc="#ffebee", alpha=0.85, ec="#d32f2f", lw=0.8),
+            arrowprops=dict(arrowstyle="->", color="#d32f2f", lw=0.7),
+        )
+        self._critical_floor_label.setText(
+            f"🔴 最大応答発生層: {critical_floor}層  "
+            f"（最大エンベロープ: {critical_val:.4g} {unit}）  "
+            f"← ダンパー優先配置を検討してください"
+        )
+        self._update_worst_case_label(completed, critical_floor, key, unit)
 
-        ax.legend(fontsize=8, loc="lower right")
-        self._canvas.fig.tight_layout()
-        self._canvas.draw()
+    def _update_worst_case_label(self, completed, critical_floor, key: str, unit: str) -> None:
+        worst_case_name = ""
+        worst_case_val = -float("inf")
+        for case in completed:
+            result_data = case.result_summary.get("result_data", {})
+            fd = result_data.get(key, {})
+            if not fd:
+                scalar = case.result_summary.get(key)
+                if scalar is not None:
+                    fd = {1: scalar}
+            v = fd.get(critical_floor)
+            if v is not None and float(v) > worst_case_val:
+                worst_case_val = float(v)
+                worst_case_name = case.name
+        if worst_case_name:
+            self._worst_case_lbl.setText(
+                f"⚠ {critical_floor}層の最大応答ケース: 「{worst_case_name}」"
+                f"  {worst_case_val:.4g} {unit}"
+            )
+            self._worst_case_lbl.setVisible(True)
+        else:
+            self._worst_case_lbl.setVisible(False)
 
     def _show_empty(self, message: str = "完了済みケースが増えると\nエンベロープを表示します") -> None:
         """空状態のメッセージをキャンバスに表示します。"""

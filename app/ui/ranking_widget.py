@@ -274,155 +274,187 @@ class RankingWidget(QWidget):
     def _refresh(self) -> None:
         self._table.setRowCount(0)
 
-        # 完了済みケースを抽出
-        completed = [
-            c for c in self._cases
-            if c.status == AnalysisCaseStatus.COMPLETED and c.result_summary
-        ]
-
-        # グループフィルタ
-        if self._group_filter and self._case_groups:
-            group_ids = set(self._case_groups.get(self._group_filter, []))
-            completed = [c for c in completed if c.id in group_ids]
-
+        completed = self._collect_completed_cases()
         if not completed:
             self._summary_label.setText("完了済みケースがありません")
             if hasattr(self, "_best_banner"):
                 self._best_banner.setVisible(False)
             return
 
-        # ソート
         idx = self._sort_combo.currentIndex()
         key, label, unit, fmt, _ = _RANKING_ITEMS[idx]
         ascending = self._order_combo.currentIndex() == 0
 
+        sorted_cases = self._sort_cases(completed, key, ascending)
+        limit_value = self._lookup_limit_value(key)
+        wins_map = self._calc_wins_per_case(completed)
+
+        ok_count, ng_count = self._populate_ranking_rows(
+            sorted_cases, key, fmt, unit, limit_value, wins_map
+        )
+
+        total = len(sorted_cases)
+        best = sorted_cases[0] if sorted_cases else None
+        best_val = best.result_summary.get(key) if best else None
+        self._update_summary_label(total, best, best_val, key, fmt, ok_count, ng_count)
+        self._update_best_banner(best, best_val, key, fmt, unit, total, ok_count, ng_count)
+
+    def _collect_completed_cases(self) -> List[AnalysisCase]:
+        completed = [
+            c for c in self._cases
+            if c.status == AnalysisCaseStatus.COMPLETED and c.result_summary
+        ]
+        if self._group_filter and self._case_groups:
+            group_ids = set(self._case_groups.get(self._group_filter, []))
+            completed = [c for c in completed if c.id in group_ids]
+        return completed
+
+    @staticmethod
+    def _sort_cases(
+        completed: List[AnalysisCase], key: str, ascending: bool
+    ) -> List[AnalysisCase]:
         def sort_key(c: AnalysisCase) -> float:
             v = c.result_summary.get(key)
             return v if v is not None else float("inf")
+        return sorted(completed, key=sort_key, reverse=not ascending)
 
-        sorted_cases = sorted(completed, key=sort_key, reverse=not ascending)
+    def _lookup_limit_value(self, key: str) -> Optional[float]:
+        if not self._criteria:
+            return None
+        for item in self._criteria.items:
+            if item.key == key and item.enabled and item.limit_value is not None:
+                return item.limit_value
+        return None
 
-        # 基準値を取得
-        limit_value = None
-        if self._criteria:
-            for item in self._criteria.items:
-                if item.key == key and item.enabled and item.limit_value is not None:
-                    limit_value = item.limit_value
-                    break
-
-        # UX改善（第10回④）: 全指標における各ケースの勝利数を事前計算
-        wins_map = self._calc_wins_per_case(completed)
-
-        # テーブルに表示
+    def _populate_ranking_rows(
+        self,
+        sorted_cases: List[AnalysisCase],
+        key: str,
+        fmt: str,
+        unit: str,
+        limit_value: Optional[float],
+        wins_map: dict,
+    ) -> tuple:
         ok_count = 0
         ng_count = 0
         for rank, case in enumerate(sorted_cases):
             row = self._table.rowCount()
             self._table.insertRow(row)
-
             val = case.result_summary.get(key)
 
-            # 順位
-            rank_text = f"{rank + 1}"
-            rank_item = QTableWidgetItem(rank_text)
-            rank_item.setTextAlignment(Qt.AlignCenter)
-            if rank < 3:
-                rank_item.setForeground(_MEDAL_COLORS[rank])
-                font = QFont()
-                font.setBold(True)
-                rank_item.setFont(font)
-            self._table.setItem(row, 0, rank_item)
-
-            # ケース名
-            name_item = QTableWidgetItem(case.name)
-            name_item.setData(Qt.UserRole, case.id)
-            if rank < 3:
-                font = QFont()
-                font.setBold(True)
-                name_item.setFont(font)
-            self._table.setItem(row, 1, name_item)
-
-            # グループ
-            group_name = ""
-            for gname, cids in self._case_groups.items():
-                if case.id in cids:
-                    group_name = gname
-                    break
-            self._table.setItem(row, 2, QTableWidgetItem(group_name))
-
-            # 値
-            val_text = fmt.format(val) if val is not None else "N/A"
-            val_item = QTableWidgetItem(f"{val_text} {unit}")
-            val_item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
-            self._table.setItem(row, 3, val_item)
-
-            # 判定
-            verdict_text = ""
-            if self._criteria and val is not None:
-                verdict = self._criteria.is_all_pass(case.result_summary)
-                if verdict is True:
-                    verdict_text = "OK"
-                    ok_count += 1
-                elif verdict is False:
-                    verdict_text = "NG"
-                    ng_count += 1
-            verdict_item = QTableWidgetItem(verdict_text)
-            verdict_item.setTextAlignment(Qt.AlignCenter)
+            self._set_rank_item(row, rank)
+            self._set_name_item(row, case, rank)
+            self._set_group_item(row, case)
+            self._set_value_item(row, val, fmt, unit)
+            verdict_text = self._set_verdict_item(row, case, val)
             if verdict_text == "OK":
-                verdict_item.setForeground(QColor("#2ca02c"))
+                ok_count += 1
             elif verdict_text == "NG":
-                verdict_item.setForeground(QColor("#d62728"))
-            self._table.setItem(row, 4, verdict_item)
+                ng_count += 1
+            self._set_diff_item(row, val, limit_value)
+            self._set_wins_item(row, wins_map.get(case.id, 0))
+        return ok_count, ng_count
 
-            # 基準との差
-            diff_text = ""
-            if limit_value is not None and val is not None:
-                diff = val - limit_value
-                ratio = (diff / limit_value * 100) if limit_value != 0 else 0
-                diff_text = f"{diff:+.6f} ({ratio:+.1f}%)"
-            diff_item = QTableWidgetItem(diff_text)
-            diff_item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
-            if limit_value is not None and val is not None:
-                if val <= limit_value:
-                    diff_item.setForeground(QColor("#2ca02c"))
-                else:
-                    diff_item.setForeground(QColor("#d62728"))
-            self._table.setItem(row, 5, diff_item)
+    def _set_rank_item(self, row: int, rank: int) -> None:
+        rank_item = QTableWidgetItem(f"{rank + 1}")
+        rank_item.setTextAlignment(Qt.AlignCenter)
+        if rank < 3:
+            rank_item.setForeground(_MEDAL_COLORS[rank])
+            font = QFont()
+            font.setBold(True)
+            rank_item.setFont(font)
+        self._table.setItem(row, 0, rank_item)
 
-            # UX改善（第10回④）: 総合勝利数を設定
-            wins = wins_map.get(case.id, 0)
-            total_metrics = len(_RANKING_ITEMS)
-            wins_text = f"{wins}/{total_metrics}"
-            wins_item = QTableWidgetItem(wins_text)
-            wins_item.setTextAlignment(Qt.AlignCenter)
-            wins_item.setToolTip(
-                f"全{total_metrics}指標のうち {wins} 指標で最小値（1位）\n"
-                "すべての指標で1位に近いほど総合的に優秀なケースです"
-            )
-            if wins >= 4:
-                wins_item.setForeground(QColor("#2ca02c"))
-                font = QFont()
-                font.setBold(True)
-                wins_item.setFont(font)
-            elif wins == 0:
-                wins_item.setForeground(QColor("#9e9e9e"))
+    def _set_name_item(self, row: int, case: AnalysisCase, rank: int) -> None:
+        name_item = QTableWidgetItem(case.name)
+        name_item.setData(Qt.UserRole, case.id)
+        if rank < 3:
+            font = QFont()
+            font.setBold(True)
+            name_item.setFont(font)
+        self._table.setItem(row, 1, name_item)
+
+    def _set_group_item(self, row: int, case: AnalysisCase) -> None:
+        group_name = ""
+        for gname, cids in self._case_groups.items():
+            if case.id in cids:
+                group_name = gname
+                break
+        self._table.setItem(row, 2, QTableWidgetItem(group_name))
+
+    def _set_value_item(self, row: int, val, fmt: str, unit: str) -> None:
+        val_text = fmt.format(val) if val is not None else "N/A"
+        val_item = QTableWidgetItem(f"{val_text} {unit}")
+        val_item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        self._table.setItem(row, 3, val_item)
+
+    def _set_verdict_item(self, row: int, case: AnalysisCase, val) -> str:
+        verdict_text = ""
+        if self._criteria and val is not None:
+            verdict = self._criteria.is_all_pass(case.result_summary)
+            if verdict is True:
+                verdict_text = "OK"
+            elif verdict is False:
+                verdict_text = "NG"
+        verdict_item = QTableWidgetItem(verdict_text)
+        verdict_item.setTextAlignment(Qt.AlignCenter)
+        if verdict_text == "OK":
+            verdict_item.setForeground(QColor("#2ca02c"))
+        elif verdict_text == "NG":
+            verdict_item.setForeground(QColor("#d62728"))
+        self._table.setItem(row, 4, verdict_item)
+        return verdict_text
+
+    def _set_diff_item(self, row: int, val, limit_value: Optional[float]) -> None:
+        diff_text = ""
+        if limit_value is not None and val is not None:
+            diff = val - limit_value
+            ratio = (diff / limit_value * 100) if limit_value != 0 else 0
+            diff_text = f"{diff:+.6f} ({ratio:+.1f}%)"
+        diff_item = QTableWidgetItem(diff_text)
+        diff_item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        if limit_value is not None and val is not None:
+            if val <= limit_value:
+                diff_item.setForeground(QColor("#2ca02c"))
             else:
-                wins_item.setForeground(QColor("#ff7f0e"))
-            self._table.setItem(row, 6, wins_item)
+                diff_item.setForeground(QColor("#d62728"))
+        self._table.setItem(row, 5, diff_item)
 
-        # サマリー
-        total = len(sorted_cases)
-        best = sorted_cases[0] if sorted_cases else None
-        best_val = best.result_summary.get(key) if best else None
+    def _set_wins_item(self, row: int, wins: int) -> None:
+        total_metrics = len(_RANKING_ITEMS)
+        wins_item = QTableWidgetItem(f"{wins}/{total_metrics}")
+        wins_item.setTextAlignment(Qt.AlignCenter)
+        wins_item.setToolTip(
+            f"全{total_metrics}指標のうち {wins} 指標で最小値（1位）\n"
+            "すべての指標で1位に近いほど総合的に優秀なケースです"
+        )
+        if wins >= 4:
+            wins_item.setForeground(QColor("#2ca02c"))
+            font = QFont()
+            font.setBold(True)
+            wins_item.setFont(font)
+        elif wins == 0:
+            wins_item.setForeground(QColor("#9e9e9e"))
+        else:
+            wins_item.setForeground(QColor("#ff7f0e"))
+        self._table.setItem(row, 6, wins_item)
+
+    def _update_summary_label(
+        self,
+        total: int,
+        best: Optional[AnalysisCase],
+        best_val,
+        key: str,
+        fmt: str,
+        ok_count: int,
+        ng_count: int,
+    ) -> None:
         summary_parts = [f"表示ケース: {total}"]
         if best and best_val is not None:
             summary_parts.append(f"最良値: {fmt.format(best_val)} ({best.name})")
         if ok_count or ng_count:
             summary_parts.append(f"判定: OK {ok_count} / NG {ng_count}")
         self._summary_label.setText("  |  ".join(summary_parts))
-
-        # ---- UX改善（新）: 1位ケース強調バナーを更新 ----
-        self._update_best_banner(best, best_val, key, fmt, unit, total, ok_count, ng_count)
 
     def _update_best_banner(
         self,
