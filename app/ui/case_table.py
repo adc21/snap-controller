@@ -528,8 +528,12 @@ class CaseTableWidget(QWidget):
 
     def _build_stack(self, layout: QVBoxLayout, icon_color: str) -> None:
         self._stack = QStackedWidget()
+        self._stack.addWidget(self._build_empty_state(icon_color))  # index 0: 空状態
+        self._stack.addWidget(self._build_case_table())             # index 1: テーブル
+        self._table.horizontalHeader().sectionResized.connect(self._save_column_widths)
+        self._restore_column_widths()
 
-        # ---- 空状態ガイダンス (index 0) ----
+    def _build_empty_state(self, icon_color: str) -> QWidget:
         empty_widget = QWidget()
         empty_layout = QVBoxLayout(empty_widget)
         empty_layout.setAlignment(Qt.AlignCenter)
@@ -588,10 +592,9 @@ class CaseTableWidget(QWidget):
         empty_layout.addLayout(empty_btn_layout)
 
         empty_layout.addSpacing(8)
+        return empty_widget
 
-        self._stack.addWidget(empty_widget)  # index 0: 空状態
-
-        # ---- テーブル (index 1) ----
+    def _build_case_table(self) -> QTableWidget:
         self._table = QTableWidget()
         self._table.setColumnCount(len(_COLUMNS))
         self._table.setHorizontalHeaderLabels(_COLUMNS)
@@ -639,10 +642,7 @@ class CaseTableWidget(QWidget):
         self._table.viewport().installEventFilter(self)
         self._table.setMouseTracking(True)
         self._table.viewport().setMouseTracking(True)
-        self._stack.addWidget(self._table)  # index 1: テーブル
-
-        self._table.horizontalHeader().sectionResized.connect(self._save_column_widths)
-        self._restore_column_widths()
+        return self._table
 
     def _build_shortcuts(self) -> None:
         # Enter: 選択ケースを編集

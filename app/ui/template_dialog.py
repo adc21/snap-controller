@@ -104,8 +104,11 @@ class TemplateDialog(QDialog):
 
     def _setup_ui(self) -> None:
         layout = QVBoxLayout(self)
+        layout.addLayout(self._build_filter_row())
+        layout.addWidget(self._build_main_splitter(), stretch=1)
+        layout.addLayout(self._build_button_row())
 
-        # ---- フィルタ行 ----
+    def _build_filter_row(self) -> QHBoxLayout:
         filter_row = QHBoxLayout()
         filter_row.addWidget(QLabel("カテゴリ:"))
         self._cat_combo = QComboBox()
@@ -119,7 +122,6 @@ class TemplateDialog(QDialog):
         self._search_edit.textChanged.connect(self._on_filter_changed)
         filter_row.addWidget(self._search_edit, stretch=1)
 
-        # UX改善（第6回①）: ビルトイン件数・ユーザー件数バッジ
         self._builtin_badge = QLabel()
         self._builtin_badge.setStyleSheet(
             "background:#e3f2fd; color:#0d47a1; border-radius:8px;"
@@ -135,24 +137,27 @@ class TemplateDialog(QDialog):
         )
         self._user_badge.setToolTip("ユーザーテンプレート件数")
         filter_row.addWidget(self._user_badge)
+        return filter_row
 
-        layout.addLayout(filter_row)
-
-        # ---- メイン: リスト + 詳細 ----
+    def _build_main_splitter(self) -> QSplitter:
         splitter = QSplitter(Qt.Horizontal)
+        splitter.addWidget(self._build_template_list())
+        splitter.addWidget(self._build_detail_panel())
+        splitter.setStretchFactor(0, 1)
+        splitter.setStretchFactor(1, 2)
+        return splitter
 
-        # 左: テンプレートリスト
+    def _build_template_list(self) -> QListWidget:
         self._list = QListWidget()
         self._list.currentItemChanged.connect(self._on_selection_changed)
-        # UX改善（第6回①）: ダブルクリックで即適用
         self._list.itemDoubleClicked.connect(self._on_double_click)
         self._list.setToolTip(
             "テンプレートをダブルクリックするとすぐに適用できます。\n"
             "シングルクリックで詳細を確認してから[選択ケースに適用]ボタンで適用します。"
         )
-        splitter.addWidget(self._list)
+        return self._list
 
-        # 右: 詳細プレビュー
+    def _build_detail_panel(self) -> QWidget:
         detail_widget = QWidget()
         detail_layout = QVBoxLayout(detail_widget)
         detail_layout.setContentsMargins(8, 0, 0, 0)
@@ -171,7 +176,6 @@ class TemplateDialog(QDialog):
         self._detail_tags = QLabel()
         detail_layout.addWidget(self._detail_tags)
 
-        # パラメータ表示
         params_group = QGroupBox("パラメータ")
         params_layout = QVBoxLayout(params_group)
         self._params_text = QTextEdit()
@@ -181,12 +185,9 @@ class TemplateDialog(QDialog):
         detail_layout.addWidget(params_group)
 
         detail_layout.addStretch()
-        splitter.addWidget(detail_widget)
-        splitter.setStretchFactor(0, 1)
-        splitter.setStretchFactor(1, 2)
-        layout.addWidget(splitter, stretch=1)
+        return detail_widget
 
-        # ---- ボタン行 ----
+    def _build_button_row(self) -> QHBoxLayout:
         btn_row = QHBoxLayout()
 
         self._apply_btn = QPushButton("✅ 選択ケースに適用")
@@ -210,8 +211,7 @@ class TemplateDialog(QDialog):
         close_btn = QPushButton("閉じる")
         close_btn.clicked.connect(self.reject)
         btn_row.addWidget(close_btn)
-
-        layout.addLayout(btn_row)
+        return btn_row
 
     # ------------------------------------------------------------------
     # List management
