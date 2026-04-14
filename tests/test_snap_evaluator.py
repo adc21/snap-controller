@@ -13,6 +13,7 @@ from pathlib import Path
 from app.services.snap_evaluator import (
     SnapEvaluator,
     create_snap_evaluator,
+    create_unified_evaluator,
     create_minimizer_evaluate_fn,
     build_floor_rd_map,
     _compute_margin,
@@ -526,3 +527,255 @@ class TestParallelEvalErrorContext:
         # Should still return a candidate with inf objective
         assert len(candidates) == 1
         assert candidates[0].objective_value == float("inf")
+
+
+class TestParameterRangeFloorCount:
+    """ParameterRange.is_floor_count 属性のテスト。"""
+
+    def test_default_is_false(self):
+        from app.services.optimizer import ParameterRange
+        pr = ParameterRange(key="Cd", min_val=100, max_val=500)
+        assert pr.is_floor_count is False
+
+    def test_floor_count_flag(self):
+        from app.services.optimizer import ParameterRange
+        pr = ParameterRange(
+            key="floor_count_F3", label="F3 ダンパー本数",
+            min_val=2, max_val=8, step=1,
+            is_integer=True, is_floor_count=True,
+        )
+        assert pr.is_floor_count is True
+        assert pr.is_integer is True
+
+    def test_to_dict_includes_floor_count(self):
+        from app.services.optimizer import ParameterRange
+        pr = ParameterRange(
+            key="floor_count_F3", min_val=2, max_val=8,
+            is_floor_count=True,
+        )
+        d = pr.to_dict()
+        assert d["is_floor_count"] is True
+
+    def test_to_dict_omits_false_floor_count(self):
+        from app.services.optimizer import ParameterRange
+        pr = ParameterRange(key="Cd", min_val=100, max_val=500)
+        d = pr.to_dict()
+        assert "is_floor_count" not in d
+
+    def test_from_dict_with_floor_count(self):
+        from app.services.optimizer import ParameterRange
+        d = {
+            "key": "floor_count_F5", "label": "F5 ダンパー本数",
+            "min_val": 0, "max_val": 6, "step": 1,
+            "is_integer": True, "is_floor_count": True,
+        }
+        pr = ParameterRange.from_dict(d)
+        assert pr.is_floor_count is True
+        assert pr.is_integer is True
+        assert pr.key == "floor_count_F5"
+
+    def test_from_dict_without_floor_count(self):
+        from app.services.optimizer import ParameterRange
+        d = {"key": "Cd", "min_val": 100, "max_val": 500}
+        pr = ParameterRange.from_dict(d)
+        assert pr.is_floor_count is False
+
+
+class TestSnapEvaluatorFloorCount:
+    """SnapEvaluator の基数パラメータ処理テスト。"""
+
+    def test_apply_floor_count_params(self, tmp_path):
+        """floor_count_* パラメータがモデルの RD 要素に反映される。"""
+        from unittest.mock import MagicMock
+
+        exe = tmp_path / "SNAP.exe"
+        exe.touch()
+        s8i = tmp_path / "model.s8i"
+        s8i.write_text("TTL / test\n", encoding="shift_jis")
+
+        evaluator = SnapEvaluator(
+            snap_exe_path=str(exe),
+            base_s8i_path=str(s8i),
+            floor_rd_map={"F3": [0, 1], "F5": [2]},
+        )
+
+        model = MagicMock()
+        params = {"Cd": 850, "floor_count_F3": 4, "floor_count_F5": 6}
+        evaluator._apply_floor_count_params(model, params)
+
+        # F3: 4本 / 2要素 = 2本ずつ
+        calls = model.update_damper_element.call_args_list
+        assert len(calls) == 3  # F3: 2 calls + F5: 1 call
+        assert calls[0] == ((0,), {"quantity": 2})
+        assert calls[1] == ((1,), {"quantity": 2})
+        # F5: 6本 / 1要素 = 6本
+        assert calls[2] == ((2,), {"quantity": 6})
+
+    def test_apply_floor_count_with_remainder(self, tmp_path):
+        """余りのある分配（5本 / 2要素 → 3本 + 2本）。"""
+        from unittest.mock import MagicMock
+
+        exe = tmp_path / "SNAP.exe"
+        exe.touch()
+        s8i = tmp_path / "model.s8i"
+        s8i.write_text("TTL / test\n", encoding="shift_jis")
+
+        evaluator = SnapEvaluator(
+            snap_exe_path=str(exe),
+            base_s8i_path=str(s8i),
+            floor_rd_map={"F3": [0, 1]},
+        )
+
+        model = MagicMock()
+        evaluator._apply_floor_count_params(model, {"floor_count_F3": 5})
+
+        calls = model.update_damper_element.call_args_list
+        assert len(calls) == 2
+        assert calls[0] == ((0,), {"quantity": 3})  # 5 // 2 + 1 = 3
+        assert calls[1] == ((1,), {"quantity": 2})  # 5 // 2 = 2
+
+    def test_apply_floor_count_no_map(self, tmp_path):
+        """floor_rd_map が空なら何もしない。"""
+        from unittest.mock import MagicMock
+
+        exe = tmp_path / "SNAP.exe"
+        exe.touch()
+        s8i = tmp_path / "model.s8i"
+        s8i.write_text("TTL / test\n", encoding="shift_jis")
+
+        evaluator = SnapEvaluator(
+            snap_exe_path=str(exe),
+            base_s8i_path=str(s8i),
+        )
+
+        model = MagicMock()
+        evaluator._apply_floor_count_params(model, {"floor_count_F3": 4})
+        model.update_damper_element.assert_not_called()
+
+    def test_compute_total_damper_count(self, tmp_path):
+        """total_damper_count の算出。"""
+        exe = tmp_path / "SNAP.exe"
+        exe.touch()
+        s8i = tmp_path / "model.s8i"
+        s8i.write_text("TTL / test\n", encoding="shift_jis")
+
+        evaluator = SnapEvaluator(
+            snap_exe_path=str(exe),
+            base_s8i_path=str(s8i),
+        )
+
+        params = {"Cd": 850, "floor_count_F3": 4, "floor_count_F5": 6, "alpha": 0.5}
+        total = evaluator._compute_total_damper_count(params)
+        assert total == 10
+
+    def test_compute_total_damper_count_no_floor(self, tmp_path):
+        """基数パラメータなしの場合は 0。"""
+        exe = tmp_path / "SNAP.exe"
+        exe.touch()
+        s8i = tmp_path / "model.s8i"
+        s8i.write_text("TTL / test\n", encoding="shift_jis")
+
+        evaluator = SnapEvaluator(
+            snap_exe_path=str(exe),
+            base_s8i_path=str(s8i),
+        )
+
+        params = {"Cd": 850, "alpha": 0.5}
+        total = evaluator._compute_total_damper_count(params)
+        assert total == 0
+
+    def test_floor_rd_map_stored(self, tmp_path):
+        """floor_rd_map がインスタンスに保持される。"""
+        exe = tmp_path / "SNAP.exe"
+        exe.touch()
+        s8i = tmp_path / "model.s8i"
+        s8i.write_text("TTL / test\n", encoding="shift_jis")
+
+        frm = {"F1": [0], "F2": [1, 2]}
+        evaluator = SnapEvaluator(
+            snap_exe_path=str(exe),
+            base_s8i_path=str(s8i),
+            floor_rd_map=frm,
+        )
+        assert evaluator.floor_rd_map == frm
+
+
+class TestCreateUnifiedEvaluator:
+    """create_unified_evaluator のテスト。"""
+
+    def test_returns_none_without_exe(self):
+        case = AnalysisCase(model_path="/tmp/model.s8i")
+        from app.services.optimizer import ParameterRange
+        params = [ParameterRange(key="Cd", min_val=100, max_val=500)]
+
+        log_messages = []
+        result = create_unified_evaluator(
+            snap_exe_path="",
+            base_case=case,
+            param_ranges=params,
+            log_callback=log_messages.append,
+        )
+        assert result is None
+
+    def test_returns_none_with_nonexistent_exe(self, tmp_path):
+        case = AnalysisCase(
+            model_path=str(tmp_path / "model.s8i"),
+        )
+        from app.services.optimizer import ParameterRange
+        params = [ParameterRange(key="Cd", min_val=100, max_val=500)]
+
+        result = create_unified_evaluator(
+            snap_exe_path=str(tmp_path / "SNAP.exe"),
+            base_case=case,
+            param_ranges=params,
+        )
+        assert result is None
+
+    def test_returns_none_with_nonexistent_model(self, tmp_path):
+        exe = tmp_path / "SNAP.exe"
+        exe.touch()
+        case = AnalysisCase(
+            model_path=str(tmp_path / "nonexistent.s8i"),
+            snap_exe_path=str(exe),
+        )
+        from app.services.optimizer import ParameterRange
+        params = [ParameterRange(key="Cd", min_val=100, max_val=500)]
+
+        result = create_unified_evaluator(
+            snap_exe_path=str(exe),
+            base_case=case,
+            param_ranges=params,
+        )
+        assert result is None
+
+    def test_separates_phys_and_count_params(self, tmp_path):
+        """物理パラメータと基数パラメータの分離確認。"""
+        exe = tmp_path / "SNAP.exe"
+        exe.touch()
+        s8i = tmp_path / "model.s8i"
+        s8i.write_text("TTL / test\n", encoding="shift_jis")
+
+        case = AnalysisCase(
+            model_path=str(s8i),
+            snap_exe_path=str(exe),
+        )
+        from app.services.optimizer import ParameterRange
+        params = [
+            ParameterRange(key="Cd", min_val=100, max_val=500),
+            ParameterRange(
+                key="floor_count_F3", min_val=2, max_val=8,
+                is_integer=True, is_floor_count=True,
+            ),
+        ]
+
+        log_messages = []
+        result = create_unified_evaluator(
+            snap_exe_path=str(exe),
+            base_case=case,
+            param_ranges=params,
+            log_callback=log_messages.append,
+        )
+        assert result is not None
+        # 基数パラメータがあるのでログに表示
+        assert any("基数パラメータ" in msg for msg in log_messages)
+        assert any("統合評価モード" in msg for msg in log_messages)

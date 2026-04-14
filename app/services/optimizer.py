@@ -332,6 +332,7 @@ class ParameterRange:
     max_val: float = 1.0
     step: float = 0.0
     is_integer: bool = False
+    is_floor_count: bool = False
 
     def discrete_values(self, max_points: int = 100) -> List[float]:
         """離散化した値のリストを生成します。"""
@@ -367,11 +368,14 @@ class ParameterRange:
         return val
 
     def to_dict(self) -> Dict[str, Any]:
-        return {
+        d = {
             "key": self.key, "label": self.label,
             "min_val": self.min_val, "max_val": self.max_val,
             "step": self.step, "is_integer": self.is_integer,
         }
+        if self.is_floor_count:
+            d["is_floor_count"] = True
+        return d
 
     @classmethod
     def from_dict(cls, d: Dict[str, Any]) -> "ParameterRange":
@@ -379,6 +383,7 @@ class ParameterRange:
             key=d["key"], label=d.get("label", d["key"]),
             min_val=d["min_val"], max_val=d["max_val"],
             step=d.get("step", 0.0), is_integer=d.get("is_integer", False),
+            is_floor_count=d.get("is_floor_count", False),
         )
 
 

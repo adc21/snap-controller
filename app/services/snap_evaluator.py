@@ -77,6 +77,7 @@ class SnapEvaluator:
         log_callback: Optional[Callable[[str], None]] = None,
         keep_temp_files: bool = False,
         snap_work_dir: str = "",
+        floor_rd_map: Optional[Dict[str, List[int]]] = None,
     ) -> None:
         self.snap_exe_path = snap_exe_path
         self.base_s8i_path = base_s8i_path
@@ -87,6 +88,7 @@ class SnapEvaluator:
         self.log_callback = log_callback or (lambda msg: logger.info(msg))
         self.keep_temp_files = keep_temp_files
         self.snap_work_dir = snap_work_dir
+        self.floor_rd_map = floor_rd_map or {}
 
         # 統計情報
         self._eval_count: int = 0
@@ -131,6 +133,10 @@ class SnapEvaluator:
 
         try:
             response = self._run_snap_evaluation(params)
+            # 基数パラメータがある場合は total_damper_count を応答に追加
+            total = self._compute_total_damper_count(params)
+            if total > 0:
+                response["total_damper_count"] = float(total)
             self._success_count += 1
             self._cache[cache_key] = response
             return response
@@ -194,6 +200,9 @@ class SnapEvaluator:
                         except ValueError:
                             logger.debug("パラメータキーを整数変換できず: %s", param_key)
 
+            # 基数パラメータの適用（floor_count_* → RD要素のquantity）
+            self._apply_floor_count_params(model, params)
+
             # RD 配置の変更（固定オーバーライド）
             if self.rd_overrides:
                 for row_str, changes in self.rd_overrides.items():
@@ -235,6 +244,46 @@ class SnapEvaluator:
         finally:
             if not self.keep_temp_files:
                 shutil.rmtree(tmp_dir, ignore_errors=True)
+
+    def _apply_floor_count_params(self, model, params: Dict[str, float]) -> None:
+        """floor_count_* パラメータを RD 要素の quantity に反映する。
+
+        パラメータ名が 'floor_count_' プレフィックスを持つ場合、
+        floor_rd_map を使って対応する RD 要素の quantity を更新する。
+        例: floor_count_F3=4 → F3 階の全 RD 要素に合計 4 本を分配。
+        """
+        if not self.floor_rd_map:
+            return
+
+        for param_key, value in params.items():
+            if not param_key.startswith("floor_count_"):
+                continue
+            floor_key = param_key[len("floor_count_"):]
+            rd_indices = self.floor_rd_map.get(floor_key, [])
+            if not rd_indices:
+                self.log_callback(
+                    f"    [WARN] floor_rd_map にフロアキー '{floor_key}' がありません"
+                )
+                continue
+
+            qty = int(round(value))
+            n_rd = len(rd_indices)
+            base_qty = qty // n_rd
+            remainder = qty % n_rd
+            for i, rd_idx in enumerate(rd_indices):
+                elem_qty = base_qty + (1 if i < remainder else 0)
+                model.update_damper_element(rd_idx, quantity=elem_qty)
+            self.log_callback(
+                f"    {floor_key}: ダンパー本数 {qty} 本 (RD {n_rd} 要素に分配)"
+            )
+
+    def _compute_total_damper_count(self, params: Dict[str, float]) -> int:
+        """基数パラメータから全階合計ダンパー本数を算出する。"""
+        total = 0
+        for param_key, value in params.items():
+            if param_key.startswith("floor_count_"):
+                total += int(round(value))
+        return total
 
     def _find_result_dir(self, input_file: Path, tmp_path: Path) -> Path:
         """SNAP 結果ファイルのディレクトリを探索する。
@@ -554,6 +603,142 @@ def create_snap_evaluator(
                 f"  SNAP: {exe_path}\n"
                 f"  モデル: {model_path}\n"
                 f"  ダンパー定義: {damper_def_name or '(なし)'}\n"
+                f"  パラメータマッピング: {param_field_map or '(自動)'}"
+            )
+        return evaluator
+    except FileNotFoundError as e:
+        if log_callback:
+            log_callback(f"[WARN] {e}。モック評価を使用します。")
+        return None
+
+
+def create_unified_evaluator(
+    snap_exe_path: str,
+    base_case: "AnalysisCase",
+    param_ranges: List["ParameterRange"],
+    log_callback: Optional[Callable[[str], None]] = None,
+    snap_work_dir: str = "",
+    timeout: int = 300,
+) -> Optional[SnapEvaluator]:
+    """
+    統合最適化用の SnapEvaluator を構築するファクトリ関数。
+
+    物理パラメータ（Cd, alpha 等）と基数パラメータ（floor_count_F3 等）を
+    同時に扱える SnapEvaluator を返す。
+
+    基数パラメータ（is_floor_count=True の ParameterRange）がある場合、
+    build_floor_rd_map() でフロア→RD要素マッピングを自動構築し、
+    SnapEvaluator に渡す。
+
+    Parameters
+    ----------
+    snap_exe_path : str
+        SNAP.exe のパス。
+    base_case : AnalysisCase
+        ベースとなる解析ケース。
+    param_ranges : list of ParameterRange
+        最適化パラメータ範囲リスト（物理パラメータ + 基数パラメータ混在可）。
+    log_callback : callable, optional
+        ログコールバック。
+    snap_work_dir : str
+        SNAP 作業ディレクトリ。
+    timeout : int
+        SNAP タイムアウト（秒）。
+
+    Returns
+    -------
+    SnapEvaluator or None
+        生成に成功した場合は SnapEvaluator、失敗時は None。
+    """
+    from app.models import AnalysisCase
+    from app.services.optimizer import ParameterRange
+
+    exe_path = snap_exe_path or base_case.snap_exe_path
+    model_path = base_case.model_path
+
+    if not exe_path or not model_path:
+        if log_callback:
+            log_callback("[WARN] SNAP.exe またはモデルパスが未設定です。モック評価を使用します。")
+        return None
+
+    if not Path(exe_path).exists():
+        if log_callback:
+            log_callback(f"[WARN] SNAP.exe が見つかりません: {exe_path}。モック評価を使用します。")
+        return None
+
+    if not Path(model_path).exists():
+        if log_callback:
+            log_callback(f"[WARN] モデルファイルが見つかりません: {model_path}。モック評価を使用します。")
+        return None
+
+    # 物理パラメータと基数パラメータを分離
+    phys_ranges = [pr for pr in param_ranges if not pr.is_floor_count]
+    count_ranges = [pr for pr in param_ranges if pr.is_floor_count]
+
+    # ダンパー定義名とparam_field_mapの構築（物理パラメータ用）
+    damper_def_name = ""
+    param_field_map: Dict[str, int] = {}
+    if base_case.damper_params:
+        for key in base_case.damper_params:
+            damper_def_name = key
+            break
+
+    if damper_def_name and damper_def_name in (base_case.damper_params or {}):
+        overrides = base_case.damper_params[damper_def_name]
+        if isinstance(overrides, dict):
+            override_keys = list(overrides.keys())
+            for pr in phys_ranges:
+                if pr.key in override_keys:
+                    try:
+                        param_field_map[pr.key] = int(pr.key)
+                    except ValueError:
+                        logger.debug("パラメータキーを整数変換できず: %s", pr.key)
+                for idx_str in override_keys:
+                    try:
+                        idx = int(idx_str)
+                        if pr.key.lower() in str(overrides.get(idx_str, "")).lower():
+                            param_field_map[pr.key] = idx
+                    except (ValueError, TypeError):
+                        logger.debug("overrideキー変換失敗: %s", idx_str)
+
+    # 基数パラメータがある場合、floor_rd_map を構築
+    floor_rd_map: Dict[str, List[int]] = {}
+    if count_ranges:
+        try:
+            floor_rd_map_full, _, _ = build_floor_rd_map(model_path)
+            floor_rd_map = floor_rd_map_full
+            if log_callback:
+                log_callback(
+                    f"[INFO] 基数パラメータ {len(count_ranges)} 個検出。"
+                    f"floor_rd_map: {list(floor_rd_map.keys())}"
+                )
+        except Exception as e:
+            if log_callback:
+                log_callback(f"[WARN] floor_rd_map 構築に失敗: {e}")
+
+    # RD オーバーライドを取得
+    rd_overrides = base_case.parameters.get("_rd_overrides", {})
+
+    try:
+        evaluator = SnapEvaluator(
+            snap_exe_path=exe_path,
+            base_s8i_path=model_path,
+            damper_def_name=damper_def_name,
+            param_field_map=param_field_map,
+            rd_overrides=rd_overrides,
+            timeout=timeout,
+            log_callback=log_callback,
+            snap_work_dir=snap_work_dir,
+            floor_rd_map=floor_rd_map,
+        )
+        if log_callback:
+            log_callback(
+                f"[INFO] 統合評価モードで最適化を開始します。\n"
+                f"  SNAP: {exe_path}\n"
+                f"  モデル: {model_path}\n"
+                f"  ダンパー定義: {damper_def_name or '(なし)'}\n"
+                f"  物理パラメータ: {[pr.key for pr in phys_ranges]}\n"
+                f"  基数パラメータ: {[pr.key for pr in count_ranges]}\n"
                 f"  パラメータマッピング: {param_field_map or '(自動)'}"
             )
         return evaluator
