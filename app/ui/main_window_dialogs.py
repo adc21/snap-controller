@@ -459,6 +459,59 @@ class _MainWindowDialogsMixin:
             8000,
         )
 
+    def _open_unified_optimizer(self) -> None:
+        """統合最適化ダイアログを開きます。"""
+        if self._project is None:
+            return
+
+        base_case = None
+        case_id = self._case_table.selected_case_id()
+        if case_id:
+            base_case = self._project.get_case(case_id)
+
+        if not base_case or not base_case.model_path:
+            QMessageBox.warning(
+                self, "モデル未選択",
+                "解析ケースを選択してから統合最適化を実行してください。",
+            )
+            return
+
+        from .unified_optimizer_dialog import UnifiedOptimizerDialog
+        dlg = UnifiedOptimizerDialog(
+            base_case=base_case,
+            criteria=self._project.criteria,
+            snap_exe_path=self._project.snap_exe_path,
+            snap_work_dir=self._project.snap_work_dir,
+            parent=self,
+        )
+        if dlg.exec():
+            best_params = dlg.best_params
+            result = dlg.result
+            if best_params and result and result.best:
+                from app.models import AnalysisCase
+                param_str = ", ".join(
+                    f"{k}={v:.4g}" for k, v in best_params.items()
+                )
+                case = AnalysisCase(
+                    name=f"統合最適化結果",
+                    parameters=best_params,
+                    notes=f"統合最適化結果: {result.config.objective_label} = "
+                          f"{result.best.objective_value:.6g}\n"
+                          f"パラメータ: {param_str}\n"
+                          f"探索手法: {result.config.method}\n"
+                          f"評価数: {len(result.all_candidates)}",
+                )
+                case.model_path = base_case.model_path
+                self._project.add_case(case)
+                self._case_table.refresh()
+                self._project._touch()
+                self._log.append_line(
+                    f"=== 統合最適化結果をケース追加: {param_str} ==="
+                )
+                self.statusBar().showMessage(
+                    "統合最適化結果をケースとして追加しました", 5000,
+                )
+
     def _open_damper_injector(self) -> None:
         """iRDT/iOD ダンパー挿入ダイアログを開きます。"""
         base_case = None

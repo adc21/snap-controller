@@ -666,6 +666,11 @@ class MainWindow(_MainWindowDialogsMixin, QMainWindow):
         act_minimizer.triggered.connect(self._open_minimizer_dialog)
         analysis_menu.addAction(act_minimizer)
 
+        act_unified = QAction("統合最適化(&U)…", self)
+        act_unified.setShortcut("Ctrl+Shift+U")
+        act_unified.triggered.connect(self._open_unified_optimizer)
+        analysis_menu.addAction(act_unified)
+
         act_injector = QAction("iRDT/iOD ダンパー挿入(&J)…", self)
         act_injector.setShortcut("Ctrl+Shift+J")
         act_injector.triggered.connect(self._open_damper_injector)

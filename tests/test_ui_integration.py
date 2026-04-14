@@ -67,6 +67,16 @@ class TestDialogInstantiation:
         )
         assert dlg is not None
 
+    def test_unified_optimizer_dialog(self, qapp):
+        from app.ui.unified_optimizer_dialog import UnifiedOptimizerDialog
+        dlg = UnifiedOptimizerDialog()
+        assert dlg is not None
+        assert hasattr(dlg, "_param_table")
+        assert hasattr(dlg, "_floor_table")
+        assert hasattr(dlg, "_obj1_combo")
+        assert hasattr(dlg, "_canvas")
+        assert hasattr(dlg, "_start_btn")
+
     def test_damper_injector_dialog(self, qapp):
         from app.ui.damper_injector_dialog import DamperInjectorDialog
         dlg = DamperInjectorDialog()
