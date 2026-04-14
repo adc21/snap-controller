@@ -619,6 +619,7 @@ def create_unified_evaluator(
     log_callback: Optional[Callable[[str], None]] = None,
     snap_work_dir: str = "",
     timeout: int = 300,
+    damper_def_name: str = "",
 ) -> Optional[SnapEvaluator]:
     """
     統合最適化用の SnapEvaluator を構築するファクトリ関数。
@@ -676,19 +677,29 @@ def create_unified_evaluator(
     count_ranges = [pr for pr in param_ranges if pr.is_floor_count]
 
     # ダンパー定義名とparam_field_mapの構築（物理パラメータ用）
-    damper_def_name = ""
-    param_field_map: Dict[str, int] = {}
-    if base_case.damper_params:
+    if not damper_def_name and base_case.damper_params:
         for key in base_case.damper_params:
             damper_def_name = key
             break
 
+    param_field_map: Dict[str, int] = {}
+
+    # field_{N} 形式のキーから param_field_map を自動構築
+    for pr in phys_ranges:
+        if pr.key.startswith("field_"):
+            try:
+                idx = int(pr.key.replace("field_", ""))
+                param_field_map[pr.key] = idx
+            except ValueError:
+                logger.debug("パラメータキーを整数変換できず: %s", pr.key)
+
+    # base_case.damper_params からも補完
     if damper_def_name and damper_def_name in (base_case.damper_params or {}):
         overrides = base_case.damper_params[damper_def_name]
         if isinstance(overrides, dict):
             override_keys = list(overrides.keys())
             for pr in phys_ranges:
-                if pr.key in override_keys:
+                if pr.key in override_keys and pr.key not in param_field_map:
                     try:
                         param_field_map[pr.key] = int(pr.key)
                     except ValueError:
@@ -697,7 +708,8 @@ def create_unified_evaluator(
                     try:
                         idx = int(idx_str)
                         if pr.key.lower() in str(overrides.get(idx_str, "")).lower():
-                            param_field_map[pr.key] = idx
+                            if pr.key not in param_field_map:
+                                param_field_map[pr.key] = idx
                     except (ValueError, TypeError):
                         logger.debug("overrideキー変換失敗: %s", idx_str)
 

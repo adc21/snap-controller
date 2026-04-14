@@ -34,6 +34,7 @@ from PySide6.QtWidgets import (
     QComboBox,
     QDialog,
     QDoubleSpinBox,
+    QFileDialog,
     QFormLayout,
     QGroupBox,
     QHBoxLayout,
@@ -288,11 +289,14 @@ class UnifiedOptimizerDialog(QDialog):
             except (ValueError, TypeError):
                 continue
 
-            # 種別・番号系（整数の種類コードなど）はスキップ
-            if field_idx_1based <= 5 and current == int(current):
-                # 種別, k-DB番号, 型番, モデル等は最適化対象外
-                if "種別" in label_text or "k-DB" in label_text or "番号" in label_text:
-                    continue
+            # 種別・番号・コード・フラグ系は最適化対象外
+            _skip_keywords = (
+                "種別", "k-DB", "番号", "型番", "モデル",
+                "考慮", "初期解析", "疲労損傷", "重量種別",
+                "計算", "しない", "する",
+            )
+            if any(kw in label_text for kw in _skip_keywords):
+                continue
 
             unit = units.get(field_idx_1based, "")
             row = self._param_table.rowCount()
@@ -512,9 +516,15 @@ class UnifiedOptimizerDialog(QDialog):
         self._detail_text.setMaximumHeight(180)
         gl.addWidget(self._detail_text)
 
+        btn_row = QHBoxLayout()
         self._apply_btn = QPushButton("この候補を .s8i に適用")
         self._apply_btn.setEnabled(False)
-        gl.addWidget(self._apply_btn)
+        btn_row.addWidget(self._apply_btn)
+
+        self._export_btn = QPushButton("CSV エクスポート")
+        self._export_btn.setEnabled(False)
+        btn_row.addWidget(self._export_btn)
+        gl.addLayout(btn_row)
 
         layout.addWidget(group)
 
@@ -535,6 +545,7 @@ class UnifiedOptimizerDialog(QDialog):
         self._start_btn.clicked.connect(self._on_start)
         self._stop_btn.clicked.connect(self._on_stop)
         self._apply_btn.clicked.connect(self._on_apply)
+        self._export_btn.clicked.connect(self._on_export_csv)
         self._obj2_enabled.toggled.connect(self._on_obj2_toggled)
         self._def_combo.currentIndexChanged.connect(self._on_damper_def_changed)
         self._iter_spin.valueChanged.connect(self._update_estimate)
@@ -644,6 +655,7 @@ class UnifiedOptimizerDialog(QDialog):
         self._result = result
         self._start_btn.setEnabled(True)
         self._stop_btn.setEnabled(False)
+        self._export_btn.setEnabled(bool(self._candidates))
 
         if result.best:
             self._show_candidate_detail(result.best)
@@ -700,6 +712,68 @@ class UnifiedOptimizerDialog(QDialog):
         )
         if reply == QMessageBox.Yes:
             self.accept()
+
+    def _on_export_csv(self) -> None:
+        """全候補をCSVにエクスポート。"""
+        if not self._candidates:
+            return
+
+        path, _ = QFileDialog.getSaveFileName(
+            self, "CSV エクスポート", "optimization_results.csv",
+            "CSV ファイル (*.csv)",
+        )
+        if not path:
+            return
+
+        try:
+            self._write_csv(path)
+            QMessageBox.information(
+                self, "エクスポート完了",
+                f"{len(self._candidates)} 候補を CSV に保存しました。\n{path}",
+            )
+        except Exception as e:
+            QMessageBox.critical(self, "エクスポートエラー", str(e))
+
+    def _write_csv(self, path: str) -> None:
+        """候補データをCSVファイルに書き込む。"""
+        import csv
+
+        if not self._candidates:
+            return
+
+        # ヘッダ構築
+        param_keys = list(self._candidates[0].params.keys())
+        response_keys = [k for k in self._candidates[0].response_values.keys()]
+
+        # パラメータキーのラベルマッピングを構築
+        label_map = self._build_param_label_map()
+
+        with open(path, "w", newline="", encoding="utf-8-sig") as f:
+            writer = csv.writer(f)
+
+            header = ["#", "feasible"]
+            header += [label_map.get(k, k) for k in param_keys]
+            header += response_keys
+            header += ["objective_value"]
+            writer.writerow(header)
+
+            for i, cand in enumerate(self._candidates):
+                row = [cand.iteration, "OK" if cand.is_feasible else "NG"]
+                row += [cand.params.get(k, "") for k in param_keys]
+                row += [cand.response_values.get(k, "") for k in response_keys]
+                row += [cand.objective_value]
+                writer.writerow(row)
+
+    def _build_param_label_map(self) -> Dict[str, str]:
+        """パラメータキー→日本語ラベルのマッピングを構築。"""
+        label_map: Dict[str, str] = {}
+        for row_info in self._field_rows:
+            key = f"field_{row_info['val_idx_0based']}"
+            label_map[key] = row_info["label"]
+        for row_info in self._floor_rows:
+            key = f"floor_count_{row_info['floor_key']}"
+            label_map[key] = f"{row_info['floor_key']} 基数"
+        return label_map
 
     # ------------------------------------------------------------------
     # パラメータ収集
@@ -795,6 +869,9 @@ class UnifiedOptimizerDialog(QDialog):
         if not self._base_case:
             return None
 
+        dd = self._selected_damper_def()
+        def_name = dd.name if dd else ""
+
         def log_cb(msg: str) -> None:
             logger.info(msg)
 
@@ -805,6 +882,7 @@ class UnifiedOptimizerDialog(QDialog):
             log_callback=log_cb,
             snap_work_dir=self._snap_work_dir,
             timeout=300,
+            damper_def_name=def_name,
         )
 
     # ------------------------------------------------------------------
@@ -984,16 +1062,21 @@ class UnifiedOptimizerDialog(QDialog):
     # ------------------------------------------------------------------
     def _show_candidate_detail(self, cand: OptimizationCandidate) -> None:
         """候補詳細をテキストパネルに表示。"""
+        label_map = self._build_param_label_map()
+
         lines = [f"候補 #{cand.iteration}"]
         lines.append("━" * 36)
 
         lines.append("パラメータ:")
         for key, val in cand.params.items():
+            display = label_map.get(key, key)
             if key.startswith("floor_count_"):
-                fk = key.replace("floor_count_", "")
-                lines.append(f"  {fk} = {int(val)} 本")
+                lines.append(f"  {display} = {int(val)} 本")
             else:
-                lines.append(f"  {key} = {val:.6g}")
+                lines.append(f"  {display} = {val:.6g}")
+
+        # 応答値ラベルマッピング
+        resp_labels = {k: lbl for k, lbl, _ in _OBJECTIVE_ITEMS}
 
         lines.append("")
         lines.append("応答値:")
@@ -1005,7 +1088,8 @@ class UnifiedOptimizerDialog(QDialog):
                     mark = " OK"
                 else:
                     mark = " NG"
-            lines.append(f"  {key}: {val:.6g}{mark}")
+            disp = resp_labels.get(key, key)
+            lines.append(f"  {disp}: {val:.6g}{mark}")
 
         if cand.constraint_margins:
             lines.append("")
