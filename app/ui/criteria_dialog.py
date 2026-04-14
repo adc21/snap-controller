@@ -71,60 +71,67 @@ class CriteriaDialog(QDialog):
         self.setMinimumWidth(520)
         layout = QVBoxLayout(self)
 
-        # --- 基準セット名 ---
+        layout.addLayout(self._build_name_row())
+        layout.addWidget(self._build_description_label())
+        layout.addWidget(self._build_criteria_group())
+        layout.addLayout(self._build_preset_header())
+        layout.addLayout(self._build_preset_buttons())
+        layout.addWidget(self._build_button_box())
+
+    def _build_name_row(self) -> QHBoxLayout:
+        """基準セット名の入力行を構築する。"""
         name_row = QHBoxLayout()
         name_row.addWidget(QLabel("基準名:"))
         self._name_edit = QLineEdit(self._criteria.name)
         name_row.addWidget(self._name_edit)
-        layout.addLayout(name_row)
+        return name_row
 
-        # --- 説明 ---
+    @staticmethod
+    def _build_description_label() -> QLabel:
         desc = QLabel(
             "<small>各応答値の上限値（許容値）を設定してください。\n"
             "チェックを入れた項目のみが判定対象になります。</small>"
         )
         desc.setWordWrap(True)
-        layout.addWidget(desc)
+        return desc
 
-        # --- 基準項目 ---
+    def _build_criteria_group(self) -> QGroupBox:
+        """判定基準項目のフォームを構築する。"""
         group = QGroupBox("判定基準")
         form = QFormLayout(group)
-
         for item in self._criteria.items:
-            row_layout = QHBoxLayout()
-
-            cb = QCheckBox()
-            cb.setChecked(item.enabled)
-            row_layout.addWidget(cb)
-
-            spin = QDoubleSpinBox()
-            spin.setDecimals(item.decimals)
-            spin.setRange(0.0, 1e12)
-            spin.setSingleStep(10 ** (-item.decimals))
-            if item.limit_value is not None:
-                spin.setValue(item.limit_value)
-            else:
-                spin.setValue(0.0)
-            spin.setSuffix(f"  {item.unit}")
-            spin.setEnabled(item.enabled)
-            row_layout.addWidget(spin, stretch=1)
-
-            # チェックボックスとスピンボックス連動
-            cb.toggled.connect(spin.setEnabled)
-
-            container = QWidget()
-            container.setLayout(row_layout)
+            cb, spin, container = self._build_criterion_row(item)
             form.addRow(f"{item.label}:", container)
-
             self._rows.append((cb, spin, item))
+        return group
 
-        layout.addWidget(group)
+    @staticmethod
+    def _build_criterion_row(item: CriterionItem) -> tuple[QCheckBox, QDoubleSpinBox, QWidget]:
+        """単一基準項目のチェックボックス+スピンボックス行を生成する。"""
+        row_layout = QHBoxLayout()
+        cb = QCheckBox()
+        cb.setChecked(item.enabled)
+        row_layout.addWidget(cb)
 
-        # --- UX改善① 第5回: プリセットボタン（三色色分け + 適用バッジ） ---
+        spin = QDoubleSpinBox()
+        spin.setDecimals(item.decimals)
+        spin.setRange(0.0, 1e12)
+        spin.setSingleStep(10 ** (-item.decimals))
+        spin.setValue(item.limit_value if item.limit_value is not None else 0.0)
+        spin.setSuffix(f"  {item.unit}")
+        spin.setEnabled(item.enabled)
+        row_layout.addWidget(spin, stretch=1)
+
+        cb.toggled.connect(spin.setEnabled)
+
+        container = QWidget()
+        container.setLayout(row_layout)
+        return cb, spin, container
+
+    def _build_preset_header(self) -> QHBoxLayout:
+        """プリセット見出し + 適用済みバッジの行を構築する。"""
         preset_header = QHBoxLayout()
         preset_header.addWidget(QLabel("プリセット:"))
-
-        # 適用済みバッジ（プリセット選択後に表示）
         self._applied_preset_label = QLabel("")
         self._applied_preset_label.setStyleSheet(
             "QLabel {"
@@ -135,64 +142,65 @@ class CriteriaDialog(QDialog):
         self._applied_preset_label.setVisible(False)
         preset_header.addWidget(self._applied_preset_label)
         preset_header.addStretch()
-        layout.addLayout(preset_header)
+        return preset_header
 
+    def _build_preset_buttons(self) -> QHBoxLayout:
+        """三色のプリセットボタン行を構築する。"""
         preset_row = QHBoxLayout()
         preset_row.setSpacing(8)
-
-        # 大地震時 = 赤系（建基法最低限）
-        btn_large = QPushButton("🔴 大地震時 (1/100)")
-        btn_large.setToolTip(
-            "最大層間変形角 1/100 rad\n"
-            "建築基準法施行令 82条の2 の最低基準です。\n"
-            "制振装置なしの一般建築物の目標レベルです。"
-        )
-        btn_large.setStyleSheet(
-            "QPushButton { background: #ffebee; color: #b71c1c; border: 1px solid #ef9a9a;"
-            "  border-radius: 4px; padding: 5px 10px; font-size: 11px; }"
-            "QPushButton:hover { background: #ffcdd2; }"
-        )
-        btn_large.clicked.connect(lambda: self._apply_preset(1 / 100, "大地震時 (1/100 rad)"))
-        preset_row.addWidget(btn_large)
-
-        # 中地震時 = 橙系（一般的な免振目標）
-        btn_medium = QPushButton("🟡 中地震時 (1/200)")
-        btn_medium.setToolTip(
-            "最大層間変形角 1/200 rad\n"
-            "一般的な免振建物の目標性能レベルです。\n"
-            "居住性の確保・設備の損傷防止に効果的です。"
-        )
-        btn_medium.setStyleSheet(
-            "QPushButton { background: #fff8e1; color: #e65100; border: 1px solid #ffcc80;"
-            "  border-radius: 4px; padding: 5px 10px; font-size: 11px; }"
-            "QPushButton:hover { background: #ffe082; }"
-        )
-        btn_medium.clicked.connect(lambda: self._apply_preset(1 / 200, "中地震時 (1/200 rad)"))
-        preset_row.addWidget(btn_medium)
-
-        # 高性能 = 緑系（医療・免震倉庫等）
-        btn_strict = QPushButton("🟢 高性能 (1/300)")
-        btn_strict.setToolTip(
-            "最大層間変形角 1/300 rad\n"
-            "医療施設・免震倉庫・美術館等の高性能目標レベルです。\n"
-            "精密機器の保護や業務継続性が求められる建物に適します。"
-        )
-        btn_strict.setStyleSheet(
-            "QPushButton { background: #e8f5e9; color: #1b5e20; border: 1px solid #a5d6a7;"
-            "  border-radius: 4px; padding: 5px 10px; font-size: 11px; }"
-            "QPushButton:hover { background: #c8e6c9; }"
-        )
-        btn_strict.clicked.connect(lambda: self._apply_preset(1 / 300, "高性能 (1/300 rad)"))
-        preset_row.addWidget(btn_strict)
-
+        preset_row.addWidget(self._make_preset_button(
+            text="🔴 大地震時 (1/100)",
+            tooltip=(
+                "最大層間変形角 1/100 rad\n"
+                "建築基準法施行令 82条の2 の最低基準です。\n"
+                "制振装置なしの一般建築物の目標レベルです。"
+            ),
+            bg="#ffebee", fg="#b71c1c", border="#ef9a9a", hover="#ffcdd2",
+            drift=1 / 100, label="大地震時 (1/100 rad)",
+        ))
+        preset_row.addWidget(self._make_preset_button(
+            text="🟡 中地震時 (1/200)",
+            tooltip=(
+                "最大層間変形角 1/200 rad\n"
+                "一般的な免振建物の目標性能レベルです。\n"
+                "居住性の確保・設備の損傷防止に効果的です。"
+            ),
+            bg="#fff8e1", fg="#e65100", border="#ffcc80", hover="#ffe082",
+            drift=1 / 200, label="中地震時 (1/200 rad)",
+        ))
+        preset_row.addWidget(self._make_preset_button(
+            text="🟢 高性能 (1/300)",
+            tooltip=(
+                "最大層間変形角 1/300 rad\n"
+                "医療施設・免震倉庫・美術館等の高性能目標レベルです。\n"
+                "精密機器の保護や業務継続性が求められる建物に適します。"
+            ),
+            bg="#e8f5e9", fg="#1b5e20", border="#a5d6a7", hover="#c8e6c9",
+            drift=1 / 300, label="高性能 (1/300 rad)",
+        ))
         preset_row.addStretch()
-        layout.addLayout(preset_row)
+        return preset_row
 
-        # --- ボタンボックス ---
+    def _make_preset_button(
+        self, *, text: str, tooltip: str, bg: str, fg: str, border: str,
+        hover: str, drift: float, label: str,
+    ) -> QPushButton:
+        """単一プリセットボタンを生成し、クリック時の適用ハンドラを接続する。"""
+        btn = QPushButton(text)
+        btn.setToolTip(tooltip)
+        btn.setStyleSheet(
+            f"QPushButton {{ background: {bg}; color: {fg}; border: 1px solid {border};"
+            "  border-radius: 4px; padding: 5px 10px; font-size: 11px; }"
+            f"QPushButton:hover {{ background: {hover}; }}"
+        )
+        btn.clicked.connect(lambda: self._apply_preset(drift, label))
+        return btn
+
+    def _build_button_box(self) -> QDialogButtonBox:
         btn_box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         btn_box.accepted.connect(self.accept)
         btn_box.rejected.connect(self.reject)
-        layout.addWidget(btn_box)
+        return btn_box
 
     def _apply_preset(self, drift_limit: float, label: str = "") -> None:
         """

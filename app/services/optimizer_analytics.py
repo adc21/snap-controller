@@ -209,6 +209,100 @@ def _saltelli_sample(n: int, d: int) -> Tuple[np.ndarray, np.ndarray]:
     return A, B
 
 
+def _sobol_row_to_params(
+    row: np.ndarray,
+    parameters: List["ParameterRange"],
+) -> Dict[str, float]:
+    """[0,1]^d のサンプル行を実パラメータ値に変換する。"""
+    params: Dict[str, float] = {}
+    for j, pr in enumerate(parameters):
+        val = pr.min_val + row[j] * (pr.max_val - pr.min_val)
+        if pr.step > 0:
+            val = pr.min_val + round((val - pr.min_val) / pr.step) * pr.step
+            val = max(pr.min_val, min(pr.max_val, val))
+        if pr.is_integer:
+            val = round(val)
+        params[pr.key] = val
+    return params
+
+
+def _sobol_make_evaluator(
+    evaluate_fn: Callable[[Dict[str, float]], Dict[str, float]],
+    parameters: List["ParameterRange"],
+    objective_key: str,
+) -> Callable[[np.ndarray], float]:
+    """Saltelli行の1行を評価して目的関数値を返すクロージャを生成する。"""
+
+    def _eval_obj(row: np.ndarray) -> float:
+        try:
+            resp = evaluate_fn(_sobol_row_to_params(row, parameters))
+            val = resp.get(objective_key, float("inf"))
+            if math.isnan(val) or math.isinf(val):
+                return float("nan")
+            return val
+        except Exception:
+            logger.debug("Sobol評価失敗: row=%s", row)
+            return float("nan")
+
+    return _eval_obj
+
+
+def _sobol_evaluate_matrices(
+    eval_obj: Callable[[np.ndarray], float],
+    A: np.ndarray,
+    B: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Saltelli の f(A), f(B), f(AB_j), f(BA_j) 行列を評価する。"""
+    n_samples, d = A.shape
+    y_a = np.array([eval_obj(A[i]) for i in range(n_samples)])
+    y_b = np.array([eval_obj(B[i]) for i in range(n_samples)])
+    y_ab = np.zeros((d, n_samples))  # AB_j: A の j列を B の j列に置換
+    y_ba = np.zeros((d, n_samples))  # BA_j: B の j列を A の j列に置換
+    for j in range(d):
+        AB_j = A.copy()
+        AB_j[:, j] = B[:, j]
+        BA_j = B.copy()
+        BA_j[:, j] = A[:, j]
+        y_ab[j] = np.array([eval_obj(AB_j[i]) for i in range(n_samples)])
+        y_ba[j] = np.array([eval_obj(BA_j[i]) for i in range(n_samples)])
+    return y_a, y_b, y_ab, y_ba
+
+
+def _sobol_compute_entry(
+    j: int,
+    parameters: List["ParameterRange"],
+    y_a: np.ndarray,
+    y_b: np.ndarray,
+    y_ab_j: np.ndarray,
+    y_ba_j: np.ndarray,
+) -> SobolEntry:
+    """パラメータ j の Sobol 指標 S1/ST を推定する。"""
+    label = parameters[j].label or parameters[j].key
+    key = parameters[j].key
+    zero_entry = SobolEntry(key=key, label=label, s1=0.0, st=0.0)
+
+    mask_s1 = ~(np.isnan(y_a) | np.isnan(y_b) | np.isnan(y_ba_j))
+    mask_st = ~(np.isnan(y_a) | np.isnan(y_ab_j))
+    if mask_s1.sum() < 4 or mask_st.sum() < 4:
+        return zero_entry
+
+    y_all_valid = np.concatenate([y_a[~np.isnan(y_a)], y_b[~np.isnan(y_b)]])
+    var_y = np.var(y_all_valid, ddof=0)
+    if var_y < 1e-30:
+        return zero_entry
+
+    # 一次感度 S1_j = V_j / V(Y) (Jansen 1999 estimator)
+    s1_num = np.mean(y_b[mask_s1] * (y_ba_j[mask_s1] - y_a[mask_s1]))
+    s1 = s1_num / var_y
+    # 全次感度 ST_j = (1/2n) Σ [f(A) - f(AB_j)]^2 / V(Y)
+    diff = y_a[mask_st] - y_ab_j[mask_st]
+    st = np.mean(diff ** 2) / (2.0 * var_y)
+
+    s1 = max(0.0, min(1.0, s1))
+    st = max(0.0, min(1.0, st))
+    return SobolEntry(key=key, label=label, s1=s1, st=st)
+
+
 def compute_sobol_sensitivity(
     evaluate_fn: Callable[[Dict[str, float]], Dict[str, float]],
     parameters: List["ParameterRange"],
@@ -224,133 +318,27 @@ def compute_sobol_sensitivity(
     捉えることができます。
 
     評価回数: n_samples × (2 × n_params + 2) 回
-
-    Parameters
-    ----------
-    evaluate_fn : callable
-        パラメータ辞書 → 応答値辞書 の評価関数。
-    parameters : list of ParameterRange
-        探索パラメータ定義。
-    objective_key : str
-        目的関数のキー。
-    n_samples : int
-        基本サンプル数（デフォルト64）。推奨: 64〜256。
-    objective_label : str
-        目的関数の日本語ラベル。
-
-    Returns
-    -------
-    SobolResult
-        感度解析結果（一次指標 S1 + 全次指標 ST）。
     """
     d = len(parameters)
     if d == 0:
         return SobolResult(entries=[], objective_key=objective_key,
                            objective_label=objective_label)
 
-    # Saltelli サンプリング行列を生成
     A, B = _saltelli_sample(n_samples, d)
+    eval_obj = _sobol_make_evaluator(evaluate_fn, parameters, objective_key)
+    y_a, y_b, y_ab, y_ba = _sobol_evaluate_matrices(eval_obj, A, B)
 
-    def _to_params(row: np.ndarray) -> Dict[str, float]:
-        """[0,1]^d のサンプルを実パラメータ値に変換する。"""
-        params: Dict[str, float] = {}
-        for j, pr in enumerate(parameters):
-            val = pr.min_val + row[j] * (pr.max_val - pr.min_val)
-            if pr.step > 0:
-                val = pr.min_val + round((val - pr.min_val) / pr.step) * pr.step
-                val = max(pr.min_val, min(pr.max_val, val))
-            if pr.is_integer:
-                val = round(val)
-            params[pr.key] = val
-        return params
-
-    def _eval_obj(row: np.ndarray) -> float:
-        """1行を評価して目的関数値を返す。"""
-        try:
-            resp = evaluate_fn(_to_params(row))
-            val = resp.get(objective_key, float("inf"))
-            if math.isnan(val) or math.isinf(val):
-                return float("nan")
-            return val
-        except Exception:
-            logger.debug("Sobol評価失敗: row=%s", row)
-            return float("nan")
-
-    # f(A), f(B) を評価
-    y_a = np.array([_eval_obj(A[i]) for i in range(n_samples)])
-    y_b = np.array([_eval_obj(B[i]) for i in range(n_samples)])
-
-    # AB_i, BA_i 行列（i番目の列のみ入れ替え）を評価
-    y_ab = np.zeros((d, n_samples))  # AB_i: A の i列を B の i列に置換
-    y_ba = np.zeros((d, n_samples))  # BA_i: B の i列を A の i列に置換
-    for j in range(d):
-        AB_j = A.copy()
-        AB_j[:, j] = B[:, j]
-        BA_j = B.copy()
-        BA_j[:, j] = A[:, j]
-        y_ab[j] = np.array([_eval_obj(AB_j[i]) for i in range(n_samples)])
-        y_ba[j] = np.array([_eval_obj(BA_j[i]) for i in range(n_samples)])
-
-    n_evaluations = n_samples * (2 * d + 2)
-
-    # NaN を除外したマスクベースの推定
-    entries: List[SobolEntry] = []
-    for j in range(d):
-        # 有効サンプルのマスク
-        mask_s1 = ~(np.isnan(y_a) | np.isnan(y_b) | np.isnan(y_ba[j]))
-        mask_st = ~(np.isnan(y_a) | np.isnan(y_ab[j]))
-
-        n_valid_s1 = mask_s1.sum()
-        n_valid_st = mask_st.sum()
-
-        if n_valid_s1 < 4 or n_valid_st < 4:
-            entries.append(SobolEntry(
-                key=parameters[j].key,
-                label=parameters[j].label or parameters[j].key,
-                s1=0.0, st=0.0,
-            ))
-            continue
-
-        # 全分散の推定: Var(Y) = E[Y^2] - E[Y]^2
-        y_all_valid = np.concatenate([y_a[~np.isnan(y_a)], y_b[~np.isnan(y_b)]])
-        f0 = np.mean(y_all_valid)
-        var_y = np.var(y_all_valid, ddof=0)
-
-        if var_y < 1e-30:
-            entries.append(SobolEntry(
-                key=parameters[j].key,
-                label=parameters[j].label or parameters[j].key,
-                s1=0.0, st=0.0,
-            ))
-            continue
-
-        # 一次感度 S1_j = V_j / V(Y)
-        # V_j = (1/n) Σ f(B) * [f(A_B^j) - f(A)]  (Jansen 1999 estimator)
-        s1_num = np.mean(y_b[mask_s1] * (y_ba[j][mask_s1] - y_a[mask_s1]))
-        s1 = s1_num / var_y
-
-        # 全次感度 ST_j = 1 - V_~j / V(Y)
-        # Jansen (1999): ST_j = (1/2n) Σ [f(A) - f(A_B^j)]^2 / V(Y)
-        diff = y_a[mask_st] - y_ab[j][mask_st]
-        st = np.mean(diff ** 2) / (2.0 * var_y)
-
-        # クランプ [0, 1] 範囲に（サンプル数が少ないと範囲外になることがある）
-        s1 = max(0.0, min(1.0, s1))
-        st = max(0.0, min(1.0, st))
-
-        entries.append(SobolEntry(
-            key=parameters[j].key,
-            label=parameters[j].label or parameters[j].key,
-            s1=s1,
-            st=st,
-        ))
+    entries = [
+        _sobol_compute_entry(j, parameters, y_a, y_b, y_ab[j], y_ba[j])
+        for j in range(d)
+    ]
 
     return SobolResult(
         entries=entries,
         objective_key=objective_key,
         objective_label=objective_label,
         n_samples=n_samples,
-        n_evaluations=n_evaluations,
+        n_evaluations=n_samples * (2 * d + 2),
     )
 
 
