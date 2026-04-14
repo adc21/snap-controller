@@ -674,6 +674,22 @@ class UnifiedOptimizerDialog(QDialog):
     def _build_plot(self, layout: QVBoxLayout) -> None:
         """パレートフロント / 収束プロット。"""
         _apply_mpl_theme()
+
+        # 軸セレクタ行（ユーザーが解析中でも X/Y を自由に切り替え可能）
+        axis_row = QHBoxLayout()
+        axis_row.addWidget(QLabel("X軸:"))
+        self._xaxis_combo = QComboBox()
+        axis_row.addWidget(self._xaxis_combo)
+        axis_row.addSpacing(12)
+        axis_row.addWidget(QLabel("Y軸:"))
+        self._yaxis_combo = QComboBox()
+        axis_row.addWidget(self._yaxis_combo)
+        axis_row.addStretch()
+        self._populate_axis_combos()
+        self._xaxis_combo.currentIndexChanged.connect(self._on_axis_changed)
+        self._yaxis_combo.currentIndexChanged.connect(self._on_axis_changed)
+        layout.addLayout(axis_row)
+
         self._fig = Figure(figsize=(6, 4), dpi=100)
         self._ax = self._fig.add_subplot(111)
         self._canvas = FigureCanvas(self._fig)
@@ -684,6 +700,32 @@ class UnifiedOptimizerDialog(QDialog):
         self._scatter_infeasible = None
         self._scatter_pareto = None
         self._scatter_best = None
+
+    def _populate_axis_combos(self) -> None:
+        """軸セレクタの選択肢を構築する。
+
+        項目:
+          - 自動 (目的関数設定に応じて収束/パレートを自動選択)
+          - 反復番号
+          - 応答値一覧 (_OBJECTIVE_ITEMS)
+        """
+        # X軸: 自動 / 反復番号 / 応答値
+        self._xaxis_combo.addItem("自動", "auto")
+        self._xaxis_combo.addItem("反復番号", "iteration")
+        for key, label, unit in _OBJECTIVE_ITEMS:
+            unit_str = f" [{unit}]" if unit and unit != "—" else ""
+            self._xaxis_combo.addItem(f"{label}{unit_str}", key)
+
+        # Y軸: 自動 / 応答値 (反復番号は通常Y軸にしない)
+        self._yaxis_combo.addItem("自動", "auto")
+        self._yaxis_combo.addItem("反復番号", "iteration")
+        for key, label, unit in _OBJECTIVE_ITEMS:
+            unit_str = f" [{unit}]" if unit and unit != "—" else ""
+            self._yaxis_combo.addItem(f"{label}{unit_str}", key)
+
+    def _on_axis_changed(self) -> None:
+        """X/Y軸セレクタの変更ハンドラ (最適化中でも呼ばれる)。"""
+        self._update_plot()
 
     def _build_detail_panel(self, layout: QVBoxLayout) -> None:
         """候補詳細パネル。"""
@@ -1168,23 +1210,131 @@ class UnifiedOptimizerDialog(QDialog):
         self._canvas.draw()
 
     def _update_plot(self) -> None:
-        """候補データでプロットを更新。"""
+        """候補データでプロットを更新。
+
+        軸セレクタが両方「自動」の場合は目的関数設定に応じた
+        既定の収束/パレートプロットを描画する。
+        どちらかがカスタム指定されていればユーザー指定軸で描画する。
+        """
         if not self._candidates:
             return
 
-        is_multi = self._obj2_enabled.isChecked()
         self._ax.clear()
 
-        if is_multi:
-            self._update_pareto_plot()
+        x_key = self._xaxis_combo.currentData() if hasattr(self, "_xaxis_combo") else "auto"
+        y_key = self._yaxis_combo.currentData() if hasattr(self, "_yaxis_combo") else "auto"
+        is_multi = self._obj2_enabled.isChecked()
+
+        if x_key == "auto" and y_key == "auto":
+            if is_multi:
+                self._update_pareto_plot()
+            else:
+                self._update_convergence_plot()
         else:
-            self._update_convergence_plot()
+            # カスタム軸: auto 側は既定を補完 (X=iteration, Y=obj1)
+            resolved_x = x_key if x_key != "auto" else ("iteration" if not is_multi else self._obj1_combo.currentData())
+            resolved_y = y_key if y_key != "auto" else (self._obj1_combo.currentData() if not is_multi else self._obj2_combo.currentData())
+            self._update_custom_axis_plot(resolved_x, resolved_y)
 
         try:
             self._fig.tight_layout()
         except (ValueError, MemoryError):
             logger.debug("tight_layout 失敗")
         self._canvas.draw()
+
+    # --------------- 軸値抽出ヘルパー ---------------
+    def _axis_label(self, key: str) -> str:
+        """軸キーから表示ラベル (単位込み) を返す。"""
+        if key == "iteration":
+            return "反復番号"
+        for k, label, unit in _OBJECTIVE_ITEMS:
+            if k == key:
+                unit_str = f" [{unit}]" if unit and unit != "—" else ""
+                return f"{label}{unit_str}"
+        return key
+
+    @staticmethod
+    def _candidate_axis_value(cand: OptimizationCandidate, key: str) -> float:
+        """候補から軸キーの値を抽出 (iteration / response_values 両対応)。"""
+        if key == "iteration":
+            return float(cand.iteration)
+        return float(cand.response_values.get(key, float("inf")))
+
+    def _update_custom_axis_plot(self, x_key: str, y_key: str) -> None:
+        """ユーザー指定のX/Y軸で feasible/infeasible の散布図を描画。
+
+        軸が両方とも目的関数 (obj1/obj2) に一致する場合は
+        パレートフロント・最良解マーカーも重ねて表示する。
+        """
+        feasible = [c for c in self._candidates if c.is_feasible]
+        infeasible = [c for c in self._candidates if not c.is_feasible]
+
+        def _xy(cands, xk, yk):
+            xs, ys = [], []
+            for c in cands:
+                xv = self._candidate_axis_value(c, xk)
+                yv = self._candidate_axis_value(c, yk)
+                if xv < float("inf") and yv < float("inf"):
+                    xs.append(xv)
+                    ys.append(yv)
+            return xs, ys
+
+        if infeasible:
+            xs, ys = _xy(infeasible, x_key, y_key)
+            self._scatter_infeasible = self._plot_scatter_layer(
+                xs, ys, "gray", "x", 0.4, "infeasible",
+            )
+
+        if feasible:
+            xs, ys = _xy(feasible, x_key, y_key)
+            self._scatter_feasible = self._plot_scatter_layer(
+                xs, ys, "#1f77b4", "o", 0.6, "feasible",
+            )
+
+        # 2目的設定で軸が (obj1, obj2) と一致する場合のみパレートフロントを重ねる
+        obj1_key = self._obj1_combo.currentData()
+        obj2_key = self._obj2_combo.currentData() if self._obj2_enabled.isChecked() else None
+        axis_matches_objectives = (
+            obj2_key is not None
+            and {x_key, y_key} == {obj1_key, obj2_key}
+        )
+        if axis_matches_objectives:
+            pareto = self._compute_pareto_front()
+            if pareto:
+                px, py = _xy(pareto, x_key, y_key)
+                self._scatter_pareto = self._plot_scatter_layer(
+                    px, py, "orange", "o", 1.0, "パレートフロント",
+                    s=80, edgecolors="black", linewidths=0.8, zorder=5,
+                )
+                best = min(pareto, key=lambda c: c.response_values.get(obj1_key, float("inf")))
+                bx = self._candidate_axis_value(best, x_key)
+                by = self._candidate_axis_value(best, y_key)
+                self._scatter_best = self._ax.scatter(
+                    [bx], [by], c="red", marker="*", s=200,
+                    edgecolors="black", linewidths=0.8, label="最良解", zorder=10,
+                )
+
+        # 1目的設定で Y が目的関数値、X が反復番号の場合は最良値推移ラインを重ねる
+        if x_key == "iteration" and not self._obj2_enabled.isChecked() and y_key == obj1_key:
+            pairs = sorted(
+                (c.iteration, c.response_values.get(obj1_key, float("inf")))
+                for c in feasible
+            )
+            if pairs:
+                best_so_far = []
+                cur = float("inf")
+                for _, v in pairs:
+                    cur = min(cur, v)
+                    best_so_far.append(cur)
+                self._ax.plot(
+                    [it for it, _ in pairs], best_so_far,
+                    "r-", linewidth=1.5, alpha=0.8, label="最良値",
+                )
+
+        self._ax.set_xlabel(self._axis_label(x_key), fontsize=10)
+        self._ax.set_ylabel(self._axis_label(y_key), fontsize=10)
+        self._ax.set_title(f"{self._axis_label(x_key)} vs {self._axis_label(y_key)}", fontsize=12)
+        self._ax.legend(fontsize=8, loc="upper right")
 
     def _plot_scatter_layer(
         self,

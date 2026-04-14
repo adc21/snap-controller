@@ -185,6 +185,62 @@ class TestDialogInstantiation:
         dlg._obj2_enabled.setChecked(True)
         assert dlg._method_combo.currentData() == "nsga2"
 
+    def test_unified_optimizer_axis_selectors_exist(self, qapp):
+        """X/Y軸セレクタが存在し、自動 + 反復番号 + 応答値の選択肢を持つ。"""
+        from app.ui.unified_optimizer_dialog import UnifiedOptimizerDialog, _OBJECTIVE_ITEMS
+        dlg = UnifiedOptimizerDialog()
+        assert hasattr(dlg, "_xaxis_combo")
+        assert hasattr(dlg, "_yaxis_combo")
+        # 初期値は両方「自動」
+        assert dlg._xaxis_combo.currentData() == "auto"
+        assert dlg._yaxis_combo.currentData() == "auto"
+        # 選択肢の数: auto + iteration + _OBJECTIVE_ITEMS
+        expected = 2 + len(_OBJECTIVE_ITEMS)
+        assert dlg._xaxis_combo.count() == expected
+        assert dlg._yaxis_combo.count() == expected
+        # iteration 選択可能
+        assert dlg._xaxis_combo.findData("iteration") >= 0
+        # 応答値 (max_drift 等) 選択可能
+        assert dlg._yaxis_combo.findData("max_drift") >= 0
+
+    def test_unified_optimizer_axis_change_triggers_update(self, qapp):
+        """X/Y軸セレクタ変更で _update_plot が呼ばれ、軸ラベルが更新される。"""
+        from app.ui.unified_optimizer_dialog import UnifiedOptimizerDialog
+        from app.services.optimizer import OptimizationCandidate
+        dlg = UnifiedOptimizerDialog()
+        dlg._candidates = [
+            OptimizationCandidate(
+                iteration=1, params={"field_8": 500.0},
+                response_values={"max_drift": 0.005, "max_acc": 300.0},
+                objective_value=0.005, is_feasible=True,
+            ),
+            OptimizationCandidate(
+                iteration=2, params={"field_8": 700.0},
+                response_values={"max_drift": 0.004, "max_acc": 280.0},
+                objective_value=0.004, is_feasible=True,
+            ),
+        ]
+        idx_x = dlg._xaxis_combo.findData("max_drift")
+        idx_y = dlg._yaxis_combo.findData("max_acc")
+        dlg._xaxis_combo.setCurrentIndex(idx_x)
+        dlg._yaxis_combo.setCurrentIndex(idx_y)
+        assert "最大層間変形角" in dlg._ax.get_xlabel()
+        assert "最大絶対加速度" in dlg._ax.get_ylabel()
+
+    def test_unified_optimizer_axis_auto_default_behavior(self, qapp):
+        """両軸 auto のとき 1目的で収束プロット (X=反復) になる。"""
+        from app.ui.unified_optimizer_dialog import UnifiedOptimizerDialog
+        from app.services.optimizer import OptimizationCandidate
+        dlg = UnifiedOptimizerDialog()
+        dlg._candidates = [
+            OptimizationCandidate(
+                iteration=1, params={}, response_values={"max_drift": 0.005},
+                objective_value=0.005, is_feasible=True,
+            ),
+        ]
+        dlg._update_plot()
+        assert "反復" in dlg._ax.get_xlabel()
+
     def test_unified_optimizer_analysis_buttons_exist(self, qapp):
         """統合最適化ダイアログの分析ボタンが存在し、初期状態で無効。"""
         from app.ui.unified_optimizer_dialog import UnifiedOptimizerDialog
