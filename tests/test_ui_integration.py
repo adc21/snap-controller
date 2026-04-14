@@ -227,6 +227,85 @@ class TestDialogInstantiation:
         assert "最大層間変形角" in dlg._ax.get_xlabel()
         assert "最大絶対加速度" in dlg._ax.get_ylabel()
 
+    def test_unified_optimizer_axis_includes_checked_parameters(self, qapp):
+        """チェック済みパラメータが軸セレクタの選択肢に含まれる。"""
+        from app.ui.unified_optimizer_dialog import UnifiedOptimizerDialog
+        dlg = UnifiedOptimizerDialog()
+        # パラメータテーブルが空でないことが前提 (selected_damper_def に依存)
+        # 空でも動的追加テストのため、_field_rows を手動で注入
+        from PySide6.QtWidgets import QCheckBox, QDoubleSpinBox
+        cb = QCheckBox()
+        lo_spin = QDoubleSpinBox()
+        hi_spin = QDoubleSpinBox()
+        dlg._field_rows = [{
+            "cb": cb, "val_idx_0based": 8, "label": "C0 (減衰係数)",
+            "current": 500.0, "lo_spin": lo_spin, "hi_spin": hi_spin,
+            "unit": "kN·s/mm",
+        }]
+        dlg._floor_rows = []
+
+        # 未チェック時はパラメータはセレクタに含まれない
+        dlg._refresh_axis_combos()
+        assert dlg._xaxis_combo.findData("field_8") < 0
+
+        # チェックすると追加される
+        cb.setChecked(True)
+        dlg._refresh_axis_combos()
+        idx = dlg._xaxis_combo.findData("field_8")
+        assert idx >= 0
+        # ラベルにダイヤマーク+名前+単位
+        assert "C0" in dlg._xaxis_combo.itemText(idx)
+        assert "kN·s/mm" in dlg._xaxis_combo.itemText(idx)
+
+        # チェック外すと削除される (選択は auto にフォールバック)
+        dlg._xaxis_combo.setCurrentIndex(idx)
+        cb.setChecked(False)
+        dlg._refresh_axis_combos()
+        assert dlg._xaxis_combo.findData("field_8") < 0
+        assert dlg._xaxis_combo.currentData() == "auto"
+
+    def test_unified_optimizer_param_axis_plot(self, qapp):
+        """パラメータを軸に指定してプロットできる (params から値抽出)。"""
+        from app.ui.unified_optimizer_dialog import UnifiedOptimizerDialog
+        from app.services.optimizer import OptimizationCandidate
+        from PySide6.QtWidgets import QCheckBox, QDoubleSpinBox
+        dlg = UnifiedOptimizerDialog()
+
+        cb = QCheckBox()
+        cb.setChecked(True)
+        dlg._field_rows = [{
+            "cb": cb, "val_idx_0based": 8, "label": "C0",
+            "current": 500.0,
+            "lo_spin": QDoubleSpinBox(), "hi_spin": QDoubleSpinBox(),
+            "unit": "kN·s/mm",
+        }]
+        dlg._floor_rows = []
+        dlg._refresh_axis_combos()
+
+        dlg._candidates = [
+            OptimizationCandidate(
+                iteration=1, params={"field_8": 500.0},
+                response_values={"max_drift": 0.005},
+                objective_value=0.005, is_feasible=True,
+            ),
+            OptimizationCandidate(
+                iteration=2, params={"field_8": 800.0},
+                response_values={"max_drift": 0.004},
+                objective_value=0.004, is_feasible=True,
+            ),
+        ]
+        # X軸をパラメータ field_8 に設定
+        idx_x = dlg._xaxis_combo.findData("field_8")
+        idx_y = dlg._yaxis_combo.findData("max_drift")
+        dlg._xaxis_combo.setCurrentIndex(idx_x)
+        dlg._yaxis_combo.setCurrentIndex(idx_y)
+        # X軸ラベルにパラメータ名が現れる
+        assert "C0" in dlg._ax.get_xlabel()
+        # 値抽出関数を直接チェック
+        cand = dlg._candidates[1]
+        assert dlg._candidate_axis_value(cand, "field_8") == 800.0
+        assert dlg._candidate_axis_value(cand, "iteration") == 2.0
+
     def test_unified_optimizer_axis_auto_default_behavior(self, qapp):
         """両軸 auto のとき 1目的で収束プロット (X=反復) になる。"""
         from app.ui.unified_optimizer_dialog import UnifiedOptimizerDialog
@@ -341,6 +420,93 @@ class TestDialogInstantiation:
         assert diag is not None
         assert 0 <= diag.quality_score <= 100
         assert diag.quality_label in ("優良", "良好", "要注意", "不十分")
+
+    def test_unified_optimizer_result_table_exists(self, qapp):
+        """統合最適化ダイアログに候補一覧テーブルが存在する。"""
+        from app.ui.unified_optimizer_dialog import UnifiedOptimizerDialog
+        dlg = UnifiedOptimizerDialog()
+        assert hasattr(dlg, "_result_table")
+        assert hasattr(dlg, "_detail_tabs")
+        assert dlg._result_table.columnCount() == 5
+        assert dlg._result_table.rowCount() == 0
+        headers = [dlg._result_table.horizontalHeaderItem(i).text() for i in range(5)]
+        assert headers == ["順位", "パラメータ", "目的関数", "判定", "マージン"]
+
+    def test_unified_optimizer_populate_result_table(self, qapp):
+        """_populate_result_table が候補を順位付きで追加する。"""
+        from PySide6.QtCore import Qt
+        from app.ui.unified_optimizer_dialog import UnifiedOptimizerDialog
+        from app.services.optimizer import (
+            OptimizationCandidate, OptimizationConfig, OptimizationResult,
+            ParameterRange,
+        )
+        dlg = UnifiedOptimizerDialog()
+        params = [ParameterRange(
+            key="field_8", label="C0", min_val=100, max_val=1000,
+            step=50, is_integer=False, is_floor_count=False,
+        )]
+        config = OptimizationConfig(
+            objective_key="max_drift", objective_label="最大層間変形角",
+            parameters=params, constraints={}, method="random", max_iterations=10,
+        )
+        cands = [
+            OptimizationCandidate(
+                iteration=i, params={"field_8": 200 + i * 100},
+                objective_value=0.01 - i * 0.001, is_feasible=(i < 3),
+                response_values={"max_drift": 0.01 - i * 0.001},
+            )
+            for i in range(5)
+        ]
+        best = min(cands, key=lambda c: c.objective_value)
+        result = OptimizationResult(
+            config=config, all_candidates=cands, best=best,
+        )
+
+        dlg._candidates = list(cands)
+        dlg._populate_result_table(result)
+
+        assert dlg._result_table.rowCount() == 5
+        first_iter = dlg._result_table.item(0, 0).data(Qt.UserRole)
+        assert first_iter in {c.iteration for c in cands}
+
+    def test_unified_optimizer_result_row_select_shows_detail(self, qapp):
+        """結果行を選択すると候補詳細が表示され、詳細タブに切り替わる。"""
+        from app.ui.unified_optimizer_dialog import UnifiedOptimizerDialog
+        from app.services.optimizer import (
+            OptimizationCandidate, OptimizationConfig, OptimizationResult,
+            ParameterRange,
+        )
+        dlg = UnifiedOptimizerDialog()
+        params = [ParameterRange(
+            key="field_8", label="C0", min_val=100, max_val=1000,
+            step=50, is_integer=False, is_floor_count=False,
+        )]
+        config = OptimizationConfig(
+            objective_key="max_drift", objective_label="最大層間変形角",
+            parameters=params, constraints={}, method="random", max_iterations=10,
+        )
+        cands = [
+            OptimizationCandidate(
+                iteration=i + 1, params={"field_8": 200.0 + i * 100.0},
+                objective_value=0.01 - i * 0.001, is_feasible=True,
+                response_values={"max_drift": 0.01 - i * 0.001},
+            )
+            for i in range(3)
+        ]
+        result = OptimizationResult(
+            config=config, all_candidates=cands, best=cands[-1],
+        )
+
+        dlg._candidates = list(cands)
+        dlg._populate_result_table(result)
+
+        dlg._detail_tabs.setCurrentIndex(1)
+        dlg._result_table.selectRow(0)
+
+        assert dlg._selected_candidate is not None
+        assert dlg._apply_btn.isEnabled()
+        assert dlg._detail_tabs.currentIndex() == 0
+        assert dlg._detail_text.toPlainText() != ""
 
     def test_unified_optimizer_plot_scatter_layer(self, qapp):
         """_plot_scatter_layer ヘルパーが散布図を描画。"""

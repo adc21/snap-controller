@@ -31,6 +31,7 @@ import numpy as np
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor, QFont
 from PySide6.QtWidgets import (
+    QAbstractItemView,
     QCheckBox,
     QComboBox,
     QDialog,
@@ -50,6 +51,7 @@ from PySide6.QtWidgets import (
     QSplitter,
     QTableWidget,
     QTableWidgetItem,
+    QTabWidget,
     QTextEdit,
     QVBoxLayout,
     QWidget,
@@ -115,6 +117,25 @@ _METHOD_ITEMS = [
     ("de", "差分進化 (DE)", False),
     ("nsga2", "NSGA-II (多目的)", True),
 ]
+
+
+class _NumericTableItem(QTableWidgetItem):
+    """数値ソート対応の QTableWidgetItem。"""
+
+    def __init__(self, text: str, sort_value: float | None = None):
+        super().__init__(text)
+        if sort_value is not None:
+            self._sort_value = sort_value
+        else:
+            try:
+                self._sort_value = float(text)
+            except (ValueError, TypeError):
+                self._sort_value = float("inf")
+
+    def __lt__(self, other: QTableWidgetItem) -> bool:
+        if isinstance(other, _NumericTableItem):
+            return self._sort_value < other._sort_value
+        return super().__lt__(other)
 
 
 def _apply_mpl_theme() -> None:
@@ -376,6 +397,7 @@ class UnifiedOptimizerDialog(QDialog):
 
             # チェックボックス
             cb = QCheckBox()
+            cb.toggled.connect(self._refresh_axis_combos)
             self._param_table.setCellWidget(row, 0, cb)
 
             # フィールド名
@@ -420,6 +442,9 @@ class UnifiedOptimizerDialog(QDialog):
                 "unit": unit,
             })
 
+        # 軸セレクタの選択肢を更新 (ダンパー定義切替時に古い field_* を除去)
+        self._refresh_axis_combos()
+
     def _build_floor_table(self, layout: QVBoxLayout) -> None:
         """ダンパー基数テーブル。"""
         group = QGroupBox("ダンパー基数")
@@ -452,6 +477,7 @@ class UnifiedOptimizerDialog(QDialog):
             self._floor_table.insertRow(row)
 
             cb = QCheckBox()
+            cb.toggled.connect(self._refresh_axis_combos)
             self._floor_table.setCellWidget(row, 0, cb)
 
             fk_item = QTableWidgetItem(fk)
@@ -479,6 +505,9 @@ class UnifiedOptimizerDialog(QDialog):
                 "lo_spin": lo_spin,
                 "hi_spin": hi_spin,
             })
+
+        # 軸セレクタを再構築 (階構成が変わったとき古い floor_count_* を除去)
+        self._refresh_axis_combos()
 
     def _build_objectives(self, layout: QVBoxLayout) -> None:
         """目的関数（最大2つ）の設定。"""
@@ -702,26 +731,76 @@ class UnifiedOptimizerDialog(QDialog):
         self._scatter_best = None
 
     def _populate_axis_combos(self) -> None:
-        """軸セレクタの選択肢を構築する。
+        """軸セレクタの選択肢を構築する (初回)。
 
         項目:
           - 自動 (目的関数設定に応じて収束/パレートを自動選択)
           - 反復番号
           - 応答値一覧 (_OBJECTIVE_ITEMS)
+          - 変数として選択中のパラメータ (動的: _refresh_axis_combos で更新)
         """
-        # X軸: 自動 / 反復番号 / 応答値
-        self._xaxis_combo.addItem("自動", "auto")
-        self._xaxis_combo.addItem("反復番号", "iteration")
-        for key, label, unit in _OBJECTIVE_ITEMS:
-            unit_str = f" [{unit}]" if unit and unit != "—" else ""
-            self._xaxis_combo.addItem(f"{label}{unit_str}", key)
+        self._refresh_axis_combos()
 
-        # Y軸: 自動 / 応答値 (反復番号は通常Y軸にしない)
-        self._yaxis_combo.addItem("自動", "auto")
-        self._yaxis_combo.addItem("反復番号", "iteration")
+    def _build_axis_items(self) -> List[Tuple[str, str]]:
+        """(key, display_label) のリストを返す。
+
+        基本項目に加え、現在変数として選択中のダンパーパラメータ
+        (物理・基数) も末尾に追加する。
+        """
+        items: List[Tuple[str, str]] = [
+            ("auto", "自動"),
+            ("iteration", "反復番号"),
+        ]
         for key, label, unit in _OBJECTIVE_ITEMS:
             unit_str = f" [{unit}]" if unit and unit != "—" else ""
-            self._yaxis_combo.addItem(f"{label}{unit_str}", key)
+            items.append((key, f"{label}{unit_str}"))
+
+        # 変数として選択中のパラメータを追加
+        for row_info in getattr(self, "_field_rows", []):
+            cb = row_info.get("cb")
+            if cb is not None and cb.isChecked():
+                key = f"field_{row_info['val_idx_0based']}"
+                unit = row_info.get("unit") or ""
+                unit_str = f" [{unit}]" if unit and unit != "—" else ""
+                items.append((key, f"◇ {row_info['label']}{unit_str}"))
+        for row_info in getattr(self, "_floor_rows", []):
+            cb = row_info.get("cb")
+            if cb is not None and cb.isChecked():
+                key = f"floor_count_{row_info['floor_key']}"
+                items.append((key, f"◆ {row_info['floor_key']} 基数 [本]"))
+        return items
+
+    def _refresh_axis_combos(self) -> None:
+        """X/Y軸セレクタを現在の状態に応じて再構築する。
+
+        ユーザーの選択は可能な限り保持する。選択中のパラメータが
+        チェックから外された場合は「自動」にフォールバックする。
+        """
+        if not hasattr(self, "_xaxis_combo"):
+            return
+
+        prev_x = self._xaxis_combo.currentData() if self._xaxis_combo.count() > 0 else "auto"
+        prev_y = self._yaxis_combo.currentData() if self._yaxis_combo.count() > 0 else "auto"
+
+        items = self._build_axis_items()
+
+        self._xaxis_combo.blockSignals(True)
+        self._yaxis_combo.blockSignals(True)
+        self._xaxis_combo.clear()
+        self._yaxis_combo.clear()
+        for key, label in items:
+            self._xaxis_combo.addItem(label, key)
+            self._yaxis_combo.addItem(label, key)
+
+        def _restore(combo, key):
+            idx = combo.findData(key)
+            combo.setCurrentIndex(idx if idx >= 0 else 0)
+
+        _restore(self._xaxis_combo, prev_x)
+        _restore(self._yaxis_combo, prev_y)
+
+        self._xaxis_combo.blockSignals(False)
+        self._yaxis_combo.blockSignals(False)
 
     def _on_axis_changed(self) -> None:
         """X/Y軸セレクタの変更ハンドラ (最適化中でも呼ばれる)。"""
@@ -729,12 +808,34 @@ class UnifiedOptimizerDialog(QDialog):
 
     def _build_detail_panel(self, layout: QVBoxLayout) -> None:
         """候補詳細パネル。"""
-        group = QGroupBox("候補詳細")
+        group = QGroupBox("候補")
         gl = QVBoxLayout(group)
+
+        self._detail_tabs = QTabWidget()
+
         self._detail_text = QTextEdit()
         self._detail_text.setReadOnly(True)
-        self._detail_text.setMaximumHeight(180)
-        gl.addWidget(self._detail_text)
+        self._detail_text.setMinimumHeight(180)
+        self._detail_tabs.addTab(self._detail_text, "候補詳細")
+
+        self._result_table = QTableWidget(0, 5)
+        self._result_table.setHorizontalHeaderLabels(
+            ["順位", "パラメータ", "目的関数", "判定", "マージン"]
+        )
+        self._result_table.verticalHeader().setVisible(False)
+        self._result_table.setSortingEnabled(True)
+        self._result_table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self._result_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self._result_table.setMinimumHeight(180)
+        rt_header = self._result_table.horizontalHeader()
+        rt_header.setSectionResizeMode(0, QHeaderView.ResizeToContents)
+        rt_header.setSectionResizeMode(1, QHeaderView.Stretch)
+        rt_header.setSectionResizeMode(2, QHeaderView.ResizeToContents)
+        rt_header.setSectionResizeMode(3, QHeaderView.ResizeToContents)
+        rt_header.setSectionResizeMode(4, QHeaderView.ResizeToContents)
+        self._detail_tabs.addTab(self._result_table, "候補一覧")
+
+        gl.addWidget(self._detail_tabs)
 
         btn_row = QHBoxLayout()
         self._apply_btn = QPushButton("この候補を .s8i に適用")
@@ -813,6 +914,11 @@ class UnifiedOptimizerDialog(QDialog):
         # matplotlib クリックイベント
         self._canvas.mpl_connect("pick_event", self._on_pick)
 
+        # 候補一覧テーブル: 行選択で詳細表示
+        self._result_table.itemSelectionChanged.connect(
+            self._on_result_row_selected
+        )
+
         self._update_estimate()
 
     # ------------------------------------------------------------------
@@ -873,6 +979,9 @@ class UnifiedOptimizerDialog(QDialog):
         self._stop_btn.setEnabled(True)
         self._apply_btn.setEnabled(False)
         self._detail_text.clear()
+        self._result_table.setSortingEnabled(False)
+        self._result_table.setRowCount(0)
+        self._result_table.setSortingEnabled(True)
         self._progress.setValue(0)
 
         # プロット初期化
@@ -916,6 +1025,7 @@ class UnifiedOptimizerDialog(QDialog):
             self._show_candidate_detail(result.best)
             self._apply_btn.setEnabled(True)
 
+        self._populate_result_table(result)
         self._enable_analysis_buttons()
 
         elapsed = time.time() - self._start_time
@@ -925,6 +1035,111 @@ class UnifiedOptimizerDialog(QDialog):
             f"実行可能 {feasible_count}, "
             f"{self._format_duration(elapsed)})"
         )
+
+    def _populate_result_table(self, result: OptimizationResult) -> None:
+        """結果テーブルを上位20候補で更新。
+
+        制約満足候補を優先し、違反候補も目的関数順で残り枠に表示。
+        列ヘッダーでインタラクティブソート、行選択で候補詳細を同期表示。
+        """
+        self._result_table.setSortingEnabled(False)
+        self._result_table.setRowCount(0)
+
+        ranked = result.all_ranked_candidates[:20]
+        label_map = self._build_param_label_map()
+
+        for rank, cand in enumerate(ranked):
+            row = self._result_table.rowCount()
+            self._result_table.insertRow(row)
+
+            if cand.is_feasible:
+                rank_text = str(rank + 1)
+                rank_sort = float(rank + 1)
+            else:
+                rank_text = "-"
+                rank_sort = float("inf")
+            rank_item = _NumericTableItem(rank_text, rank_sort)
+            rank_item.setTextAlignment(Qt.AlignCenter)
+            if cand.is_feasible and rank < 3:
+                font = QFont()
+                font.setBold(True)
+                rank_item.setFont(font)
+                colors = [QColor("#FFD700"), QColor("#C0C0C0"), QColor("#CD7F32")]
+                rank_item.setForeground(colors[rank])
+            rank_item.setData(Qt.UserRole, cand.iteration)
+            self._result_table.setItem(row, 0, rank_item)
+
+            param_parts = []
+            for k, v in cand.params.items():
+                disp = label_map.get(k, k)
+                if k.startswith("floor_count_"):
+                    param_parts.append(f"{disp}={int(v)}")
+                else:
+                    param_parts.append(f"{disp}={v:.4g}")
+            self._result_table.setItem(
+                row, 1, QTableWidgetItem(", ".join(param_parts))
+            )
+
+            obj_item = _NumericTableItem(
+                f"{cand.objective_value:.6g}", cand.objective_value
+            )
+            obj_item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+            self._result_table.setItem(row, 2, obj_item)
+
+            verdict = "OK" if cand.is_feasible else "NG"
+            verdict_item = _NumericTableItem(
+                verdict, 0.0 if cand.is_feasible else 1.0
+            )
+            verdict_item.setTextAlignment(Qt.AlignCenter)
+            verdict_item.setForeground(
+                QColor("#2ca02c") if cand.is_feasible else QColor("#d62728")
+            )
+            self._result_table.setItem(row, 3, verdict_item)
+
+            if cand.constraint_margins:
+                min_margin = min(cand.constraint_margins.values())
+                min_key = min(
+                    cand.constraint_margins, key=cand.constraint_margins.get
+                )
+                margin_text = f"{min_margin:+.4g} ({min_key})"
+                margin_item = _NumericTableItem(margin_text, min_margin)
+                margin_item.setForeground(
+                    QColor("#2ca02c") if min_margin >= 0 else QColor("#d62728")
+                )
+            else:
+                margin_item = _NumericTableItem("—", float("inf"))
+            margin_item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+            self._result_table.setItem(row, 4, margin_item)
+
+            if not cand.is_feasible:
+                bg = QColor(214, 39, 40, 30)
+                for col in range(5):
+                    item = self._result_table.item(row, col)
+                    if item:
+                        item.setBackground(bg)
+
+        self._result_table.setSortingEnabled(True)
+        self._result_table.sortItems(0, Qt.AscendingOrder)
+
+    def _on_result_row_selected(self) -> None:
+        """候補一覧テーブルの行選択で候補詳細を同期表示。"""
+        rows = self._result_table.selectionModel().selectedRows()
+        if not rows:
+            return
+        row = rows[0].row()
+        item = self._result_table.item(row, 0)
+        if item is None:
+            return
+        iteration = item.data(Qt.UserRole)
+        if iteration is None:
+            return
+        for cand in self._candidates:
+            if cand.iteration == iteration:
+                self._show_candidate_detail(cand)
+                self._selected_candidate = cand
+                self._apply_btn.setEnabled(True)
+                self._detail_tabs.setCurrentIndex(0)
+                return
 
     @staticmethod
     def _format_duration(seconds: float) -> str:
@@ -1244,20 +1459,45 @@ class UnifiedOptimizerDialog(QDialog):
 
     # --------------- 軸値抽出ヘルパー ---------------
     def _axis_label(self, key: str) -> str:
-        """軸キーから表示ラベル (単位込み) を返す。"""
+        """軸キーから表示ラベル (単位込み) を返す。
+
+        対応する軸キー:
+          - "iteration"  反復番号
+          - 応答値キー (max_drift 等) → _OBJECTIVE_ITEMS から表示名取得
+          - パラメータキー (field_*, floor_count_*) → _build_param_label_map から取得
+        """
         if key == "iteration":
             return "反復番号"
         for k, label, unit in _OBJECTIVE_ITEMS:
             if k == key:
                 unit_str = f" [{unit}]" if unit and unit != "—" else ""
                 return f"{label}{unit_str}"
+
+        # パラメータキー
+        if key.startswith("field_"):
+            val_idx = int(key.split("_", 1)[1])
+            for row in getattr(self, "_field_rows", []):
+                if row.get("val_idx_0based") == val_idx:
+                    unit = row.get("unit") or ""
+                    unit_str = f" [{unit}]" if unit and unit != "—" else ""
+                    return f"{row['label']}{unit_str}"
+        if key.startswith("floor_count_"):
+            floor_key = key[len("floor_count_"):]
+            return f"{floor_key} 基数 [本]"
         return key
 
     @staticmethod
     def _candidate_axis_value(cand: OptimizationCandidate, key: str) -> float:
-        """候補から軸キーの値を抽出 (iteration / response_values 両対応)。"""
+        """候補から軸キーの値を抽出。
+
+        iteration / パラメータ (cand.params) / 応答値 (cand.response_values)
+        のいずれにも対応。パラメータと応答値はキー名が衝突しないため
+        params を優先して探索する。
+        """
         if key == "iteration":
             return float(cand.iteration)
+        if key in cand.params:
+            return float(cand.params[key])
         return float(cand.response_values.get(key, float("inf")))
 
     def _update_custom_axis_plot(self, x_key: str, y_key: str) -> None:
@@ -1581,6 +1821,7 @@ class UnifiedOptimizerDialog(QDialog):
             self._show_candidate_detail(result.best)
             self._apply_btn.setEnabled(True)
 
+        self._populate_result_table(result)
         self._enable_analysis_buttons()
 
         n_cands = len(result.all_candidates)
