@@ -755,6 +755,7 @@ class UnifiedOptimizerDialog(QDialog):
         self._heatmap_btn.clicked.connect(self._on_show_heatmap)
         self._pareto_btn.clicked.connect(self._on_show_pareto)
         self._log_btn.clicked.connect(self._on_export_log)
+        self._html_report_btn.clicked.connect(self._on_export_html_report)
         self._comparison_btn.clicked.connect(self._on_show_comparison)
 
         self._obj2_enabled.toggled.connect(self._on_obj2_toggled)
@@ -1505,6 +1506,11 @@ class UnifiedOptimizerDialog(QDialog):
         self._log_btn.setToolTip("全評価履歴をCSVに出力")
         row3.addWidget(self._log_btn)
 
+        self._html_report_btn = QPushButton("HTMLレポート")
+        self._html_report_btn.setEnabled(False)
+        self._html_report_btn.setToolTip("最適化結果をHTMLレポートとして出力")
+        row3.addWidget(self._html_report_btn)
+
         self._comparison_btn = QPushButton("結果比較")
         self._comparison_btn.setToolTip("複数JSON結果の比較表示")
         row3.addWidget(self._comparison_btn)
@@ -1531,6 +1537,7 @@ class UnifiedOptimizerDialog(QDialog):
         )
         self._pareto_btn.setEnabled(has_result and n_cands >= 1)
         self._log_btn.setEnabled(has_result and n_cands >= 1)
+        self._html_report_btn.setEnabled(has_result and n_cands >= 1)
 
     # ------------------------------------------------------------------
     # 分析アクション
@@ -1665,6 +1672,38 @@ class UnifiedOptimizerDialog(QDialog):
         except Exception as exc:
             logger.exception("評価ログ出力エラー")
             QMessageBox.warning(self, "出力エラー", str(exc))
+
+    def _on_export_html_report(self) -> None:
+        """最適化結果をHTMLレポートとして出力。"""
+        if not self._result or not self._result.all_candidates:
+            QMessageBox.information(self, "情報", "レポート出力する結果がありません。")
+            return
+
+        path, _ = QFileDialog.getSaveFileName(
+            self, "HTMLレポート出力先を選択", "unified_optimization_report.html",
+            "HTML Files (*.html);;All Files (*)",
+        )
+        if not path:
+            return
+
+        try:
+            from app.services.report_generator import generate_optimization_report
+            generate_optimization_report(
+                result=self._result,
+                output_path=path,
+                include_charts=True,
+                title="統合最適化レポート",
+            )
+            QMessageBox.information(
+                self, "HTMLレポート出力完了",
+                f"最適化レポートを出力しました。\n{path}",
+            )
+        except Exception as exc:
+            logger.exception("HTMLレポート出力エラー")
+            QMessageBox.warning(
+                self, "エラー",
+                f"レポートの出力に失敗しました:\n{exc}",
+            )
 
     def _on_show_comparison(self) -> None:
         """結果比較ダイアログを表示。"""

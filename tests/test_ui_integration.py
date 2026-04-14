@@ -198,6 +198,7 @@ class TestDialogInstantiation:
         assert hasattr(dlg, "_heatmap_btn")
         assert hasattr(dlg, "_pareto_btn")
         assert hasattr(dlg, "_log_btn")
+        assert hasattr(dlg, "_html_report_btn")
         assert hasattr(dlg, "_comparison_btn")
 
         # 初期状態: 結果がないので分析系は無効
@@ -208,6 +209,7 @@ class TestDialogInstantiation:
         assert not dlg._heatmap_btn.isEnabled()
         assert not dlg._pareto_btn.isEnabled()
         assert not dlg._log_btn.isEnabled()
+        assert not dlg._html_report_btn.isEnabled()
         # 結果比較はいつでも可能
         assert dlg._comparison_btn.isEnabled()
 
@@ -253,6 +255,7 @@ class TestDialogInstantiation:
         assert dlg._heatmap_btn.isEnabled()
         assert dlg._pareto_btn.isEnabled()
         assert dlg._log_btn.isEnabled()
+        assert dlg._html_report_btn.isEnabled()
 
     def test_unified_optimizer_diagnostics_action(self, qapp):
         """収束診断が実行可能。"""
