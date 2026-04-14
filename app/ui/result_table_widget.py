@@ -218,7 +218,13 @@ class ResultTableWidget(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(4, 4, 4, 4)
 
-        # --- ヘッダー行 ---
+        self._build_header(layout)
+        self._build_ref_row(layout)
+        self._build_filter_row(layout)
+        self._build_table(layout)
+        self._build_legend(layout)
+
+    def _build_header(self, layout: QVBoxLayout) -> None:
         header = QHBoxLayout()
         header.addWidget(QLabel("<b>結果サマリーテーブル</b>"))
         header.addStretch()
@@ -233,7 +239,7 @@ class ResultTableWidget(QWidget):
 
         layout.addLayout(header)
 
-        # UX改善（第4回）④: 比較基準ケース選択バー
+    def _build_ref_row(self, layout: QVBoxLayout) -> None:
         ref_row = QHBoxLayout()
         ref_row.setSpacing(6)
         ref_row.setContentsMargins(0, 0, 0, 0)
@@ -274,7 +280,7 @@ class ResultTableWidget(QWidget):
         ref_row.addWidget(ref_frame)
         layout.addLayout(ref_row)
 
-        # --- UX改善（新）: ケース名フィルター検索バー ---
+    def _build_filter_row(self, layout: QVBoxLayout) -> None:
         filter_row = QHBoxLayout()
         filter_row.setSpacing(4)
         filter_row.setContentsMargins(0, 0, 0, 0)
@@ -296,15 +302,14 @@ class ResultTableWidget(QWidget):
         self._filter_edit.textChanged.connect(self._on_filter_changed)
         filter_row.addWidget(self._filter_edit, stretch=1)
 
-        # 一致件数ラベル
         self._filter_count_lbl = QLabel("")
         self._filter_count_lbl.setStyleSheet("color: gray; font-size: 10px; min-width: 70px;")
         filter_row.addWidget(self._filter_count_lbl)
 
         layout.addLayout(filter_row)
 
-        # --- テーブル ---
-        col_count = 1 + len(_RESULT_COLUMNS)  # ケース名 + 応答値列
+    def _build_table(self, layout: QVBoxLayout) -> None:
+        col_count = 1 + len(_RESULT_COLUMNS)
         self._table = QTableWidget(0, col_count)
 
         headers = ["ケース名"] + [
@@ -325,10 +330,8 @@ class ResultTableWidget(QWidget):
         self._table.setAlternatingRowColors(True)
         self._table.verticalHeader().setVisible(False)
         self._table.setSortingEnabled(True)
-        # UX改善④: 右クリックコンテキストメニュー
         self._table.setContextMenuPolicy(Qt.CustomContextMenu)
         self._table.customContextMenuRequested.connect(self._show_context_menu)
-        # UX改善（新）: ソートヒントをツールチップに追記
         self._table.setToolTip(
             "↕ 列ヘッダーをクリックすると数値順にソートできます\n"
             "Ctrl+C: 選択した行をクリップボードにコピー（Excelに貼り付け可能）\n"
@@ -336,14 +339,13 @@ class ResultTableWidget(QWidget):
         )
         layout.addWidget(self._table)
 
-        # 凡例 + ソートヒント
+    def _build_legend(self, layout: QVBoxLayout) -> None:
         legend = QHBoxLayout()
         legend.addWidget(QLabel(
             "<small>🔴 = 列内最大値（最も不利） / 🟢 = 列内最小値（最も有利）"
             "　　▲ エンベロープ = 全ケース最大値（設計基準値）</small>"
         ))
         legend.addStretch()
-        # UX改善（新）: ソートヒントラベル（列ヘッダーをクリックするとソートできることを明示）
         _sort_hint = QLabel("<small style='color:#888888;'>↕ 列ヘッダーをクリックで数値ソート</small>")
         _sort_hint.setToolTip(
             "任意の列ヘッダーをクリックするとその指標の数値で昇順/降順にソートできます。\n"
@@ -371,14 +373,32 @@ class ResultTableWidget(QWidget):
             self._filter_count_lbl.setText("")
             return
 
-        # UX改善（新）: フィルターテキストによる絞り込み
+        completed = self._apply_filter(all_completed)
+        if not completed:
+            return
+
+        theme = "dark" if ThemeManager.is_dark() else "light"
+        col_values, col_max, col_min, col_sorted = self._compute_column_stats(completed)
+        ref_summary = self._get_ref_summary(completed)
+
+        for case in completed:
+            self._populate_case_row(
+                case, theme, col_max, col_min, col_sorted, ref_summary,
+            )
+
+        if len(completed) >= 2:
+            self._append_best_case_row(completed, col_min)
+            self._append_envelope_row(col_max)
+
+        self._table.setSortingEnabled(True)
+
+    def _apply_filter(self, all_completed: list) -> list:
         ftext = self._filter_text.strip().lower()
         if ftext:
             completed = [c for c in all_completed if ftext in c.name.lower()]
         else:
             completed = all_completed
 
-        # フィルター件数ラベルを更新
         if ftext:
             total = len(all_completed)
             matched = len(completed)
@@ -392,15 +412,9 @@ class ResultTableWidget(QWidget):
                 )
         else:
             self._filter_count_lbl.setText("")
+        return completed
 
-        if not completed:
-            return
-
-        theme = "dark" if ThemeManager.is_dark() else "light"
-        highlight_max = _HIGHLIGHT_MAX[theme]
-        highlight_min = _HIGHLIGHT_MIN[theme]
-
-        # 各列の最大・最小値を求める（フィルター後のケースで計算）
+    def _compute_column_stats(self, completed: list) -> tuple:
         col_values: dict = {key: [] for key, *_ in _RESULT_COLUMNS}
         for case in completed:
             for key, *_ in _RESULT_COLUMNS:
@@ -410,21 +424,54 @@ class ResultTableWidget(QWidget):
 
         col_max = {k: max(v) if v else None for k, v in col_values.items()}
         col_min = {k: min(v) if v else None for k, v in col_values.items()}
+        col_sorted = {key: sorted(vals) for key, vals in col_values.items()}
+        return col_values, col_max, col_min, col_sorted
 
-        # UX改善（新）: 各列の値を昇順ソートしてランク計算用リストを用意
-        col_sorted = {}  # {key: [sorted values ascending]}
-        for key, vals in col_values.items():
-            col_sorted[key] = sorted(vals)
+    def _get_ref_summary(self, completed: list) -> dict:
+        if not self._ref_case_id:
+            return {}
+        for c in completed:
+            if c.id == self._ref_case_id:
+                return c.result_summary or {}
+        return {}
 
-        # UX改善（第4回）④: 比較基準ケースの result_summary を取得
-        ref_summary: dict = {}
-        if self._ref_case_id:
-            for c in completed:
-                if c.id == self._ref_case_id:
-                    ref_summary = c.result_summary or {}
-                    break
+    def _populate_case_row(
+        self, case, theme, col_max, col_min, col_sorted, ref_summary,
+    ) -> None:
+        row = self._table.rowCount()
+        self._table.insertRow(row)
 
-        # 比較色の定義
+        name_item = QTableWidgetItem(case.name)
+        name_item.setFlags(name_item.flags() & ~Qt.ItemIsEditable)
+        name_item.setData(Qt.UserRole, case.id)
+        if self._ref_case_id and case.id == self._ref_case_id:
+            name_item.setBackground(QColor("#fff9c4") if theme == "light" else QColor("#5c4a00"))
+            name_item.setToolTip("📌 比較基準ケース（この行を100%として比較）")
+        self._table.setItem(row, 0, name_item)
+
+        highlight_max = _HIGHLIGHT_MAX[theme]
+        highlight_min = _HIGHLIGHT_MIN[theme]
+
+        for col_idx, (key, label, unit, fmt) in enumerate(_RESULT_COLUMNS, start=1):
+            val = case.result_summary.get(key)
+            if val is not None:
+                item = self._build_value_item(
+                    val, case, key, label, unit, fmt,
+                    theme, col_sorted, col_min, col_max,
+                    ref_summary, highlight_max, highlight_min,
+                )
+            else:
+                item = QTableWidgetItem("—")
+                item.setTextAlignment(Qt.AlignCenter)
+
+            item.setFlags(item.flags() & ~Qt.ItemIsEditable)
+            self._table.setItem(row, col_idx, item)
+
+    def _build_value_item(
+        self, val, case, key, label, unit, fmt,
+        theme, col_sorted, col_min, col_max,
+        ref_summary, highlight_max, highlight_min,
+    ):
         _IMPROVE_COLOR = {
             "dark": QColor(40, 80, 50),
             "light": QColor(200, 245, 210),
@@ -434,77 +481,39 @@ class ResultTableWidget(QWidget):
             "light": QColor(255, 210, 210),
         }
 
-        for case in completed:
-            row = self._table.rowCount()
-            self._table.insertRow(row)
+        item = _NumericTableWidgetItem(fmt.format(val))
+        item.setData(Qt.UserRole + 1, val)
+        item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
 
-            # ケース名
-            name_item = QTableWidgetItem(case.name)
-            name_item.setFlags(name_item.flags() & ~Qt.ItemIsEditable)
-            name_item.setData(Qt.UserRole, case.id)
-            # 基準ケース自体をゴールドでマーク
-            if self._ref_case_id and case.id == self._ref_case_id:
-                name_item.setBackground(QColor("#fff9c4") if theme == "light" else QColor("#5c4a00"))
-                name_item.setToolTip("📌 比較基準ケース（この行を100%として比較）")
-            self._table.setItem(row, 0, name_item)
+        sparkline_tip = self._build_sparkline_tooltip(
+            val, key, label, unit, fmt, col_sorted, col_min, col_max
+        )
 
-            # 各応答値
-            for col_idx, (key, label, unit, fmt) in enumerate(_RESULT_COLUMNS, start=1):
-                val = case.result_summary.get(key)
-                if val is not None:
-                    # UX改善（新）: _NumericTableWidgetItem を使い数値ソートを正確化
-                    item = _NumericTableWidgetItem(fmt.format(val))
-                    item.setData(Qt.UserRole + 1, val)  # ソート用の数値
-                    item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        if ref_summary and self._ref_case_id and case.id != self._ref_case_id:
+            ref_val = ref_summary.get(key)
+            if ref_val is not None and abs(ref_val) > 1e-15:
+                pct = (val - ref_val) / abs(ref_val) * 100.0
+                sign = "+" if pct >= 0 else ""
+                item.setToolTip(
+                    f"{label}: {fmt.format(val)} [{unit}]\n"
+                    f"基準比: {sign}{pct:.1f}%\n"
+                    f"（基準: {fmt.format(ref_val)} [{unit}]）\n"
+                    f"\n{sparkline_tip}"
+                )
+                if pct < -1.0:
+                    item.setBackground(_IMPROVE_COLOR[theme])
+                elif pct > 1.0:
+                    item.setBackground(_DEGRADE_COLOR[theme])
+                return item
+            item.setToolTip(sparkline_tip)
+        else:
+            item.setToolTip(sparkline_tip)
 
-                    # UX改善（新）: スパークライン風ランクツールチップを生成
-                    sparkline_tip = self._build_sparkline_tooltip(
-                        val, key, label, unit, fmt, col_sorted, col_min, col_max
-                    )
-
-                    # UX改善（第4回）④: 比較基準ケースとの差分ハイライト
-                    if ref_summary and self._ref_case_id and case.id != self._ref_case_id:
-                        ref_val = ref_summary.get(key)
-                        if ref_val is not None and abs(ref_val) > 1e-15:
-                            pct = (val - ref_val) / abs(ref_val) * 100.0
-                            sign = "+" if pct >= 0 else ""
-                            item.setToolTip(
-                                f"{label}: {fmt.format(val)} [{unit}]\n"
-                                f"基準比: {sign}{pct:.1f}%\n"
-                                f"（基準: {fmt.format(ref_val)} [{unit}]）\n"
-                                f"\n{sparkline_tip}"
-                            )
-                            if pct < -1.0:  # 1%以上改善（小さい=良い）
-                                item.setBackground(_IMPROVE_COLOR[theme])
-                            elif pct > 1.0:  # 1%以上悪化
-                                item.setBackground(_DEGRADE_COLOR[theme])
-                        else:
-                            item.setToolTip(sparkline_tip)
-                            if col_max[key] is not None and abs(val - col_max[key]) < 1e-12:
-                                item.setBackground(highlight_max)
-                            elif col_min[key] is not None and abs(val - col_min[key]) < 1e-12:
-                                item.setBackground(highlight_min)
-                    else:
-                        # 最大・最小ハイライト（比較基準なし時）
-                        item.setToolTip(sparkline_tip)
-                        if col_max[key] is not None and abs(val - col_max[key]) < 1e-12:
-                            item.setBackground(highlight_max)
-                        elif col_min[key] is not None and abs(val - col_min[key]) < 1e-12:
-                            item.setBackground(highlight_min)
-                else:
-                    item = QTableWidgetItem("—")
-                    item.setTextAlignment(Qt.AlignCenter)
-
-                item.setFlags(item.flags() & ~Qt.ItemIsEditable)
-                self._table.setItem(row, col_idx, item)
-
-        # UX改善⑤新: エンベロープ行（全ケース最大値）を末尾に追加
-        if len(completed) >= 2:
-            # UX改善（第11回③）: ベストケース行（各指標最良ケース名）を追加
-            self._append_best_case_row(completed, col_min)
-            self._append_envelope_row(col_max)
-
-        self._table.setSortingEnabled(True)
+        if col_max[key] is not None and abs(val - col_max[key]) < 1e-12:
+            item.setBackground(highlight_max)
+        elif col_min[key] is not None and abs(val - col_min[key]) < 1e-12:
+            item.setBackground(highlight_min)
+        return item
 
     def _append_best_case_row(self, completed: list, col_min: dict) -> None:
         """

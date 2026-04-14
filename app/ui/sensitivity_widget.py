@@ -390,20 +390,47 @@ class SensitivityWidget(QWidget):
         if not hasattr(self, "_suggest_panel"):
             return
 
-        # 感度データを再取得
         param_data, response_data, response_key = self._extract_param_response_data()
 
         if not param_data or not response_data or len(response_data) < 2:
-            self._suggest_content_lbl.setText(
+            self._show_suggest_message(
                 "⚠ 感度分析に必要なデータが不足しています。<br>"
                 "完了済みケースが <b>2件以上</b> 必要です。<br>"
                 "STEP3 で追加のケースを解析してからもう一度お試しください。"
             )
-            self._suggest_content_lbl.setTextFormat(Qt.RichText)
-            self._suggest_panel.show()
             return
 
-        # 各パラメータの相関係数を計算
+        correlations = self._compute_all_correlations(param_data, response_data)
+
+        if not correlations:
+            self._show_suggest_message(
+                "⚠ 有効な相関データがありません。<br>"
+                "ダンパーパラメータを変えた複数のケースを解析してください。"
+            )
+            return
+
+        correlations.sort(key=lambda t: abs(t[1]), reverse=True)
+
+        idx = self._response_combo.currentIndex()
+        resp_label = _RESPONSE_ITEMS[idx][1] if idx < len(_RESPONSE_ITEMS) else response_key
+        resp_unit = _RESPONSE_ITEMS[idx][2] if idx < len(_RESPONSE_ITEMS) else ""
+
+        lines = self._build_suggestion_lines(
+            correlations, param_data, response_data, resp_label, resp_unit,
+        )
+
+        self._suggest_content_lbl.setText("<br>".join(lines))
+        self._suggest_content_lbl.setTextFormat(Qt.RichText)
+        self._suggest_panel.show()
+
+    def _show_suggest_message(self, html: str) -> None:
+        self._suggest_content_lbl.setText(html)
+        self._suggest_content_lbl.setTextFormat(Qt.RichText)
+        self._suggest_panel.show()
+
+    def _compute_all_correlations(
+        self, param_data: Dict[str, List[float]], response_data: List[float]
+    ) -> List[Tuple[str, float, float, int]]:
         correlations: List[Tuple[str, float, float, int]] = []
         y = np.array(response_data)
         for param_key, values in param_data.items():
@@ -412,87 +439,21 @@ class SensitivityWidget(QWidget):
             x = np.array(values)
             r, p = _compute_correlation(x, y)
             correlations.append((param_key, r, p, len(values)))
+        return correlations
 
-        if not correlations:
-            self._suggest_content_lbl.setText(
-                "⚠ 有効な相関データがありません。<br>"
-                "ダンパーパラメータを変えた複数のケースを解析してください。"
-            )
-            self._suggest_content_lbl.setTextFormat(Qt.RichText)
-            self._suggest_panel.show()
-            return
-
-        # |r| で降順ソート
-        correlations.sort(key=lambda t: abs(t[1]), reverse=True)
-
-        # 応答指標ラベル取得
-        idx = self._response_combo.currentIndex()
-        resp_label = _RESPONSE_ITEMS[idx][1] if idx < len(_RESPONSE_ITEMS) else response_key
-        resp_unit = _RESPONSE_ITEMS[idx][2] if idx < len(_RESPONSE_ITEMS) else ""
-
-        # 提案テキスト構築
-        lines: List[str] = []
-        lines.append(
+    def _build_suggestion_lines(
+        self, correlations, param_data, response_data, resp_label, resp_unit,
+    ) -> List[str]:
+        lines: List[str] = [
             f"<b>対象指標:</b> {resp_label} [{resp_unit}]　"
-            f"（完了ケース {len(response_data)}件の解析）"
-        )
-        lines.append("")
+            f"（完了ケース {len(response_data)}件の解析）",
+            "",
+        ]
 
         shown = 0
         for param_key, r, p, n_pts in correlations[:5]:
-            abs_r = abs(r)
-            # 影響度評価
-            if abs_r >= 0.7:
-                strength = "強い影響"
-                strength_color = "#b71c1c"
-            elif abs_r >= 0.4:
-                strength = "中程度の影響"
-                strength_color = "#e65100"
-            else:
-                strength = "影響小（参考）"
-                strength_color = "#888"
-
-            # 変更方向の判定
-            # 応答値を小さくしたい（制振目的）ので:
-            #   r < 0 → 増やすと応答が下がる → 「増やす」方向が有効
-            #   r > 0 → 増やすと応答が上がる → 「減らす」方向が有効
-            if r < -0.1:
-                direction = "⬆ 増やす"
-                dir_color = "#1565c0"
-            elif r > 0.1:
-                direction = "⬇ 減らす"
-                dir_color = "#c62828"
-            else:
-                direction = "↔ 効果は小さい"
-                dir_color = "#888"
-
-            # 現在の平均値と推奨変更量を計算
             values = param_data.get(param_key, [])
-            if values:
-                current_avg = np.mean(values)
-                change_20 = current_avg * 0.20
-                if r < 0:
-                    recommended = current_avg + change_20
-                    change_str = f"+20% → {recommended:.3g}"
-                else:
-                    recommended = max(0, current_avg - change_20)
-                    change_str = f"-20% → {recommended:.3g}"
-            else:
-                change_str = "（現在値不明）"
-
-            # パラメータ名を短縮表示
-            param_display = param_key
-            if "." in param_key:
-                parts_split = param_key.split(".", 1)
-                param_display = f"{parts_split[0]}<br>　└ F{parts_split[1]}"
-
-            line = (
-                f"<b style='color:{strength_color};'>⭐ {param_display}</b>　"
-                f"|r| = {abs_r:.2f}（{strength}）<br>"
-                f"　推奨: <b style='color:{dir_color};'>{direction}</b>　"
-                f"現在平均 {np.mean(values) if values else '?':.3g} → {change_str}"
-            )
-            lines.append(line)
+            lines.append(self._format_suggestion_line(param_key, r, values))
             shown += 1
             if shown >= 3:
                 break
@@ -509,10 +470,56 @@ class SensitivityWidget(QWidget):
             "※ 提案は相関係数に基づく統計的推定です。感度解析ケース数が少ない場合は精度が低くなります。"
             "最終的な設計判断はエンジニアが行ってください。</span>"
         )
+        return lines
 
-        self._suggest_content_lbl.setText("<br>".join(lines))
-        self._suggest_content_lbl.setTextFormat(Qt.RichText)
-        self._suggest_panel.show()
+    @staticmethod
+    def _classify_strength(abs_r: float) -> Tuple[str, str]:
+        if abs_r >= 0.7:
+            return "強い影響", "#b71c1c"
+        if abs_r >= 0.4:
+            return "中程度の影響", "#e65100"
+        return "影響小（参考）", "#888"
+
+    @staticmethod
+    def _classify_direction(r: float) -> Tuple[str, str]:
+        if r < -0.1:
+            return "⬆ 増やす", "#1565c0"
+        if r > 0.1:
+            return "⬇ 減らす", "#c62828"
+        return "↔ 効果は小さい", "#888"
+
+    @staticmethod
+    def _format_change_str(r: float, values: List[float]) -> str:
+        if not values:
+            return "（現在値不明）"
+        current_avg = np.mean(values)
+        change_20 = current_avg * 0.20
+        if r < 0:
+            recommended = current_avg + change_20
+            return f"+20% → {recommended:.3g}"
+        recommended = max(0, current_avg - change_20)
+        return f"-20% → {recommended:.3g}"
+
+    def _format_suggestion_line(
+        self, param_key: str, r: float, values: List[float]
+    ) -> str:
+        abs_r = abs(r)
+        strength, strength_color = self._classify_strength(abs_r)
+        direction, dir_color = self._classify_direction(r)
+        change_str = self._format_change_str(r, values)
+
+        param_display = param_key
+        if "." in param_key:
+            parts_split = param_key.split(".", 1)
+            param_display = f"{parts_split[0]}<br>　└ F{parts_split[1]}"
+
+        avg_str = f"{np.mean(values):.3g}" if values else "?"
+        return (
+            f"<b style='color:{strength_color};'>⭐ {param_display}</b>　"
+            f"|r| = {abs_r:.2f}（{strength}）<br>"
+            f"　推奨: <b style='color:{dir_color};'>{direction}</b>　"
+            f"現在平均 {avg_str} → {change_str}"
+        )
 
     # ------------------------------------------------------------------
     # Analysis

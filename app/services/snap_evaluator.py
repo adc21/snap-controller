@@ -657,78 +657,15 @@ def create_unified_evaluator(
     exe_path = snap_exe_path or base_case.snap_exe_path
     model_path = base_case.model_path
 
-    if not exe_path or not model_path:
-        if log_callback:
-            log_callback("[WARN] SNAP.exe またはモデルパスが未設定です。モック評価を使用します。")
+    if not _validate_unified_paths(exe_path, model_path, log_callback):
         return None
 
-    if not Path(exe_path).exists():
-        if log_callback:
-            log_callback(f"[WARN] SNAP.exe が見つかりません: {exe_path}。モック評価を使用します。")
-        return None
-
-    if not Path(model_path).exists():
-        if log_callback:
-            log_callback(f"[WARN] モデルファイルが見つかりません: {model_path}。モック評価を使用します。")
-        return None
-
-    # 物理パラメータと基数パラメータを分離
     phys_ranges = [pr for pr in param_ranges if not pr.is_floor_count]
     count_ranges = [pr for pr in param_ranges if pr.is_floor_count]
 
-    # ダンパー定義名とparam_field_mapの構築（物理パラメータ用）
-    if not damper_def_name and base_case.damper_params:
-        for key in base_case.damper_params:
-            damper_def_name = key
-            break
-
-    param_field_map: Dict[str, int] = {}
-
-    # field_{N} 形式のキーから param_field_map を自動構築
-    for pr in phys_ranges:
-        if pr.key.startswith("field_"):
-            try:
-                idx = int(pr.key.replace("field_", ""))
-                param_field_map[pr.key] = idx
-            except ValueError:
-                logger.debug("パラメータキーを整数変換できず: %s", pr.key)
-
-    # base_case.damper_params からも補完
-    if damper_def_name and damper_def_name in (base_case.damper_params or {}):
-        overrides = base_case.damper_params[damper_def_name]
-        if isinstance(overrides, dict):
-            override_keys = list(overrides.keys())
-            for pr in phys_ranges:
-                if pr.key in override_keys and pr.key not in param_field_map:
-                    try:
-                        param_field_map[pr.key] = int(pr.key)
-                    except ValueError:
-                        logger.debug("パラメータキーを整数変換できず: %s", pr.key)
-                for idx_str in override_keys:
-                    try:
-                        idx = int(idx_str)
-                        if pr.key.lower() in str(overrides.get(idx_str, "")).lower():
-                            if pr.key not in param_field_map:
-                                param_field_map[pr.key] = idx
-                    except (ValueError, TypeError):
-                        logger.debug("overrideキー変換失敗: %s", idx_str)
-
-    # 基数パラメータがある場合、floor_rd_map を構築
-    floor_rd_map: Dict[str, List[int]] = {}
-    if count_ranges:
-        try:
-            floor_rd_map_full, _, _ = build_floor_rd_map(model_path)
-            floor_rd_map = floor_rd_map_full
-            if log_callback:
-                log_callback(
-                    f"[INFO] 基数パラメータ {len(count_ranges)} 個検出。"
-                    f"floor_rd_map: {list(floor_rd_map.keys())}"
-                )
-        except Exception as e:
-            if log_callback:
-                log_callback(f"[WARN] floor_rd_map 構築に失敗: {e}")
-
-    # RD オーバーライドを取得
+    damper_def_name = _resolve_damper_def_name(damper_def_name, base_case)
+    param_field_map = _build_param_field_map(phys_ranges, damper_def_name, base_case)
+    floor_rd_map = _build_floor_rd_map_for_counts(count_ranges, model_path, log_callback)
     rd_overrides = base_case.parameters.get("_rd_overrides", {})
 
     try:
@@ -758,6 +695,88 @@ def create_unified_evaluator(
         if log_callback:
             log_callback(f"[WARN] {e}。モック評価を使用します。")
         return None
+
+
+def _validate_unified_paths(
+    exe_path: str, model_path: str, log_callback: Optional[Callable[[str], None]]
+) -> bool:
+    if not exe_path or not model_path:
+        if log_callback:
+            log_callback("[WARN] SNAP.exe またはモデルパスが未設定です。モック評価を使用します。")
+        return False
+    if not Path(exe_path).exists():
+        if log_callback:
+            log_callback(f"[WARN] SNAP.exe が見つかりません: {exe_path}。モック評価を使用します。")
+        return False
+    if not Path(model_path).exists():
+        if log_callback:
+            log_callback(f"[WARN] モデルファイルが見つかりません: {model_path}。モック評価を使用します。")
+        return False
+    return True
+
+
+def _resolve_damper_def_name(damper_def_name: str, base_case: "AnalysisCase") -> str:
+    if damper_def_name:
+        return damper_def_name
+    if base_case.damper_params:
+        for key in base_case.damper_params:
+            return key
+    return damper_def_name
+
+
+def _build_param_field_map(
+    phys_ranges: List["ParameterRange"], damper_def_name: str, base_case: "AnalysisCase"
+) -> Dict[str, int]:
+    param_field_map: Dict[str, int] = {}
+
+    for pr in phys_ranges:
+        if pr.key.startswith("field_"):
+            try:
+                idx = int(pr.key.replace("field_", ""))
+                param_field_map[pr.key] = idx
+            except ValueError:
+                logger.debug("パラメータキーを整数変換できず: %s", pr.key)
+
+    if damper_def_name and damper_def_name in (base_case.damper_params or {}):
+        overrides = base_case.damper_params[damper_def_name]
+        if isinstance(overrides, dict):
+            override_keys = list(overrides.keys())
+            for pr in phys_ranges:
+                if pr.key in override_keys and pr.key not in param_field_map:
+                    try:
+                        param_field_map[pr.key] = int(pr.key)
+                    except ValueError:
+                        logger.debug("パラメータキーを整数変換できず: %s", pr.key)
+                for idx_str in override_keys:
+                    try:
+                        idx = int(idx_str)
+                        if pr.key.lower() in str(overrides.get(idx_str, "")).lower():
+                            if pr.key not in param_field_map:
+                                param_field_map[pr.key] = idx
+                    except (ValueError, TypeError):
+                        logger.debug("overrideキー変換失敗: %s", idx_str)
+    return param_field_map
+
+
+def _build_floor_rd_map_for_counts(
+    count_ranges: List["ParameterRange"],
+    model_path: str,
+    log_callback: Optional[Callable[[str], None]],
+) -> Dict[str, List[int]]:
+    if not count_ranges:
+        return {}
+    try:
+        floor_rd_map_full, _, _ = build_floor_rd_map(model_path)
+        if log_callback:
+            log_callback(
+                f"[INFO] 基数パラメータ {len(count_ranges)} 個検出。"
+                f"floor_rd_map: {list(floor_rd_map_full.keys())}"
+            )
+        return floor_rd_map_full
+    except Exception as e:
+        if log_callback:
+            log_callback(f"[WARN] floor_rd_map 構築に失敗: {e}")
+        return {}
 
 
 def _normalize_floor_key(z_grid: str) -> str:
