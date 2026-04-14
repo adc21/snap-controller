@@ -140,8 +140,15 @@ class MultiWaveDialog(QDialog):
 
     def _setup_ui(self) -> None:
         layout = QVBoxLayout(self)
+        layout.addWidget(self._build_base_group())
+        layout.addLayout(self._build_category_filter())
+        layout.addWidget(self._build_wave_group(), stretch=1)
+        layout.addWidget(self._build_options_group())
+        layout.addWidget(self._build_preview_banner())
+        self._update_info_label()
+        layout.addWidget(self._build_button_box())
 
-        # ---- ベースケース情報 ----
+    def _build_base_group(self) -> QGroupBox:
         base_group = QGroupBox("ベースケース")
         base_layout = QVBoxLayout(base_group)
         if self._base_case:
@@ -157,9 +164,9 @@ class MultiWaveDialog(QDialog):
             base_layout.addWidget(QLabel(
                 "<i>ベースケースが選択されていません（デフォルト設定で生成）</i>"
             ))
-        layout.addWidget(base_group)
+        return base_group
 
-        # ---- カテゴリフィルタ ----
+    def _build_category_filter(self) -> QHBoxLayout:
         filter_row = QHBoxLayout()
         filter_row.addWidget(QLabel("カテゴリ:"))
         self._cat_combo = QComboBox()
@@ -168,9 +175,9 @@ class MultiWaveDialog(QDialog):
             self._cat_combo.addItem(f"{info['icon']} {info['label']}", key)
         self._cat_combo.currentIndexChanged.connect(self._on_category_changed)
         filter_row.addWidget(self._cat_combo, stretch=1)
-        layout.addLayout(filter_row)
+        return filter_row
 
-        # ---- 地震波チェックリスト ----
+    def _build_wave_group(self) -> QGroupBox:
         wave_group = QGroupBox("入力地震波を選択")
         wave_layout = QVBoxLayout(wave_group)
         scroll = QScrollArea()
@@ -181,8 +188,10 @@ class MultiWaveDialog(QDialog):
         self._wave_list_layout.setSpacing(2)
         scroll.setWidget(self._wave_container)
         wave_layout.addWidget(scroll)
+        wave_layout.addLayout(self._build_selection_row())
+        return wave_group
 
-        # 選択ボタン行
+    def _build_selection_row(self) -> QHBoxLayout:
         sel_row = QHBoxLayout()
         btn_all = QPushButton("全選択")
         btn_all.setMaximumWidth(70)
@@ -194,7 +203,6 @@ class MultiWaveDialog(QDialog):
         btn_none.clicked.connect(self._deselect_all)
         sel_row.addWidget(btn_none)
 
-        # 標準セット選択
         self._set_combo = QComboBox()
         self._set_combo.addItem("標準セットを選択…")
         for set_name in _STANDARD_SETS:
@@ -203,10 +211,9 @@ class MultiWaveDialog(QDialog):
         sel_row.addWidget(self._set_combo, stretch=1)
 
         sel_row.addStretch()
-        wave_layout.addLayout(sel_row)
-        layout.addWidget(wave_group, stretch=1)
+        return sel_row
 
-        # ---- 生成オプション ----
+    def _build_options_group(self) -> QGroupBox:
         opt_group = QGroupBox("生成オプション")
         opt_form = QFormLayout(opt_group)
 
@@ -232,10 +239,9 @@ class MultiWaveDialog(QDialog):
             "生成されたケースをモックデータで自動実行します（SNAP不要）"
         )
         opt_form.addRow(self._auto_run_check)
+        return opt_group
 
-        layout.addWidget(opt_group)
-
-        # ---- UX改善⑤ 第5回: 生成ケース数リアルタイムプレビューバナー ----
+    def _build_preview_banner(self) -> QFrame:
         self._preview_banner = QFrame()
         self._preview_banner.setFrameShape(QFrame.StyledPanel)
         self._preview_banner.setStyleSheet(
@@ -257,11 +263,9 @@ class MultiWaveDialog(QDialog):
             "font-size: 10px; color: #555; background: transparent; border: none;"
         )
         _pb_layout.addWidget(self._preview_detail_lbl)
+        return self._preview_banner
 
-        layout.addWidget(self._preview_banner)
-        self._update_info_label()
-
-        # ---- ボタン ----
+    def _build_button_box(self) -> QDialogButtonBox:
         btn_box = QDialogButtonBox()
         self._generate_btn = QPushButton("ケースを生成")
         self._generate_btn.setDefault(True)
@@ -269,7 +273,7 @@ class MultiWaveDialog(QDialog):
         btn_box.addButton(QDialogButtonBox.Cancel)
         btn_box.accepted.connect(self._on_generate)
         btn_box.rejected.connect(self.reject)
-        layout.addWidget(btn_box)
+        return btn_box
 
     # ------------------------------------------------------------------
     # Wave list

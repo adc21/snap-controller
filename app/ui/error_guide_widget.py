@@ -163,18 +163,27 @@ class ErrorGuideWidget(QFrame):
         self.hide()
 
     def _setup_ui(self) -> None:
-        is_dark = ThemeManager.is_dark()
-        if is_dark:
-            bg = "#3b1f1f"
-            border = "#c62828"
-            title_color = "#ef9a9a"
-            body_color = "#ffcdd2"
-        else:
-            bg = "#fff3f3"
-            border = "#ef5350"
-            title_color = "#c62828"
-            body_color = "#333333"
+        bg, border, title_color, body_color = self._pick_palette()
+        self._apply_frame_style(bg, border)
 
+        main_layout = QVBoxLayout(self)
+        main_layout.setContentsMargins(12, 8, 12, 8)
+        main_layout.setSpacing(6)
+
+        main_layout.addLayout(self._build_title_row(title_color))
+        main_layout.addWidget(self._build_separator(border))
+        main_layout.addWidget(self._build_causes_container(), stretch=1)
+
+        self._body_color = body_color
+        self._title_color = title_color
+
+    @staticmethod
+    def _pick_palette() -> tuple[str, str, str, str]:
+        if ThemeManager.is_dark():
+            return "#3b1f1f", "#c62828", "#ef9a9a", "#ffcdd2"
+        return "#fff3f3", "#ef5350", "#c62828", "#333333"
+
+    def _apply_frame_style(self, bg: str, border: str) -> None:
         self.setFrameShape(QFrame.StyledPanel)
         self.setStyleSheet(
             f"ErrorGuideWidget, QFrame {{"
@@ -186,11 +195,7 @@ class ErrorGuideWidget(QFrame):
         )
         self.setMaximumHeight(220)
 
-        main_layout = QVBoxLayout(self)
-        main_layout.setContentsMargins(12, 8, 12, 8)
-        main_layout.setSpacing(6)
-
-        # ---- タイトル行 ----
+    def _build_title_row(self, title_color: str) -> QHBoxLayout:
         title_row = QHBoxLayout()
         title_row.setSpacing(6)
 
@@ -201,7 +206,6 @@ class ErrorGuideWidget(QFrame):
             )
         except Exception:
             icon_lbl.setText("⚠")
-
         title_row.addWidget(icon_lbl)
 
         title_lbl = QLabel("<b>解析エラーが発生しました ─ よくある原因と解決策</b>")
@@ -209,36 +213,35 @@ class ErrorGuideWidget(QFrame):
         title_lbl.setTextFormat(Qt.RichText)
         title_row.addWidget(title_lbl, stretch=1)
 
-        # UX改善（第7回③）: 「エラーをコピー」ボタン
-        _copy_btn = QPushButton("📋 コピー")
-        _copy_btn.setFixedHeight(22)
-        _copy_btn.setMinimumWidth(70)
-        _copy_btn.setToolTip(
+        self._copy_btn = self._make_action_button(
+            "📋 コピー",
             "エラー情報（ケース名・ログ）をクリップボードにコピーします。\n"
-            "サポートや同僚への問い合わせ時に貼り付けてください。"
+            "サポートや同僚への問い合わせ時に貼り付けてください。",
+            title_color,
+            self._on_copy_error,
         )
-        _copy_btn.setStyleSheet(
-            f"QPushButton {{"
-            f"  font-size: 10px; padding: 2px 8px;"
-            f"  border: 1px solid {title_color}; border-radius: 3px;"
-            f"  background: transparent; color: {title_color};"
-            f"}}"
-            f"QPushButton:hover {{ background: {title_color}; color: white; }}"
-        )
-        _copy_btn.clicked.connect(self._on_copy_error)
-        title_row.addWidget(_copy_btn)
-        self._copy_btn = _copy_btn
+        title_row.addWidget(self._copy_btn)
 
-        # UX改善（第7回③）: 「再試行」ボタン
-        _retry_btn = QPushButton("🔄 再試行")
-        _retry_btn.setFixedHeight(22)
-        _retry_btn.setMinimumWidth(70)
-        _retry_btn.setToolTip(
+        self._retry_btn = self._make_action_button(
+            "🔄 再試行",
             "このケースを再度解析します。\n"
             "パラメータを修正した後、すぐにここから再実行できます。\n\n"
-            "※ STEP3 タブへ戻らずに再試行できます。"
+            "※ STEP3 タブへ戻らずに再試行できます。",
+            title_color,
+            self._on_retry,
         )
-        _retry_btn.setStyleSheet(
+        title_row.addWidget(self._retry_btn)
+
+        title_row.addWidget(self._make_close_button(title_color))
+        return title_row
+
+    @staticmethod
+    def _make_action_button(label: str, tooltip: str, title_color: str, handler) -> QPushButton:
+        btn = QPushButton(label)
+        btn.setFixedHeight(22)
+        btn.setMinimumWidth(70)
+        btn.setToolTip(tooltip)
+        btn.setStyleSheet(
             f"QPushButton {{"
             f"  font-size: 10px; padding: 2px 8px;"
             f"  border: 1px solid {title_color}; border-radius: 3px;"
@@ -246,10 +249,10 @@ class ErrorGuideWidget(QFrame):
             f"}}"
             f"QPushButton:hover {{ background: {title_color}; color: white; }}"
         )
-        _retry_btn.clicked.connect(self._on_retry)
-        title_row.addWidget(_retry_btn)
-        self._retry_btn = _retry_btn
+        btn.clicked.connect(handler)
+        return btn
 
+    def _make_close_button(self, title_color: str) -> QPushButton:
         close_btn = QPushButton("✕")
         close_btn.setFixedSize(20, 20)
         close_btn.setStyleSheet(
@@ -259,27 +262,22 @@ class ErrorGuideWidget(QFrame):
         )
         close_btn.setToolTip("このガイダンスを閉じます")
         close_btn.clicked.connect(self.hide)
-        title_row.addWidget(close_btn)
+        return close_btn
 
-        main_layout.addLayout(title_row)
-
-        # セパレータ
+    @staticmethod
+    def _build_separator(border: str) -> QFrame:
         sep = QFrame()
         sep.setFrameShape(QFrame.HLine)
         sep.setStyleSheet(f"color: {border}; max-height: 1px;")
-        main_layout.addWidget(sep)
+        return sep
 
-        # ---- 原因リストエリア（動的に更新） ----
+    def _build_causes_container(self) -> QWidget:
         self._causes_container = QWidget()
         self._causes_container.setStyleSheet("background: transparent;")
         self._causes_layout = QVBoxLayout(self._causes_container)
         self._causes_layout.setContentsMargins(0, 0, 0, 0)
         self._causes_layout.setSpacing(3)
-        main_layout.addWidget(self._causes_container, stretch=1)
-
-        # ストア
-        self._body_color = body_color
-        self._title_color = title_color
+        return self._causes_container
 
     def show_for_case(self, case_id: str, case_name: str, log_text: str = "") -> None:
         """
