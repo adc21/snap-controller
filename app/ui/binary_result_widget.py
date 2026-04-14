@@ -685,7 +685,24 @@ class BinaryResultWidget(QWidget):
     # Period
     # ------------------------------------------------------------------
     def _refresh_period_tab(self) -> None:
-        # ケースごとのモードデータを収集
+        case_modes, rows = self._collect_period_data()
+        if not rows:
+            self._set_tab_state("period", False)
+            return
+        self._set_tab_state("period", True)
+
+        self._populate_period_table(case_modes, rows)
+
+        colors = plt.rcParams["axes.prop_cycle"].by_key()["color"]
+        case_names = list(case_modes.keys())
+        max_modes = max((len(v) for v in case_modes.values()), default=0)
+
+        self._draw_period_bars(case_modes, case_names, max_modes, colors)
+        self._draw_cumulative_pm(case_modes, case_names, max_modes, colors)
+        self._draw_beta_excitation(case_modes, case_names, max_modes, colors)
+        self._refresh_period_mode_shapes()
+
+    def _collect_period_data(self) -> Tuple[Dict[str, list], List[Tuple[str, object]]]:
         case_modes: Dict[str, list] = {}
         rows: List[Tuple[str, object]] = []
         for e in self._active_entries:
@@ -694,13 +711,13 @@ class BinaryResultWidget(QWidget):
             for m in e.loader.period.modes:
                 rows.append((e.name, m))
             case_modes[e.name] = list(e.loader.period.modes)
+        return case_modes, rows
 
-        if not rows:
-            self._set_tab_state("period", False)
-            return
-        self._set_tab_state("period", True)
-
-        # ---- テーブル更新 ----
+    def _populate_period_table(
+        self,
+        case_modes: Dict[str, list],
+        rows: List[Tuple[str, object]],
+    ) -> None:
         headers = ["ケース", "モード", "周期 T [s]", "振動数 f [Hz]",
                    "ω [rad/s]", "支配方向",
                    "β_X", "β_Y", "β_Z", "β_RX", "β_RY",
@@ -712,8 +729,7 @@ class BinaryResultWidget(QWidget):
         self._period_table.setColumnCount(len(headers))
         self._period_table.setHorizontalHeaderLabels(headers)
 
-        # 累積参加質量比の計算（ケースごと）
-        cum_pm: Dict[str, Dict[str, float]] = {}
+        cum_pm: Dict[str, Dict[int, Tuple[float, float]]] = {}
         for cname, modes in case_modes.items():
             cx, cy = 0.0, 0.0
             cum_pm[cname] = {}
@@ -747,23 +763,23 @@ class BinaryResultWidget(QWidget):
                 self._period_table.setItem(i, j, QTableWidgetItem(v))
         self._period_table.resizeColumnsToContents()
 
-        # ---- グラフ更新 ----
-        colors = plt.rcParams["axes.prop_cycle"].by_key()["color"]
-
-        # グラフ 1: 固有周期バーチャート
+    def _draw_period_bars(
+        self,
+        case_modes: Dict[str, list],
+        case_names: List[str],
+        max_modes: int,
+        colors: list,
+    ) -> None:
         ax = self._period_canvas.ax
         ax.clear()
-        case_names = list(case_modes.keys())
-        max_modes = max((len(v) for v in case_modes.values()), default=0)
         if max_modes > 0:
             x = np.arange(max_modes)
             width = 0.8 / max(len(case_names), 1)
             for ci, (cname, modes) in enumerate(case_modes.items()):
                 periods = [m.period for m in sorted(modes, key=lambda m: m.mode_no)]
-                mode_nos = [m.mode_no for m in sorted(modes, key=lambda m: m.mode_no)]
                 xi = x[:len(periods)] + (ci - len(case_names) / 2 + 0.5) * width
-                bars = ax.bar(xi, periods, width=width * 0.9,
-                              label=cname, color=colors[ci % len(colors)], alpha=0.8)
+                ax.bar(xi, periods, width=width * 0.9,
+                       label=cname, color=colors[ci % len(colors)], alpha=0.8)
             ax.set_xlabel("モード番号")
             ax.set_ylabel("固有周期 T [s]")
             ax.set_title("固有周期")
@@ -775,7 +791,13 @@ class BinaryResultWidget(QWidget):
         self._period_canvas.fig.tight_layout()
         self._period_canvas.draw()
 
-        # グラフ 2: 累積参加質量比（X・Y方向）
+    def _draw_cumulative_pm(
+        self,
+        case_modes: Dict[str, list],
+        case_names: List[str],
+        max_modes: int,
+        colors: list,
+    ) -> None:
         ax2 = self._pm_canvas.ax
         ax2.clear()
         if max_modes > 0:
@@ -808,7 +830,13 @@ class BinaryResultWidget(QWidget):
         self._pm_canvas.fig.tight_layout()
         self._pm_canvas.draw()
 
-        # グラフ 3: 刺激関数 β（X・Y方向）
+    def _draw_beta_excitation(
+        self,
+        case_modes: Dict[str, list],
+        case_names: List[str],
+        max_modes: int,
+        colors: list,
+    ) -> None:
         ax3 = self._beta_canvas.ax
         ax3.clear()
         if max_modes > 0:
@@ -837,9 +865,6 @@ class BinaryResultWidget(QWidget):
             ax3.legend(fontsize=8)
         self._beta_canvas.fig.tight_layout()
         self._beta_canvas.draw()
-
-        # グラフ 4: モード形状 (MDFloor.xbn)
-        self._refresh_period_mode_shapes()
 
     # ------------------------------------------------------------------
     # モード形状 (MDFloor.xbn)

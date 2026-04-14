@@ -633,39 +633,56 @@ def compute_convergence_diagnostics(
     n_total = len(candidates)
     feasible = result.feasible_candidates
     n_feasible = len(feasible)
-
-    # --- 制約満足率 ---
     feasibility_ratio = n_feasible / n_total if n_total > 0 else 0.0
 
-    # --- 後半の改善率 ---
-    # 目的関数の累積最良値を追跡し、後半での改善幅を評価
     obj_values = [c.objective_value for c in candidates]
-    half = max(1, n_total // 2)
-    best_first_half = float("inf")
-    for v in obj_values[:half]:
-        if v < best_first_half:
-            best_first_half = v
-    best_second_half = float("inf")
-    for v in obj_values[half:]:
-        if v < best_second_half:
-            best_second_half = v
-    best_overall = min(best_first_half, best_second_half)
-
-    if best_first_half > 0 and best_first_half != float("inf"):
-        improvement_ratio = max(0.0, (best_first_half - best_overall) / abs(best_first_half))
-    else:
-        improvement_ratio = 0.0
-
-    # --- パラメータ空間カバー率 ---
+    improvement_ratio = _compute_improvement_ratio(obj_values, n_total)
     space_coverage = _compute_space_coverage(candidates, result.config)
-
-    # --- 最良解近傍の候補密度 ---
     best_cluster_ratio = _compute_best_cluster_ratio(candidates, result.best)
-
-    # --- 停滞検出 ---
     stagnation_detected = _check_tail_stagnation(obj_values)
 
-    # --- 総合品質スコア ---
+    score, recommendations = _score_diagnostics(
+        feasibility_ratio,
+        improvement_ratio,
+        space_coverage,
+        best_cluster_ratio,
+        stagnation_detected,
+    )
+    quality_label = _quality_label_from_score(score)
+    if not recommendations:
+        recommendations.append("探索品質は良好です。結果を信頼して設計に使用できます。")
+
+    return ConvergenceDiagnostics(
+        feasibility_ratio=feasibility_ratio,
+        improvement_ratio=improvement_ratio,
+        space_coverage=space_coverage,
+        best_cluster_ratio=best_cluster_ratio,
+        stagnation_detected=stagnation_detected,
+        n_evaluations=n_total,
+        n_feasible=n_feasible,
+        quality_score=score,
+        quality_label=quality_label,
+        recommendations=recommendations,
+    )
+
+
+def _compute_improvement_ratio(obj_values: List[float], n_total: int) -> float:
+    half = max(1, n_total // 2)
+    best_first_half = min(obj_values[:half], default=float("inf"))
+    best_second_half = min(obj_values[half:], default=float("inf"))
+    best_overall = min(best_first_half, best_second_half)
+    if best_first_half > 0 and best_first_half != float("inf"):
+        return max(0.0, (best_first_half - best_overall) / abs(best_first_half))
+    return 0.0
+
+
+def _score_diagnostics(
+    feasibility_ratio: float,
+    improvement_ratio: float,
+    space_coverage: float,
+    best_cluster_ratio: float,
+    stagnation_detected: bool,
+) -> Tuple[float, List[str]]:
     score = 0.0
     recommendations: List[str] = []
 
@@ -683,7 +700,7 @@ def compute_convergence_diagnostics(
 
     # 後半改善率の評価 (0-25点) — 低いほど収束している
     if improvement_ratio < 0.005:
-        score += 25  # ほぼ収束
+        score += 25
     elif improvement_ratio < 0.02:
         score += 20
     elif improvement_ratio < 0.05:
@@ -728,41 +745,24 @@ def compute_convergence_diagnostics(
             "最良解が孤立しています。局所最適の可能性があります。異なる初期条件で再実行を推奨します。"
         )
 
-    # 停滞ペナルティ
-    if stagnation_detected and improvement_ratio < 0.005:
-        # 停滞しているが収束済みなのでOK
-        pass
-    elif stagnation_detected:
-        score = max(0, score - 5)
+    # 停滞ペナルティ（収束済みなら無視）
+    if stagnation_detected and improvement_ratio >= 0.005:
+        score = max(0.0, score - 5)
         recommendations.append(
             "探索末尾で停滞が検出されました。探索手法の変更（GA→ベイズ、SA→ランダム等）を検討してください。"
         )
 
-    # 品質ラベル
+    return score, recommendations
+
+
+def _quality_label_from_score(score: float) -> str:
     if score >= 80:
-        quality_label = "優良"
-    elif score >= 60:
-        quality_label = "良好"
-    elif score >= 40:
-        quality_label = "要注意"
-    else:
-        quality_label = "不十分"
-
-    if not recommendations:
-        recommendations.append("探索品質は良好です。結果を信頼して設計に使用できます。")
-
-    return ConvergenceDiagnostics(
-        feasibility_ratio=feasibility_ratio,
-        improvement_ratio=improvement_ratio,
-        space_coverage=space_coverage,
-        best_cluster_ratio=best_cluster_ratio,
-        stagnation_detected=stagnation_detected,
-        n_evaluations=n_total,
-        n_feasible=n_feasible,
-        quality_score=score,
-        quality_label=quality_label,
-        recommendations=recommendations,
-    )
+        return "優良"
+    if score >= 60:
+        return "良好"
+    if score >= 40:
+        return "要注意"
+    return "不十分"
 
 
 def _compute_space_coverage(
