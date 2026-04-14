@@ -145,87 +145,92 @@ class Result:
         self.parse_log.append(f"  [Result] Floor*.txt: {[f.name for f in floor_files]}")
         self.parse_log.append(f"  [Result] Story*.txt: {[f.name for f in story_files]}")
 
-        # ----- FloorResult -----
-        # ヘッダ: //No,Z1,Dx2,Dy3,Vx4,Vy5,Ax6,Ay7,RAx8,RAy9
-        # 単位  : D=mm, V=mm/s, A=mm/s²
-        #
-        # Z 高さ[m] をキーとして各方向の最大値を集約します。
-        # 同一 Z に複数ノードがある3Dモデルでも正しく集計できます。
-        # Z は 1mm 精度（小数3桁）に丸め、浮動小数点の比較ずれを防ぎます。
-        floor_z: Dict[float, Tuple[float, float, float]] = {}  # z -> (disp, vel, acc)
-        row_count = 0
+        floor_z, pga_acc = self._parse_floor_files(floor_files)
+        self._assign_floor_results(floor_z, pga_acc)
 
-        pga_acc = 0.0  # Z=0 の最大絶対加速度（入力PGA）
+        story_z, base_otm_val = self._parse_story_files(story_files)
+        self._resolve_base_otm(base_otm_val, story_z)
+        self._assign_story_results(story_z)
+
+    def _parse_floor_files(
+        self, floor_files: List[Path]
+    ) -> Tuple[Dict[float, Tuple[float, float, float]], float]:
+        """Floor*.txt を走査し Z高さ → (disp, vel, acc) を集約。Z=0 の PGA も返す。"""
+        floor_z: Dict[float, Tuple[float, float, float]] = {}
+        row_count = 0
+        pga_acc = 0.0
         for fp in floor_files:
             for cols in self._iter_cols(fp):
-                if len(cols) < 5:   # 最低限 No, Z, Dx, Vx, Ax が必要
+                if len(cols) < 5:
                     continue
-                z = round(self._safe_float(cols[1]), 3)  # 1mm 単位に丸め
+                z = round(self._safe_float(cols[1]), 3)
                 if z <= 0.0:
-                    # Z=0（地盤ノード）の絶対加速度 = 入力地震動のPGA
                     ax = abs(self._safe_float(cols[6])) if len(cols) > 6 else 0.0
                     ay = abs(self._safe_float(cols[7])) if len(cols) > 7 else 0.0
                     pga_acc = max(pga_acc, ax, ay)
                     continue
                 row_count += 1
-                dx  = abs(self._safe_float(cols[2]))                           # Dx [mm]
-                dy  = abs(self._safe_float(cols[3])) if len(cols) > 3 else 0.0 # Dy [mm]
-                vx  = abs(self._safe_float(cols[4]))                           # Vx [mm/s]
-                vy  = abs(self._safe_float(cols[5])) if len(cols) > 5 else 0.0 # Vy [mm/s]
-                ax  = abs(self._safe_float(cols[6])) if len(cols) > 6 else 0.0 # Ax [mm/s²]
-                ay  = abs(self._safe_float(cols[7])) if len(cols) > 7 else 0.0 # Ay [mm/s²]
+                dx = abs(self._safe_float(cols[2]))
+                dy = abs(self._safe_float(cols[3])) if len(cols) > 3 else 0.0
+                vx = abs(self._safe_float(cols[4]))
+                vy = abs(self._safe_float(cols[5])) if len(cols) > 5 else 0.0
+                ax = abs(self._safe_float(cols[6])) if len(cols) > 6 else 0.0
+                ay = abs(self._safe_float(cols[7])) if len(cols) > 7 else 0.0
                 prev = floor_z.get(z, (0.0, 0.0, 0.0))
                 floor_z[z] = (
                     max(prev[0], dx, dy),
                     max(prev[1], vx, vy),
                     max(prev[2], ax, ay),
                 )
+        self.parse_log.append(
+            f"  [Result] Floor: データ行数={row_count}, Z高さ種別={sorted(floor_z.keys())}"
+        )
+        return floor_z, pga_acc
 
-        self.parse_log.append(f"  [Result] Floor: データ行数={row_count}, Z高さ種別={sorted(floor_z.keys())}")
-
-        # Z=0 の PGA を保存（mm/s² → m/s²）
+    def _assign_floor_results(
+        self,
+        floor_z: Dict[float, Tuple[float, float, float]],
+        pga_acc: float,
+    ) -> None:
+        """Z=0 PGA を保存しつつ、Z 昇順にフロア番号を割り当てて mm→m 変換。"""
         if pga_acc > 0.0:
             self.input_pga = round(pga_acc / 1000, 6)
             self.parse_log.append(f"  [Result] input_pga={self.input_pga} m/s²")
 
-        # Z 高さ昇順でフロア番号 1..N を割り当て、mm→m 変換
         for floor_no, z in enumerate(sorted(floor_z), start=1):
             disp, vel, acc = floor_z[z]
             self.max_disp[floor_no] = round(disp / 1000, 6)
-            self.max_vel[floor_no]  = round(vel  / 1000, 6)
-            self.max_acc[floor_no]  = round(acc  / 1000, 6)
+            self.max_vel[floor_no] = round(vel / 1000, 6)
+            self.max_acc[floor_no] = round(acc / 1000, 6)
 
         self.parse_log.append(f"  [Result] max_disp={self.max_disp}")
 
-        # ----- StoryResult -----
-        # ヘッダ: //No,Z1,Sx2,Sy3,Qx4,Qy5,Cx6,Cy7,Mx8,My9,Drx10,Dry11,...
-        # 単位  : S=mm, Q=kN, M=kN.m, Cx=無次元, Drx=無次元
-        #
-        # 同様に Z 高さでグループ化し XY両方向の最大値を採用します。
-        story_z: Dict[float, Tuple[float, float, float, float]] = {}  # z -> (s, c, m, dr)
+    def _parse_story_files(
+        self, story_files: List[Path]
+    ) -> Tuple[Dict[float, Tuple[float, float, float, float]], float]:
+        """Story*.txt を走査し Z高さ → (s, c, m, dr) を集約。Z=0 の base OTM も返す。"""
+        story_z: Dict[float, Tuple[float, float, float, float]] = {}
         story_row_count = 0
-        base_otm_val = 0.0  # Z=0 の基部転倒モーメント
-
+        base_otm_val = 0.0
         for fp in story_files:
             for cols in self._iter_cols(fp):
                 if len(cols) < 7:
                     continue
                 z = round(self._safe_float(cols[1]), 3)
                 if z <= 0.0:
-                    # Z=0（基部）の転倒モーメントを取得
-                    mx = abs(self._safe_float(cols[8]))  if len(cols) > 8 else 0.0
-                    my = abs(self._safe_float(cols[9]))  if len(cols) > 9 else 0.0
+                    mx = abs(self._safe_float(cols[8])) if len(cols) > 8 else 0.0
+                    my = abs(self._safe_float(cols[9])) if len(cols) > 9 else 0.0
                     base_otm_val = max(base_otm_val, mx, my)
                     continue
                 story_row_count += 1
-                sx  = abs(self._safe_float(cols[2]))                            # Sx [mm]
-                sy  = abs(self._safe_float(cols[3]))  if len(cols) > 3 else 0.0 # Sy [mm]
-                cx  = abs(self._safe_float(cols[6]))  if len(cols) > 6 else 0.0 # Cx せん断力係数
-                cy  = abs(self._safe_float(cols[7]))  if len(cols) > 7 else 0.0 # Cy せん断力係数
-                mx  = abs(self._safe_float(cols[8]))  if len(cols) > 8 else 0.0 # Mx 転倒モーメント [kN.m]
-                my  = abs(self._safe_float(cols[9]))  if len(cols) > 9 else 0.0 # My 転倒モーメント [kN.m]
-                drx = abs(self._safe_float(cols[10])) if len(cols) > 10 else 0.0 # Drx 層間変形角
-                dry = abs(self._safe_float(cols[11])) if len(cols) > 11 else 0.0 # Dry
+                sx = abs(self._safe_float(cols[2]))
+                sy = abs(self._safe_float(cols[3])) if len(cols) > 3 else 0.0
+                cx = abs(self._safe_float(cols[6])) if len(cols) > 6 else 0.0
+                cy = abs(self._safe_float(cols[7])) if len(cols) > 7 else 0.0
+                mx = abs(self._safe_float(cols[8])) if len(cols) > 8 else 0.0
+                my = abs(self._safe_float(cols[9])) if len(cols) > 9 else 0.0
+                drx = abs(self._safe_float(cols[10])) if len(cols) > 10 else 0.0
+                dry = abs(self._safe_float(cols[11])) if len(cols) > 11 else 0.0
                 prev = story_z.get(z, (0.0, 0.0, 0.0, 0.0))
                 story_z[z] = (
                     max(prev[0], sx, sy),
@@ -233,31 +238,42 @@ class Result:
                     max(prev[2], mx, my),
                     max(prev[3], drx, dry),
                 )
+        self.parse_log.append(
+            f"  [Result] Story: データ行数={story_row_count}, Z高さ種別={sorted(story_z.keys())}"
+        )
+        return story_z, base_otm_val
 
-        self.parse_log.append(f"  [Result] Story: データ行数={story_row_count}, Z高さ種別={sorted(story_z.keys())}")
-
-        # Z=0 の基部転倒モーメントを保存
+    def _resolve_base_otm(
+        self,
+        base_otm_val: float,
+        story_z: Dict[float, Tuple[float, float, float, float]],
+    ) -> None:
+        """Z=0 の base OTM を優先、なければ 3D フレーム等で最下層モーメントにフォールバック。"""
         if base_otm_val > 0.0:
             self.base_otm = round(base_otm_val, 2)
             self.parse_log.append(f"  [Result] base_otm={self.base_otm} kN・m")
-        elif story_z:
-            # Z=0 の行がないモデル（3Dフレーム等）: 最下層のモーメントで代替
-            lowest_z = min(story_z.keys())
-            _, _, lowest_m, _ = story_z[lowest_z]
-            if lowest_m > 0.0:
-                self.base_otm = round(lowest_m, 2)
-                self.parse_log.append(
-                    f"  [Result] base_otm={self.base_otm} kN・m (最下層 Z={lowest_z}m から推定)"
-                )
+            return
+        if not story_z:
+            return
+        lowest_z = min(story_z.keys())
+        _, _, lowest_m, _ = story_z[lowest_z]
+        if lowest_m > 0.0:
+            self.base_otm = round(lowest_m, 2)
+            self.parse_log.append(
+                f"  [Result] base_otm={self.base_otm} kN・m (最下層 Z={lowest_z}m から推定)"
+            )
 
-        # Z 高さ昇順でフロア番号 1..N を割り当て
+    def _assign_story_results(
+        self,
+        story_z: Dict[float, Tuple[float, float, float, float]],
+    ) -> None:
+        """Z 昇順にストーリー番号を割り当て、mm→m 変換しつつ各辞書へ格納。"""
         for story_no, z in enumerate(sorted(story_z), start=1):
             s, c, m, dr = story_z[z]
-            self.max_story_disp[story_no]  = round(s  / 1000, 6)  # mm → m
-            self.shear_coeff[story_no]     = round(c,  6)
-            self.max_otm[story_no]         = round(m,  2)
+            self.max_story_disp[story_no] = round(s / 1000, 6)
+            self.shear_coeff[story_no] = round(c, 6)
+            self.max_otm[story_no] = round(m, 2)
             self.max_story_drift[story_no] = round(dr, 6)
-
         self.parse_log.append(f"  [Result] max_story_drift={self.max_story_drift}")
 
     @staticmethod

@@ -82,8 +82,22 @@ class DamperCatalogDialog(QDialog):
 
     def _setup_ui(self) -> None:
         layout = QVBoxLayout(self)
+        layout.addLayout(self._build_search_row())
 
-        # ---- 検索バー ----
+        splitter = QSplitter(Qt.Horizontal)
+        self._tree = QTreeWidget()
+        self._tree.setHeaderLabels(["ダンパーカタログ"])
+        self._tree.setMinimumWidth(280)
+        self._tree.currentItemChanged.connect(self._on_tree_selection)
+        splitter.addWidget(self._tree)
+        splitter.addWidget(self._build_right_panel())
+        splitter.setStretchFactor(0, 1)
+        splitter.setStretchFactor(1, 2)
+        layout.addWidget(splitter, stretch=1)
+
+        layout.addLayout(self._build_button_row())
+
+    def _build_search_row(self) -> QHBoxLayout:
         search_row = QHBoxLayout()
         search_row.addWidget(QLabel("検索:"))
         self._search_edit = QLineEdit()
@@ -99,24 +113,18 @@ class DamperCatalogDialog(QDialog):
             )
         self._category_filter.currentIndexChanged.connect(self._on_filter_changed)
         search_row.addWidget(self._category_filter)
-        layout.addLayout(search_row)
+        return search_row
 
-        # ---- メインスプリッター ----
-        splitter = QSplitter(Qt.Horizontal)
-
-        # 左: カテゴリツリー
-        self._tree = QTreeWidget()
-        self._tree.setHeaderLabels(["ダンパーカタログ"])
-        self._tree.setMinimumWidth(280)
-        self._tree.currentItemChanged.connect(self._on_tree_selection)
-        splitter.addWidget(self._tree)
-
-        # 右: 詳細パネル
+    def _build_right_panel(self) -> QWidget:
         right_panel = QWidget()
         right_layout = QVBoxLayout(right_panel)
         right_layout.setContentsMargins(0, 0, 0, 0)
+        right_layout.addWidget(self._build_category_banner())
+        right_layout.addWidget(self._build_info_group())
+        right_layout.addWidget(self._build_param_group(), stretch=1)
+        return right_panel
 
-        # UX改善（第6回②）: カテゴリ説明バナー（カテゴリ選択時のみ表示）
+    def _build_category_banner(self) -> QFrame:
         self._cat_banner = QFrame()
         self._cat_banner.setFrameShape(QFrame.StyledPanel)
         self._cat_banner.setStyleSheet(
@@ -146,9 +154,9 @@ class DamperCatalogDialog(QDialog):
         cat_banner_layout.addWidget(self._cat_banner_meta)
 
         self._cat_banner.hide()
-        right_layout.addWidget(self._cat_banner)
+        return self._cat_banner
 
-        # ダンパー情報
+    def _build_info_group(self) -> QGroupBox:
         self._info_group = QGroupBox("ダンパー情報")
         info_layout = QFormLayout(self._info_group)
 
@@ -172,10 +180,9 @@ class DamperCatalogDialog(QDialog):
         self._lbl_tags = QLabel("-")
         self._lbl_tags.setWordWrap(True)
         info_layout.addRow("タグ:", self._lbl_tags)
+        return self._info_group
 
-        right_layout.addWidget(self._info_group)
-
-        # パラメータテーブル
+    def _build_param_group(self) -> QGroupBox:
         param_group = QGroupBox("デフォルトパラメータ")
         param_layout = QVBoxLayout(param_group)
 
@@ -192,16 +199,9 @@ class DamperCatalogDialog(QDialog):
         )
         self._param_table.verticalHeader().setVisible(False)
         param_layout.addWidget(self._param_table)
+        return param_group
 
-        right_layout.addWidget(param_group, stretch=1)
-
-        splitter.addWidget(right_panel)
-        splitter.setStretchFactor(0, 1)
-        splitter.setStretchFactor(1, 2)
-
-        layout.addWidget(splitter, stretch=1)
-
-        # ---- ボタン ----
+    def _build_button_row(self) -> QHBoxLayout:
         btn_layout = QHBoxLayout()
         self._apply_btn = QPushButton("ケースに適用")
         self._apply_btn.setEnabled(False)
@@ -213,7 +213,7 @@ class DamperCatalogDialog(QDialog):
         btn_box = QDialogButtonBox(QDialogButtonBox.Close)
         btn_box.rejected.connect(self.reject)
         btn_layout.addWidget(btn_box)
-        layout.addLayout(btn_layout)
+        return btn_layout
 
     # ------------------------------------------------------------------
     # Tree population
