@@ -77,6 +77,114 @@ class TestDialogInstantiation:
         assert hasattr(dlg, "_canvas")
         assert hasattr(dlg, "_start_btn")
 
+    def test_unified_optimizer_advanced_options(self, qapp):
+        """統合最適化ダイアログの詳細設定パネルが正しく構築される。"""
+        from app.ui.unified_optimizer_dialog import UnifiedOptimizerDialog
+        dlg = UnifiedOptimizerDialog()
+
+        # 詳細設定ウィジェットが存在する
+        assert hasattr(dlg, "_adv_toggle")
+        assert hasattr(dlg, "_adv_widget")
+        assert hasattr(dlg, "_seed_check")
+        assert hasattr(dlg, "_seed_spin")
+        assert hasattr(dlg, "_parallel_spin")
+        assert hasattr(dlg, "_timeout_spin")
+        assert hasattr(dlg, "_checkpoint_check")
+        assert hasattr(dlg, "_checkpoint_interval_spin")
+        assert hasattr(dlg, "_robust_check")
+        assert hasattr(dlg, "_robust_samples_spin")
+        assert hasattr(dlg, "_robust_delta_spin")
+
+        # 初期状態: 詳細設定は非表示 (isHidden=hidden explicitly)
+        assert dlg._adv_widget.isHidden()
+
+        # トグルONで表示
+        dlg._adv_toggle.setChecked(True)
+        assert not dlg._adv_widget.isHidden()
+
+        # トグルOFFで非表示
+        dlg._adv_toggle.setChecked(False)
+        assert dlg._adv_widget.isHidden()
+
+    def test_unified_optimizer_seed_toggle(self, qapp):
+        """乱数シードチェックボックスでスピンの有効/無効が切り替わる。"""
+        from app.ui.unified_optimizer_dialog import UnifiedOptimizerDialog
+        dlg = UnifiedOptimizerDialog()
+
+        assert not dlg._seed_spin.isEnabled()
+        dlg._seed_check.setChecked(True)
+        assert dlg._seed_spin.isEnabled()
+        dlg._seed_check.setChecked(False)
+        assert not dlg._seed_spin.isEnabled()
+
+    def test_unified_optimizer_config_advanced_fields(self, qapp):
+        """詳細設定が OptimizationConfig に正しく反映される。"""
+        from app.ui.unified_optimizer_dialog import UnifiedOptimizerDialog, ParameterRange
+        dlg = UnifiedOptimizerDialog()
+
+        params = [ParameterRange(
+            key="field_8", label="test", min_val=100, max_val=1000,
+            step=50, is_integer=False, is_floor_count=False,
+        )]
+
+        # デフォルトの詳細設定値を確認
+        config = dlg._build_config(params)
+        assert config.snap_timeout == 300
+        assert config.n_parallel == 1
+        assert config.checkpoint_interval == 0
+        assert config.robustness_samples == 0
+        assert config.random_seed is None
+
+        # シード有効化
+        dlg._seed_check.setChecked(True)
+        dlg._seed_spin.setValue(123)
+        config = dlg._build_config(params)
+        assert config.random_seed == 123
+
+        # チェックポイント有効化
+        dlg._checkpoint_check.setChecked(True)
+        dlg._checkpoint_interval_spin.setValue(20)
+        config = dlg._build_config(params)
+        assert config.checkpoint_interval == 20
+
+        # ロバスト有効化
+        dlg._robust_check.setChecked(True)
+        dlg._robust_samples_spin.setValue(5)
+        dlg._robust_delta_spin.setValue(0.10)
+        config = dlg._build_config(params)
+        assert config.robustness_samples == 5
+        assert abs(config.robustness_delta - 0.10) < 0.001
+
+        # タイムアウト変更
+        dlg._timeout_spin.setValue(600)
+        config = dlg._build_config(params)
+        assert config.snap_timeout == 600
+
+    def test_unified_optimizer_json_buttons_exist(self, qapp):
+        """JSON保存/読込/画像保存ボタンが存在する。"""
+        from app.ui.unified_optimizer_dialog import UnifiedOptimizerDialog
+        dlg = UnifiedOptimizerDialog()
+
+        assert hasattr(dlg, "_save_json_btn")
+        assert hasattr(dlg, "_load_json_btn")
+        assert hasattr(dlg, "_save_plot_btn")
+
+        # 初期状態: 結果がないので無効
+        assert not dlg._save_json_btn.isEnabled()
+        assert dlg._load_json_btn.isEnabled()  # 読込はいつでも可能
+        assert not dlg._save_plot_btn.isEnabled()
+
+    def test_unified_optimizer_obj2_toggles_method(self, qapp):
+        """目的関数2を有効にすると探索手法がNSGA-IIに切り替わる。"""
+        from app.ui.unified_optimizer_dialog import UnifiedOptimizerDialog
+        dlg = UnifiedOptimizerDialog()
+
+        dlg._method_combo.setCurrentIndex(0)  # grid
+        assert dlg._method_combo.currentData() == "grid"
+
+        dlg._obj2_enabled.setChecked(True)
+        assert dlg._method_combo.currentData() == "nsga2"
+
     def test_damper_injector_dialog(self, qapp):
         from app.ui.damper_injector_dialog import DamperInjectorDialog
         dlg = DamperInjectorDialog()

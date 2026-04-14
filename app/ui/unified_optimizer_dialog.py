@@ -21,6 +21,7 @@ app/ui/unified_optimizer_dialog.py
 
 from __future__ import annotations
 
+import json
 import time
 import logging
 from typing import Any, Dict, List, Optional, Tuple
@@ -43,6 +44,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QProgressBar,
     QPushButton,
+    QScrollArea,
     QSizePolicy,
     QSpinBox,
     QSplitter,
@@ -209,8 +211,15 @@ class UnifiedOptimizerDialog(QDialog):
         self._build_objectives(left_layout)
         self._build_constraints(left_layout)
         self._build_method_section(left_layout)
+        self._build_advanced_options(left_layout)
         self._build_run_controls(left_layout)
         left_layout.addStretch()
+
+        # 左ペインをスクロール可能にする
+        left_scroll = QScrollArea()
+        left_scroll.setWidgetResizable(True)
+        left_scroll.setWidget(left)
+        left_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
 
         # 右ペイン
         right = QWidget()
@@ -219,7 +228,7 @@ class UnifiedOptimizerDialog(QDialog):
         self._build_plot(right_layout)
         self._build_detail_panel(right_layout)
 
-        splitter.addWidget(left)
+        splitter.addWidget(left_scroll)
         splitter.addWidget(right)
         splitter.setStretchFactor(0, 2)
         splitter.setStretchFactor(1, 3)
@@ -479,6 +488,106 @@ class UnifiedOptimizerDialog(QDialog):
 
         layout.addWidget(group)
 
+    def _build_advanced_options(self, layout: QVBoxLayout) -> None:
+        """折りたたみ式の詳細設定パネル。"""
+        self._adv_toggle = QCheckBox("詳細設定を表示")
+        self._adv_toggle.setChecked(False)
+        layout.addWidget(self._adv_toggle)
+
+        self._adv_widget = QWidget()
+        adv = QVBoxLayout(self._adv_widget)
+        adv.setContentsMargins(8, 0, 0, 0)
+
+        self._build_seed_option(adv)
+        self._build_parallel_option(adv)
+        self._build_checkpoint_option(adv)
+        self._build_robust_option(adv)
+
+        self._adv_widget.setVisible(False)
+        layout.addWidget(self._adv_widget)
+
+    def _build_seed_option(self, layout: QVBoxLayout) -> None:
+        row = QHBoxLayout()
+        self._seed_check = QCheckBox("乱数シード:")
+        self._seed_check.setToolTip(
+            "整数を指定すると再現性のある結果を得られます。"
+        )
+        row.addWidget(self._seed_check)
+        self._seed_spin = QSpinBox()
+        self._seed_spin.setRange(0, 999999)
+        self._seed_spin.setValue(42)
+        self._seed_spin.setFixedWidth(80)
+        self._seed_spin.setEnabled(False)
+        row.addWidget(self._seed_spin)
+        row.addStretch()
+        self._seed_check.toggled.connect(self._seed_spin.setEnabled)
+        layout.addLayout(row)
+
+    def _build_parallel_option(self, layout: QVBoxLayout) -> None:
+        row = QHBoxLayout()
+        row.addWidget(QLabel("並列評価数:"))
+        self._parallel_spin = QSpinBox()
+        self._parallel_spin.setRange(1, 16)
+        self._parallel_spin.setValue(1)
+        self._parallel_spin.setFixedWidth(60)
+        self._parallel_spin.setToolTip(
+            "グリッド/ランダム/LHSで複数候補を同時評価。\n"
+            "SNAP解析時は4〜8が目安。"
+        )
+        row.addWidget(self._parallel_spin)
+        row.addWidget(QLabel("  タイムアウト:"))
+        self._timeout_spin = QSpinBox()
+        self._timeout_spin.setRange(30, 3600)
+        self._timeout_spin.setValue(300)
+        self._timeout_spin.setSuffix(" 秒")
+        self._timeout_spin.setSingleStep(30)
+        self._timeout_spin.setFixedWidth(100)
+        row.addWidget(self._timeout_spin)
+        row.addStretch()
+        layout.addLayout(row)
+
+    def _build_checkpoint_option(self, layout: QVBoxLayout) -> None:
+        row = QHBoxLayout()
+        self._checkpoint_check = QCheckBox("チェックポイント自動保存")
+        self._checkpoint_check.setToolTip(
+            "最適化中に一定間隔で中間結果を自動保存します。"
+        )
+        row.addWidget(self._checkpoint_check)
+        row.addWidget(QLabel("間隔:"))
+        self._checkpoint_interval_spin = QSpinBox()
+        self._checkpoint_interval_spin.setRange(5, 1000)
+        self._checkpoint_interval_spin.setValue(10)
+        self._checkpoint_interval_spin.setFixedWidth(60)
+        self._checkpoint_interval_spin.setSuffix(" 回")
+        row.addWidget(self._checkpoint_interval_spin)
+        row.addStretch()
+        layout.addLayout(row)
+
+    def _build_robust_option(self, layout: QVBoxLayout) -> None:
+        row = QHBoxLayout()
+        self._robust_check = QCheckBox("ロバスト最適化")
+        self._robust_check.setToolTip(
+            "パラメータ摂動付きで複数回評価し最悪ケースで最適化。\n"
+            "製造誤差に頑健な設計解を探索します。"
+        )
+        row.addWidget(self._robust_check)
+        row.addWidget(QLabel("サンプル数:"))
+        self._robust_samples_spin = QSpinBox()
+        self._robust_samples_spin.setRange(1, 20)
+        self._robust_samples_spin.setValue(3)
+        self._robust_samples_spin.setFixedWidth(50)
+        row.addWidget(self._robust_samples_spin)
+        row.addWidget(QLabel("摂動幅:"))
+        self._robust_delta_spin = QDoubleSpinBox()
+        self._robust_delta_spin.setRange(0.01, 0.30)
+        self._robust_delta_spin.setValue(0.05)
+        self._robust_delta_spin.setSingleStep(0.01)
+        self._robust_delta_spin.setDecimals(2)
+        self._robust_delta_spin.setFixedWidth(70)
+        row.addWidget(self._robust_delta_spin)
+        row.addStretch()
+        layout.addLayout(row)
+
     def _build_run_controls(self, layout: QVBoxLayout) -> None:
         """開始/停止ボタン。"""
         hl = QHBoxLayout()
@@ -526,6 +635,22 @@ class UnifiedOptimizerDialog(QDialog):
         btn_row.addWidget(self._export_btn)
         gl.addLayout(btn_row)
 
+        btn_row2 = QHBoxLayout()
+        self._save_json_btn = QPushButton("結果保存")
+        self._save_json_btn.setEnabled(False)
+        self._save_json_btn.setToolTip("最適化結果をJSONに保存")
+        btn_row2.addWidget(self._save_json_btn)
+
+        self._load_json_btn = QPushButton("結果読込")
+        self._load_json_btn.setToolTip("JSONから結果を読み込みプロットに表示")
+        btn_row2.addWidget(self._load_json_btn)
+
+        self._save_plot_btn = QPushButton("画像保存")
+        self._save_plot_btn.setEnabled(False)
+        self._save_plot_btn.setToolTip("プロットを画像ファイルとして保存")
+        btn_row2.addWidget(self._save_plot_btn)
+        gl.addLayout(btn_row2)
+
         layout.addWidget(group)
 
     def _build_progress_bar(self, layout: QVBoxLayout) -> None:
@@ -546,10 +671,14 @@ class UnifiedOptimizerDialog(QDialog):
         self._stop_btn.clicked.connect(self._on_stop)
         self._apply_btn.clicked.connect(self._on_apply)
         self._export_btn.clicked.connect(self._on_export_csv)
+        self._save_json_btn.clicked.connect(self._on_save_json)
+        self._load_json_btn.clicked.connect(self._on_load_json)
+        self._save_plot_btn.clicked.connect(self._on_save_plot)
         self._obj2_enabled.toggled.connect(self._on_obj2_toggled)
         self._def_combo.currentIndexChanged.connect(self._on_damper_def_changed)
         self._iter_spin.valueChanged.connect(self._update_estimate)
         self._method_combo.currentIndexChanged.connect(self._on_method_changed)
+        self._adv_toggle.toggled.connect(self._adv_widget.setVisible)
 
         self._optimizer.progress.connect(self._on_progress)
         self._optimizer.candidate_found.connect(self._on_candidate)
@@ -655,7 +784,10 @@ class UnifiedOptimizerDialog(QDialog):
         self._result = result
         self._start_btn.setEnabled(True)
         self._stop_btn.setEnabled(False)
-        self._export_btn.setEnabled(bool(self._candidates))
+        has_cands = bool(self._candidates)
+        self._export_btn.setEnabled(has_cands)
+        self._save_json_btn.setEnabled(has_cands)
+        self._save_plot_btn.setEnabled(has_cands)
 
         if result.best:
             self._show_candidate_detail(result.best)
@@ -850,7 +982,28 @@ class UnifiedOptimizerDialog(QDialog):
             criteria=self._criteria,
             damper_type=damper_type,
             base_case=self._base_case,
-            snap_timeout=300,
+            snap_timeout=self._timeout_spin.value(),
+            n_parallel=self._parallel_spin.value(),
+            checkpoint_interval=(
+                self._checkpoint_interval_spin.value()
+                if self._checkpoint_check.isChecked()
+                else 0
+            ),
+            robustness_samples=(
+                self._robust_samples_spin.value()
+                if self._robust_check.isChecked()
+                else 0
+            ),
+            robustness_delta=(
+                self._robust_delta_spin.value()
+                if self._robust_check.isChecked()
+                else 0.05
+            ),
+            random_seed=(
+                self._seed_spin.value()
+                if self._seed_check.isChecked()
+                else None
+            ),
         )
 
         # 2目的の場合: objective_weights を設定
@@ -881,7 +1034,7 @@ class UnifiedOptimizerDialog(QDialog):
             param_ranges=params,
             log_callback=log_cb,
             snap_work_dir=self._snap_work_dir,
-            timeout=300,
+            timeout=self._timeout_spin.value(),
             damper_def_name=def_name,
         )
 
@@ -1097,6 +1250,87 @@ class UnifiedOptimizerDialog(QDialog):
             lines.append(f"最小マージン: {min_margin:+.1%}")
 
         self._detail_text.setPlainText("\n".join(lines))
+
+    # ------------------------------------------------------------------
+    # JSON 保存 / 読込 / 画像保存
+    # ------------------------------------------------------------------
+    def _on_save_json(self) -> None:
+        """最適化結果をJSONに保存。"""
+        if not self._result:
+            QMessageBox.information(self, "情報", "保存する結果がありません。")
+            return
+
+        path, _ = QFileDialog.getSaveFileName(
+            self, "結果の保存先を選択", "unified_optimization_result.json",
+            "JSON Files (*.json);;All Files (*)",
+        )
+        if not path:
+            return
+
+        try:
+            self._result.save_json(path)
+            QMessageBox.information(
+                self, "保存完了",
+                f"最適化結果を保存しました。\n{path}\n"
+                f"({len(self._result.all_candidates)} 件の候補データ)",
+            )
+        except OSError as e:
+            QMessageBox.warning(self, "エラー", f"ファイルの書き込みに失敗:\n{e}")
+
+    def _on_load_json(self) -> None:
+        """JSONファイルから結果を読み込みプロットに表示。"""
+        path, _ = QFileDialog.getOpenFileName(
+            self, "結果ファイルを選択", "",
+            "JSON Files (*.json);;All Files (*)",
+        )
+        if not path:
+            return
+
+        try:
+            result = OptimizationResult.load_json(path)
+        except (OSError, json.JSONDecodeError, KeyError) as e:
+            QMessageBox.warning(self, "読込エラー", f"ファイルの読み込みに失敗:\n{e}")
+            return
+
+        if not result.all_candidates:
+            QMessageBox.information(self, "情報", "候補データが含まれていません。")
+            return
+
+        self._result = result
+        self._candidates = list(result.all_candidates)
+
+        # プロット再描画
+        if result.config:
+            self._init_plot(result.config)
+        self._update_plot()
+
+        # ボタン有効化
+        self._export_btn.setEnabled(True)
+        self._save_json_btn.setEnabled(True)
+        self._save_plot_btn.setEnabled(True)
+        if result.best:
+            self._show_candidate_detail(result.best)
+            self._apply_btn.setEnabled(True)
+
+        n_cands = len(result.all_candidates)
+        feasible_count = len(result.feasible_candidates)
+        self._progress_label.setText(
+            f"JSON読込: {n_cands} 候補, 実行可能 {feasible_count}"
+        )
+
+    def _on_save_plot(self) -> None:
+        """プロット画像を保存。"""
+        path, _ = QFileDialog.getSaveFileName(
+            self, "画像の保存先を選択", "unified_optimization_plot.png",
+            "PNG (*.png);;SVG (*.svg);;PDF (*.pdf)",
+        )
+        if not path:
+            return
+        try:
+            self._fig.savefig(path, dpi=150, bbox_inches="tight")
+            QMessageBox.information(self, "保存完了", f"画像を保存しました。\n{path}")
+        except Exception as e:
+            QMessageBox.warning(self, "エラー", f"画像保存に失敗:\n{e}")
 
     # ------------------------------------------------------------------
     # ユーティリティ
