@@ -617,23 +617,28 @@ class _OptimizerResultActionsMixin:
 
     def _apply_config_preset(self, preset: dict) -> None:
         """プリセット辞書の内容をUI要素に反映します。"""
+        self._apply_preset_damper_and_objective(preset)
+        self._apply_preset_method_and_params(preset)
+        self._apply_preset_penalty_parallel_checkpoint(preset)
+        self._apply_preset_robust_cost_envelope(preset)
+        self._apply_preset_acquisition_ga_seed_timeout(preset)
+        self._update_est_run_label()
+
+    def _apply_preset_damper_and_objective(self, preset: dict) -> None:
         from .optimizer_dialog import _OBJECTIVE_ITEMS
 
-        # ダンパー種類
         damper_type = preset.get("damper_type", "")
         if damper_type:
             idx = self._damper_combo.findText(damper_type)
             if idx >= 0:
                 self._damper_combo.setCurrentIndex(idx)
 
-        # 目的関数
         obj_key = preset.get("objective_key", "max_drift")
         for i, (key, _, _) in enumerate(_OBJECTIVE_ITEMS):
             if key == obj_key:
                 self._obj_combo.setCurrentIndex(i)
                 break
 
-        # 複合目的関数の重み
         obj_weights = preset.get("objective_weights", {})
         if obj_weights:
             self._composite_check.setChecked(True)
@@ -642,17 +647,15 @@ class _OptimizerResultActionsMixin:
         else:
             self._composite_check.setChecked(False)
 
-        # 探索手法
+    def _apply_preset_method_and_params(self, preset: dict) -> None:
         method = preset.get("method", "grid")
         for i in range(self._method_combo.count()):
             if self._method_combo.itemData(i) == method:
                 self._method_combo.setCurrentIndex(i)
                 break
 
-        # 反復数
         self._iter_spin.setValue(preset.get("max_iterations", 100))
 
-        # パラメータ範囲
         params = preset.get("parameters", [])
         if params and self._param_widgets:
             for pw, pd in zip(self._param_widgets, params):
@@ -660,7 +663,7 @@ class _OptimizerResultActionsMixin:
                 pw["max"].setValue(pd.get("max_val", pw["max"].value()))
                 pw["step"].setValue(pd.get("step", pw["step"].value()))
 
-        # 制約ペナルティ重み
+    def _apply_preset_penalty_parallel_checkpoint(self, preset: dict) -> None:
         penalty = preset.get("constraint_penalty_weight", 0.0)
         if penalty > 0:
             self._penalty_cb.setChecked(True)
@@ -668,10 +671,8 @@ class _OptimizerResultActionsMixin:
         else:
             self._penalty_cb.setChecked(False)
 
-        # 並列評価数
         self._parallel_spin.setValue(preset.get("n_parallel", 1))
 
-        # チェックポイント
         cp_interval = preset.get("checkpoint_interval", 10)
         if cp_interval > 0:
             self._checkpoint_check.setChecked(True)
@@ -679,7 +680,7 @@ class _OptimizerResultActionsMixin:
         else:
             self._checkpoint_check.setChecked(False)
 
-        # ロバスト最適化
+    def _apply_preset_robust_cost_envelope(self, preset: dict) -> None:
         rob_samples = preset.get("robustness_samples", 0)
         if rob_samples > 0:
             self._robust_check.setChecked(True)
@@ -688,7 +689,6 @@ class _OptimizerResultActionsMixin:
         else:
             self._robust_check.setChecked(False)
 
-        # コスト重み付き最適化
         cost_weight = preset.get("cost_weight", 0.0)
         cost_coeffs = preset.get("cost_coefficients", {})
         if cost_weight > 0 and cost_coeffs:
@@ -702,7 +702,6 @@ class _OptimizerResultActionsMixin:
             self._cost_coefficients = {}
             self._cost_label.setText("")
 
-        # 多波エンベロープ
         envelope_mode = preset.get("envelope_mode", "")
         if envelope_mode:
             self._envelope_check.setChecked(True)
@@ -712,7 +711,7 @@ class _OptimizerResultActionsMixin:
         else:
             self._envelope_check.setChecked(False)
 
-        # 獲得関数
+    def _apply_preset_acquisition_ga_seed_timeout(self, preset: dict) -> None:
         acq_func = preset.get("acquisition_function", "ei")
         for i in range(self._acq_combo.count()):
             if self._acq_combo.itemData(i) == acq_func:
@@ -720,10 +719,8 @@ class _OptimizerResultActionsMixin:
                 break
         self._acq_kappa_spin.setValue(preset.get("acquisition_kappa", 2.0))
 
-        # GA適応的突然変異
         self._ga_adaptive_cb.setChecked(preset.get("ga_adaptive_mutation", False))
 
-        # 乱数シード
         seed = preset.get("random_seed")
         if seed is not None:
             self._seed_check.setChecked(True)
@@ -731,7 +728,4 @@ class _OptimizerResultActionsMixin:
         else:
             self._seed_check.setChecked(False)
 
-        # SNAPタイムアウト
         self._timeout_spin.setValue(preset.get("snap_timeout", 300))
-
-        self._update_est_run_label()

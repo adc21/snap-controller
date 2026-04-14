@@ -928,77 +928,82 @@ class HeatmapDialog(QDialog):
         self._fig.clear()
         ax = self._fig.add_subplot(111)
 
-        if self._pair_combo is not None:
-            pair = self._pair_combo.currentData()
-        else:
-            pair = self._pairs[0] if self._pairs else None
-
+        pair = self._current_pair()
         if pair is None:
             return
-
         p1_name, p2_name = pair
         p1_label = param_labels.get(p1_name, p1_name)
         p2_label = param_labels.get(p2_name, p2_name)
 
-        # 全候補からデータ抽出
+        x_arr, y_arr, z_arr = self._collect_heatmap_points(result, p1_name, p2_name)
+        if x_arr is None or len(x_arr) < 3:
+            msg = "有効データ不足" if x_arr is not None else "データ不足（3点以上必要）"
+            self._show_empty_message(ax, msg)
+            return
+
+        n_bins, x_edges, y_edges, grid_mean, mask = self._bin_grid(x_arr, y_arr, z_arr)
+        self._render_heatmap(
+            ax, result, p1_name, p2_name, p1_label, p2_label,
+            x_edges, y_edges, grid_mean,
+        )
+        self._update_heatmap_info(len(x_arr), n_bins, mask)
+
+        try:
+            self._fig.tight_layout()
+        except (MemoryError, ValueError):
+            logger.debug("tight_layout失敗")
+        self._canvas.draw()
+
+    def _current_pair(self):
+        if self._pair_combo is not None:
+            return self._pair_combo.currentData()
+        return self._pairs[0] if self._pairs else None
+
+    @staticmethod
+    def _collect_heatmap_points(result: OptimizationResult, p1_name: str, p2_name: str):
         x_vals, y_vals, z_vals = [], [], []
         for cand in result.all_candidates:
             if p1_name in cand.params and p2_name in cand.params:
                 x_vals.append(cand.params[p1_name])
                 y_vals.append(cand.params[p2_name])
                 z_vals.append(cand.objective_value)
-
         if len(x_vals) < 3:
-            ax.text(
-                0.5, 0.5, "データ不足（3点以上必要）",
-                ha="center", va="center", transform=ax.transAxes, fontsize=14,
-            )
-            self._canvas.draw()
-            return
-
+            return None, None, None
         x_arr = np.array(x_vals)
         y_arr = np.array(y_vals)
         z_arr = np.array(z_vals)
-
-        # inf/nan を除外
         valid = np.isfinite(z_arr)
-        x_arr, y_arr, z_arr = x_arr[valid], y_arr[valid], z_arr[valid]
+        return x_arr[valid], y_arr[valid], z_arr[valid]
 
-        if len(x_arr) < 3:
-            ax.text(
-                0.5, 0.5, "有効データ不足",
-                ha="center", va="center", transform=ax.transAxes, fontsize=14,
-            )
-            self._canvas.draw()
-            return
+    def _show_empty_message(self, ax, message: str) -> None:
+        ax.text(
+            0.5, 0.5, message,
+            ha="center", va="center", transform=ax.transAxes, fontsize=14,
+        )
+        self._canvas.draw()
 
-        # ビン数の自動決定（データ数に応じて5〜20）
+    @staticmethod
+    def _bin_grid(x_arr, y_arr, z_arr):
         n_bins = min(20, max(5, int(np.sqrt(len(x_arr)))))
-
-        # 2Dビン化平均
         x_edges = np.linspace(x_arr.min(), x_arr.max(), n_bins + 1)
         y_edges = np.linspace(y_arr.min(), y_arr.max(), n_bins + 1)
         grid_sum = np.zeros((n_bins, n_bins))
         grid_count = np.zeros((n_bins, n_bins))
-
-        x_idx = np.clip(
-            np.digitize(x_arr, x_edges) - 1, 0, n_bins - 1
-        )
-        y_idx = np.clip(
-            np.digitize(y_arr, y_edges) - 1, 0, n_bins - 1
-        )
-
+        x_idx = np.clip(np.digitize(x_arr, x_edges) - 1, 0, n_bins - 1)
+        y_idx = np.clip(np.digitize(y_arr, y_edges) - 1, 0, n_bins - 1)
         for xi, yi, zi in zip(x_idx, y_idx, z_arr):
             grid_sum[yi, xi] += zi
             grid_count[yi, xi] += 1
-
         grid_mean = np.full((n_bins, n_bins), np.nan)
         mask = grid_count > 0
         grid_mean[mask] = grid_sum[mask] / grid_count[mask]
+        return n_bins, x_edges, y_edges, grid_mean, mask
 
-        # 未探索領域を灰色背景で表示
+    def _render_heatmap(
+        self, ax, result, p1_name, p2_name, p1_label, p2_label,
+        x_edges, y_edges, grid_mean,
+    ) -> None:
         ax.set_facecolor("#e0e0e0")
-
         im = ax.pcolormesh(
             x_edges, y_edges, grid_mean,
             cmap="viridis_r", shading="flat",
@@ -1006,8 +1011,6 @@ class HeatmapDialog(QDialog):
         cb = self._fig.colorbar(im, ax=ax, pad=0.02)
         obj_label = result.config.objective_label if result.config else "目的関数値"
         cb.set_label(obj_label, fontsize=9)
-
-        # 最良解をマーカーで表示
         if result.best and p1_name in result.best.params and p2_name in result.best.params:
             ax.plot(
                 result.best.params[p1_name],
@@ -1017,29 +1020,22 @@ class HeatmapDialog(QDialog):
                 zorder=10, label="最良解",
             )
             ax.legend(loc="upper right", fontsize=9)
-
         ax.set_xlabel(p1_label, fontsize=10)
         ax.set_ylabel(p2_label, fontsize=10)
         ax.set_title(
             f"探索ヒートマップ: {p1_label} × {p2_label}", fontsize=11
         )
 
-        # 情報ラベル更新
+    def _update_heatmap_info(self, n_points: int, n_bins: int, mask) -> None:
         explored = int(np.sum(mask))
         total_bins = n_bins * n_bins
         coverage_pct = explored / total_bins * 100
         self._info_label.setText(
-            f"候補数: {len(x_arr)} | "
+            f"候補数: {n_points} | "
             f"ビン: {n_bins}×{n_bins}={total_bins} | "
             f"探索済み: {explored}ビン ({coverage_pct:.0f}%) | "
             f"灰色=未探索領域"
         )
-
-        try:
-            self._fig.tight_layout()
-        except (MemoryError, ValueError):
-            logger.debug("tight_layout失敗")
-        self._canvas.draw()
 
 
 # 後方互換エイリアス（旧名 _HeatmapDialog）
