@@ -183,6 +183,52 @@ class UnifiedOptimizerDialog(QDialog):
             return dict(self._result.best.params)
         return {}
 
+    def build_case_overrides(self) -> tuple:
+        """best_params を AnalysisCase 互換形式に変換。
+
+        Returns
+        -------
+        (damper_params, rd_overrides) : tuple
+            damper_params: {def_name: {1-indexed_str: value_str}}
+            rd_overrides: {row_idx_str: {"quantity": int}}
+        """
+        params = self.best_params
+        if not params:
+            return {}, {}
+
+        dd = self._selected_damper_def()
+        def_name = dd.name if dd else ""
+
+        # 物理パラメータ → damper_params
+        damper_params: Dict[str, Dict[str, str]] = {}
+        for key, val in params.items():
+            if key.startswith("field_"):
+                try:
+                    idx_0 = int(key.replace("field_", ""))
+                    idx_1 = str(idx_0 + 1)  # damper_params は 1-indexed
+                    if def_name:
+                        damper_params.setdefault(def_name, {})[idx_1] = str(val)
+                except (ValueError, TypeError):
+                    logger.debug("field key 変換失敗: %s", key)
+
+        # 基数パラメータ → _rd_overrides
+        rd_overrides: Dict[str, Dict[str, Any]] = {}
+        for key, val in params.items():
+            if key.startswith("floor_count_"):
+                floor_key = key.replace("floor_count_", "")
+                rd_indices = self._floor_rd_map.get(floor_key, [])
+                qty = int(round(val))
+                if rd_indices:
+                    # 基数を各RD要素に均等分配（端数は先頭に加算）
+                    n_elems = len(rd_indices)
+                    per_elem = qty // n_elems
+                    remainder = qty - per_elem * n_elems
+                    for i, row_idx in enumerate(rd_indices):
+                        q = per_elem + (1 if i < remainder else 0)
+                        rd_overrides[str(row_idx)] = {"quantity": q}
+
+        return damper_params, rd_overrides
+
     # ------------------------------------------------------------------
     # .s8i 解析
     # ------------------------------------------------------------------

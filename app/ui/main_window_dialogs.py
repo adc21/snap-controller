@@ -377,9 +377,11 @@ class _MainWindowDialogsMixin:
                 param_str = ", ".join(
                     f"{k}={v:.4g}" for k, v in best_params.items()
                 )
+                # best_params を AnalysisCase 互換形式に変換
+                damper_params, rd_overrides = dlg.build_case_overrides()
                 case = AnalysisCase(
                     name=f"統合最適化結果",
-                    parameters=best_params,
+                    damper_params=damper_params,
                     notes=f"統合最適化結果: {result.config.objective_label} = "
                           f"{result.best.objective_value:.6g}\n"
                           f"パラメータ: {param_str}\n"
@@ -387,6 +389,8 @@ class _MainWindowDialogsMixin:
                           f"評価数: {len(result.all_candidates)}",
                 )
                 case.model_path = base_case.model_path
+                if rd_overrides:
+                    case.parameters["_rd_overrides"] = rd_overrides
                 self._project.add_case(case)
                 self._case_table.refresh()
                 self._project._touch()

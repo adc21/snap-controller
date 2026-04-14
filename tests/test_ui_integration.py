@@ -326,6 +326,109 @@ class TestDialogInstantiation:
         assert "テストC0" in caplog.text
         assert "範囲不正" in caplog.text
 
+    def test_unified_optimizer_build_case_overrides_empty(self, qapp):
+        """best_params が空なら空の overrides を返す。"""
+        from app.ui.unified_optimizer_dialog import UnifiedOptimizerDialog
+        dlg = UnifiedOptimizerDialog()
+        dp, rd = dlg.build_case_overrides()
+        assert dp == {}
+        assert rd == {}
+
+    def test_unified_optimizer_build_case_overrides_physical(self, qapp):
+        """物理パラメータが damper_params 形式 (1-indexed) に変換される。"""
+        from app.ui.unified_optimizer_dialog import UnifiedOptimizerDialog
+        from app.services.optimizer import OptimizationCandidate, OptimizationResult, OptimizationConfig, ParameterRange
+        dlg = UnifiedOptimizerDialog()
+        # ダンパー定義をモック設定
+        from app.models.s8i_parser import DamperDefinition
+        dd = DamperDefinition(keyword="DVOD", name="C1", values=["C1"] + ["0"] * 20)
+        dlg._damper_defs = [dd]
+        dlg._def_combo.addItem("C1 (DVOD)", "C1")
+        dlg._def_combo.setCurrentIndex(dlg._def_combo.count() - 1)
+        # 結果をモック設定
+        cand = OptimizationCandidate(
+            params={"field_7": 500.0, "field_12": 0.8},
+            objective_value=0.005,
+            response_values={"max_drift": 0.005},
+        )
+        config = OptimizationConfig(
+            parameters=[
+                ParameterRange(key="field_7", label="K0", min_val=100, max_val=1000, step=50),
+                ParameterRange(key="field_12", label="alpha", min_val=0.1, max_val=1.0, step=0.1),
+            ],
+            objective_key="max_drift",
+            method="random",
+            max_iterations=10,
+        )
+        dlg._result = OptimizationResult(config=config, all_candidates=[cand], best=cand)
+        dp, rd = dlg.build_case_overrides()
+        # field_7 → 1-indexed "8", field_12 → 1-indexed "13"
+        assert "C1" in dp
+        assert dp["C1"]["8"] == "500.0"
+        assert dp["C1"]["13"] == "0.8"
+        assert rd == {}
+
+    def test_unified_optimizer_build_case_overrides_floor_count(self, qapp):
+        """基数パラメータが _rd_overrides 形式に変換される。"""
+        from app.ui.unified_optimizer_dialog import UnifiedOptimizerDialog
+        from app.services.optimizer import OptimizationCandidate, OptimizationResult, OptimizationConfig, ParameterRange
+        dlg = UnifiedOptimizerDialog()
+        # floor_rd_map をモック設定
+        dlg._floor_rd_map = {"F3": [10, 11], "F5": [20]}
+        # 結果をモック設定
+        cand = OptimizationCandidate(
+            params={"floor_count_F3": 6, "floor_count_F5": 3},
+            objective_value=0.005,
+            response_values={"max_drift": 0.005},
+        )
+        config = OptimizationConfig(
+            parameters=[
+                ParameterRange(key="floor_count_F3", label="F3基数", min_val=0, max_val=8, step=1, is_integer=True, is_floor_count=True),
+                ParameterRange(key="floor_count_F5", label="F5基数", min_val=0, max_val=8, step=1, is_integer=True, is_floor_count=True),
+            ],
+            objective_key="max_drift",
+            method="random",
+            max_iterations=10,
+        )
+        dlg._result = OptimizationResult(config=config, all_candidates=[cand], best=cand)
+        dp, rd = dlg.build_case_overrides()
+        assert dp == {}
+        # F3: 6本 → 2要素に均等分配 (3+3)
+        assert rd["10"]["quantity"] == 3
+        assert rd["11"]["quantity"] == 3
+        # F5: 3本 → 1要素
+        assert rd["20"]["quantity"] == 3
+
+    def test_unified_optimizer_build_case_overrides_mixed(self, qapp):
+        """物理+基数パラメータの混在ケースで両方正しく変換される。"""
+        from app.ui.unified_optimizer_dialog import UnifiedOptimizerDialog
+        from app.services.optimizer import OptimizationCandidate, OptimizationResult, OptimizationConfig, ParameterRange
+        from app.models.s8i_parser import DamperDefinition
+        dlg = UnifiedOptimizerDialog()
+        dd = DamperDefinition(keyword="DVOD", name="OD", values=["OD"] + ["0"] * 20)
+        dlg._damper_defs = [dd]
+        dlg._def_combo.addItem("OD (DVOD)", "OD")
+        dlg._def_combo.setCurrentIndex(dlg._def_combo.count() - 1)
+        dlg._floor_rd_map = {"F1": [5]}
+        cand = OptimizationCandidate(
+            params={"field_8": 850, "floor_count_F1": 4},
+            objective_value=0.006,
+            response_values={"max_drift": 0.006},
+        )
+        config = OptimizationConfig(
+            parameters=[
+                ParameterRange(key="field_8", label="C0", min_val=100, max_val=2000, step=50),
+                ParameterRange(key="floor_count_F1", label="F1基数", min_val=0, max_val=8, step=1, is_integer=True, is_floor_count=True),
+            ],
+            objective_key="max_drift",
+            method="random",
+            max_iterations=10,
+        )
+        dlg._result = OptimizationResult(config=config, all_candidates=[cand], best=cand)
+        dp, rd = dlg.build_case_overrides()
+        assert dp["OD"]["9"] == "850"
+        assert rd["5"]["quantity"] == 4
+
     def test_damper_injector_dialog(self, qapp):
         from app.ui.damper_injector_dialog import DamperInjectorDialog
         dlg = DamperInjectorDialog()
