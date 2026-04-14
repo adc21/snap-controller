@@ -283,6 +283,49 @@ class TestDialogInstantiation:
         assert 0 <= diag.quality_score <= 100
         assert diag.quality_label in ("優良", "良好", "要注意", "不十分")
 
+    def test_unified_optimizer_plot_scatter_layer(self, qapp):
+        """_plot_scatter_layer ヘルパーが散布図を描画。"""
+        from app.ui.unified_optimizer_dialog import UnifiedOptimizerDialog
+        dlg = UnifiedOptimizerDialog()
+        # 空リストは None を返す
+        assert dlg._plot_scatter_layer([], [], "blue", "o", 0.5, "test") is None
+        # データありの場合はアーティストを返す
+        artist = dlg._plot_scatter_layer([1, 2], [3, 4], "blue", "o", 0.5, "test")
+        assert artist is not None
+
+    def test_unified_optimizer_close_event(self, qapp):
+        """closeEvent でオプティマイザがキャンセルされる。"""
+        from app.ui.unified_optimizer_dialog import UnifiedOptimizerDialog
+        from unittest.mock import MagicMock
+        dlg = UnifiedOptimizerDialog()
+        dlg._optimizer.cancel = MagicMock()
+        dlg.close()
+        dlg._optimizer.cancel.assert_called_once()
+
+    def test_unified_optimizer_collect_params_warns_invalid_range(self, qapp, caplog):
+        """下限>=上限のチェック済みパラメータでログ警告が出る。"""
+        import logging
+        from app.ui.unified_optimizer_dialog import UnifiedOptimizerDialog
+        dlg = UnifiedOptimizerDialog()
+        # 手動でフィールド行を追加（チェック済み、lo >= hi）
+        from PySide6.QtWidgets import QCheckBox, QDoubleSpinBox
+        cb = QCheckBox()
+        cb.setChecked(True)
+        lo_spin = QDoubleSpinBox()
+        lo_spin.setValue(100.0)
+        hi_spin = QDoubleSpinBox()
+        hi_spin.setValue(50.0)  # lo > hi
+        dlg._field_rows.append({
+            "cb": cb, "field_idx_1based": 8, "val_idx_0based": 8,
+            "label": "テストC0", "current": 75.0,
+            "lo_spin": lo_spin, "hi_spin": hi_spin, "unit": "kN",
+        })
+        with caplog.at_level(logging.WARNING, logger="app.ui.unified_optimizer_dialog"):
+            result = dlg._collect_parameters()
+        assert len(result) == 0
+        assert "テストC0" in caplog.text
+        assert "範囲不正" in caplog.text
+
     def test_damper_injector_dialog(self, qapp):
         from app.ui.damper_injector_dialog import DamperInjectorDialog
         dlg = DamperInjectorDialog()

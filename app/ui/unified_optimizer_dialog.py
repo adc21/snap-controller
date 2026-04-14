@@ -126,7 +126,7 @@ def _apply_mpl_theme() -> None:
 try:
     plt.rcParams["font.family"] = ["MS Gothic", "Meiryo", "IPAGothic", "sans-serif"]
 except Exception:
-    pass
+    logger.debug("日本語フォント設定失敗、デフォルトフォントを使用")
 
 
 class UnifiedOptimizerDialog(QDialog):
@@ -945,6 +945,7 @@ class UnifiedOptimizerDialog(QDialog):
     def _collect_parameters(self) -> List[ParameterRange]:
         """チェックされたパラメータを ParameterRange リストに変換。"""
         params: List[ParameterRange] = []
+        skipped: List[str] = []
 
         dd = self._selected_damper_def()
 
@@ -955,6 +956,7 @@ class UnifiedOptimizerDialog(QDialog):
             lo = row_info["lo_spin"].value()
             hi = row_info["hi_spin"].value()
             if lo >= hi:
+                skipped.append(f"{row_info['label']} (下限{lo} >= 上限{hi})")
                 continue
             # キー: field_{0-based index}
             key = f"field_{row_info['val_idx_0based']}"
@@ -976,6 +978,7 @@ class UnifiedOptimizerDialog(QDialog):
             lo = row_info["lo_spin"].value()
             hi = row_info["hi_spin"].value()
             if lo >= hi:
+                skipped.append(f"{row_info['floor_key']} 基数 (下限{lo} >= 上限{hi})")
                 continue
             key = f"floor_count_{row_info['floor_key']}"
             params.append(ParameterRange(
@@ -987,6 +990,12 @@ class UnifiedOptimizerDialog(QDialog):
                 is_integer=True,
                 is_floor_count=True,
             ))
+
+        if skipped:
+            logger.warning(
+                "範囲不正のためスキップされたパラメータ: %s",
+                ", ".join(skipped),
+            )
 
         return params
 
@@ -1109,8 +1118,29 @@ class UnifiedOptimizerDialog(QDialog):
         else:
             self._update_convergence_plot()
 
-        self._fig.tight_layout()
+        try:
+            self._fig.tight_layout()
+        except (ValueError, MemoryError):
+            logger.debug("tight_layout 失敗")
         self._canvas.draw()
+
+    def _plot_scatter_layer(
+        self,
+        xs: list,
+        ys: list,
+        color: str,
+        marker: str,
+        alpha: float,
+        label: str,
+        **kwargs,
+    ):
+        """散布図レイヤーを描画してアーティストを返す。"""
+        if not xs:
+            return None
+        return self._ax.scatter(
+            xs, ys, c=color, marker=marker, alpha=alpha,
+            label=label, picker=True, pickradius=5, **kwargs,
+        )
 
     def _update_convergence_plot(self) -> None:
         """1目的: 収束プロット。"""
@@ -1123,16 +1153,14 @@ class UnifiedOptimizerDialog(QDialog):
 
         if infeasible:
             xs, ys = zip(*infeasible)
-            self._scatter_infeasible = self._ax.scatter(
-                xs, ys, c="gray", marker="x", alpha=0.5,
-                label="infeasible", picker=True, pickradius=5,
+            self._scatter_infeasible = self._plot_scatter_layer(
+                list(xs), list(ys), "gray", "x", 0.5, "infeasible",
             )
 
         if feasible:
             xs, ys = zip(*feasible)
-            self._scatter_feasible = self._ax.scatter(
-                xs, ys, c="#1f77b4", marker="o", alpha=0.7,
-                label="feasible", picker=True, pickradius=5,
+            self._scatter_feasible = self._plot_scatter_layer(
+                list(xs), list(ys), "#1f77b4", "o", 0.7, "feasible",
             )
 
             # 最良値の推移ライン
@@ -1163,17 +1191,15 @@ class UnifiedOptimizerDialog(QDialog):
         if infeasible:
             xs = [c.response_values.get(obj1_key, float("inf")) for c in infeasible]
             ys = [c.response_values.get(obj2_key, float("inf")) for c in infeasible]
-            self._scatter_infeasible = self._ax.scatter(
-                xs, ys, c="gray", marker="x", alpha=0.4,
-                label="infeasible", picker=True, pickradius=5,
+            self._scatter_infeasible = self._plot_scatter_layer(
+                xs, ys, "gray", "x", 0.4, "infeasible",
             )
 
         if feasible:
             xs = [c.response_values.get(obj1_key, float("inf")) for c in feasible]
             ys = [c.response_values.get(obj2_key, float("inf")) for c in feasible]
-            self._scatter_feasible = self._ax.scatter(
-                xs, ys, c="#1f77b4", marker="o", alpha=0.5,
-                label="feasible", picker=True, pickradius=5,
+            self._scatter_feasible = self._plot_scatter_layer(
+                xs, ys, "#1f77b4", "o", 0.5, "feasible",
             )
 
         # パレートフロント
@@ -1181,10 +1207,9 @@ class UnifiedOptimizerDialog(QDialog):
         if pareto:
             px = [c.response_values.get(obj1_key, float("inf")) for c in pareto]
             py = [c.response_values.get(obj2_key, float("inf")) for c in pareto]
-            self._scatter_pareto = self._ax.scatter(
-                px, py, c="orange", marker="o", s=80, edgecolors="black",
-                linewidths=0.8, label="パレートフロント", picker=True, pickradius=5,
-                zorder=5,
+            self._scatter_pareto = self._plot_scatter_layer(
+                px, py, "orange", "o", 1.0, "パレートフロント",
+                s=80, edgecolors="black", linewidths=0.8, zorder=5,
             )
 
         # 最良解 (パレートの中で obj1 最小)
@@ -1363,7 +1388,8 @@ class UnifiedOptimizerDialog(QDialog):
         try:
             self._fig.savefig(path, dpi=150, bbox_inches="tight")
             QMessageBox.information(self, "保存完了", f"画像を保存しました。\n{path}")
-        except Exception as e:
+        except (OSError, ValueError) as e:
+            logger.warning("画像保存に失敗: %s", e)
             QMessageBox.warning(self, "エラー", f"画像保存に失敗:\n{e}")
 
     # ------------------------------------------------------------------
@@ -1612,6 +1638,11 @@ class UnifiedOptimizerDialog(QDialog):
     # ------------------------------------------------------------------
     # ユーティリティ
     # ------------------------------------------------------------------
+    def closeEvent(self, event) -> None:
+        """ダイアログ終了時にワーカースレッドを安全に停止。"""
+        self._optimizer.cancel()
+        super().closeEvent(event)
+
     def _selected_damper_def(self) -> Optional[DamperDefinition]:
         """選択中のダンパー定義を返す。"""
         name = self._def_combo.currentData()
