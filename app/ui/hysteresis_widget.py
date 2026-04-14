@@ -185,10 +185,17 @@ class HysteresisWidget(QWidget):
         root.setContentsMargins(6, 6, 6, 6)
         root.setSpacing(4)
 
-        # ---- 上部コントロールバー ----
+        root.addLayout(self._build_control_row())
+        root.addWidget(self._build_status_label())
+
+        body = QHBoxLayout()
+        body.addLayout(self._build_record_pane())
+        body.addWidget(self._build_chart_tabs(), stretch=1)
+        root.addLayout(body, stretch=1)
+
+    def _build_control_row(self) -> QHBoxLayout:
         ctrl = QHBoxLayout()
         ctrl.addWidget(QLabel("🔄 履歴ループ（ヒステリシス）ビューア"))
-
         ctrl.addStretch(1)
 
         ctrl.addWidget(QLabel("カテゴリ:"))
@@ -214,18 +221,14 @@ class HysteresisWidget(QWidget):
         btn_refresh.setFixedWidth(60)
         btn_refresh.clicked.connect(self._refresh)
         ctrl.addWidget(btn_refresh)
+        return ctrl
 
-        root.addLayout(ctrl)
-
-        # ---- ステータス ----
+    def _build_status_label(self) -> QLabel:
         self._status_label = QLabel("")
         self._status_label.setStyleSheet("color:#666; font-size:11px; padding:2px 4px;")
-        root.addWidget(self._status_label)
+        return self._status_label
 
-        # ---- 本体: 左ペイン（レコード選択） + 右ペイン（チャート）----
-        body = QHBoxLayout()
-
-        # 左: レコード（ダンパー）選択リスト
+    def _build_record_pane(self) -> QVBoxLayout:
         left = QVBoxLayout()
         left.addWidget(QLabel("ダンパー / バネ（複数選択可）:"))
         self._record_list = QListWidget()
@@ -243,14 +246,18 @@ class HysteresisWidget(QWidget):
         row.addWidget(btn_all)
         row.addWidget(btn_clear)
         left.addLayout(row)
+        return left
 
-        body.addLayout(left)
-
-        # 右: タブ（F–D / F–V / ピーク一覧）
+    def _build_chart_tabs(self) -> QTabWidget:
         self._chart_tabs = QTabWidget()
         self._chart_tabs.setDocumentMode(True)
+        self._chart_tabs.addTab(self._build_fd_tab(), "F–D ループ（力–変位）")
+        self._chart_tabs.addTab(self._build_fv_tab(), "F–V ループ（力–速度）")
+        self._chart_tabs.addTab(self._build_peak_tab(), "ピーク一覧")
+        self._chart_tabs.currentChanged.connect(self._on_tab_changed)
+        return self._chart_tabs
 
-        # タブ 1: F–D ループ
+    def _build_fd_tab(self) -> QWidget:
         w_fd = QWidget()
         lay_fd = QVBoxLayout(w_fd)
         lay_fd.setContentsMargins(2, 2, 2, 2)
@@ -261,9 +268,9 @@ class HysteresisWidget(QWidget):
         self._fd_info.setWordWrap(True)
         self._fd_info.setStyleSheet("color:#444; font-size:11px; padding:4px;")
         lay_fd.addWidget(self._fd_info)
-        self._chart_tabs.addTab(w_fd, "F–D ループ（力–変位）")
+        return w_fd
 
-        # タブ 2: F–V ループ（新機能）
+    def _build_fv_tab(self) -> QWidget:
         w_fv = QWidget()
         lay_fv = QVBoxLayout(w_fv)
         lay_fv.setContentsMargins(2, 2, 2, 2)
@@ -274,9 +281,9 @@ class HysteresisWidget(QWidget):
         self._fv_info.setWordWrap(True)
         self._fv_info.setStyleSheet("color:#444; font-size:11px; padding:4px;")
         lay_fv.addWidget(self._fv_info)
-        self._chart_tabs.addTab(w_fv, "F–V ループ（力–速度）")
+        return w_fv
 
-        # タブ 3: ピーク一覧テーブル
+    def _build_peak_tab(self) -> QWidget:
         w_peak = QWidget()
         lay_peak = QVBoxLayout(w_peak)
         lay_peak.setContentsMargins(2, 2, 2, 2)
@@ -286,11 +293,7 @@ class HysteresisWidget(QWidget):
         self._peak_table.horizontalHeader().setStretchLastSection(True)
         self._peak_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
         lay_peak.addWidget(self._peak_table)
-        self._chart_tabs.addTab(w_peak, "ピーク一覧")
-
-        self._chart_tabs.currentChanged.connect(self._on_tab_changed)
-        body.addWidget(self._chart_tabs, stretch=1)
-        root.addLayout(body, stretch=1)
+        return w_peak
 
     # ------------------------------------------------------------------
     # イベントハンドラ

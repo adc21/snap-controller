@@ -476,86 +476,82 @@ class TimeHistoryWidget(QWidget):
         t_start = self._time_start.value()
         t_end = self._time_end.value()
 
+        peak_infos: List[str] = []
         has_data = False
-        peak_infos = []
-
         for case, color_idx in selected:
-            color = _COLORS[color_idx % len(_COLORS)]
-
-            # 時刻歴データを取得（存在しない場合はモック生成）
-            time_data, values = self._get_time_history(
-                case, type_key, floor_val
+            plotted = self._plot_case_line(
+                ax, case, color_idx, type_key, floor_val, t_start, t_end, peak_infos
             )
-
-            if time_data is None or values is None:
-                continue
-
-            # 時間範囲でフィルタ
-            mask = (time_data >= t_start) & (time_data <= t_end)
-            t_plot = time_data[mask]
-            v_plot = values[mask]
-
-            if len(t_plot) == 0:
-                continue
-
-            # UX改善（第11回⑤）: 正規化表示モードでは最大絶対値=1.0にスケーリング
-            normalize_factor = 1.0
-            if getattr(self, "_normalize", False):
-                max_abs = np.max(np.abs(v_plot))
-                if max_abs > 1e-15:
-                    normalize_factor = max_abs
-                    v_plot = v_plot / normalize_factor
-
-            ax.plot(t_plot, v_plot,
-                    label=case.name,
-                    color=color,
-                    linewidth=0.8,
-                    alpha=0.85)
-            has_data = True
-
-            # ピーク値
-            peak_idx = np.argmax(np.abs(v_plot))
-            peak_val = v_plot[peak_idx]
-            peak_time = t_plot[peak_idx]
-            peak_infos.append(
-                f"{case.name}: peak={peak_val:.4g} @ {peak_time:.2f}s"
-            )
-
-            # ピーク位置にマーカー（円）
-            ax.plot(peak_time, peak_val, 'o', color=color, markersize=5, zorder=5)
-
-            # UX改善（新③）: ピーク時刻に縦破線を追加
-            ax.axvline(
-                x=peak_time,
-                color=color,
-                linestyle="--",
-                linewidth=0.8,
-                alpha=0.5,
-                zorder=3,
-            )
-
-            # UX改善（新③）: ピーク値をグラフ上にテキスト注釈
-            # xycoords='data' / textcoords='axes fraction' で y位置を固定して重ならないようにする
-            ax.annotate(
-                f"▲{peak_val:.3g}\n@{peak_time:.1f}s",
-                xy=(peak_time, peak_val),
-                xycoords="data",
-                xytext=(peak_time, 0.88),
-                textcoords=("data", "axes fraction"),
-                fontsize=6,
-                color=color,
-                ha="center",
-                va="bottom",
-                arrowprops=dict(arrowstyle="->", color=color, lw=0.6),
-                bbox=dict(boxstyle="round,pad=0.2", fc="white", alpha=0.65, ec=color, lw=0.5),
-            )
+            has_data = has_data or plotted
 
         if not has_data:
             self._show_empty("選択されたケースにデータがありません")
             return
 
+        self._apply_axes_labels(ax, y_label, type_label, floor_val)
+        self._canvas.fig.tight_layout()
+        self._canvas.draw()
+        self._peak_label.setText("  |  ".join(peak_infos[:3]))
+
+    def _plot_case_line(
+        self,
+        ax,
+        case,
+        color_idx: int,
+        type_key: str,
+        floor_val,
+        t_start: float,
+        t_end: float,
+        peak_infos: List[str],
+    ) -> bool:
+        color = _COLORS[color_idx % len(_COLORS)]
+        time_data, values = self._get_time_history(case, type_key, floor_val)
+        if time_data is None or values is None:
+            return False
+
+        mask = (time_data >= t_start) & (time_data <= t_end)
+        t_plot = time_data[mask]
+        v_plot = values[mask]
+        if len(t_plot) == 0:
+            return False
+
+        if getattr(self, "_normalize", False):
+            max_abs = np.max(np.abs(v_plot))
+            if max_abs > 1e-15:
+                v_plot = v_plot / max_abs
+
+        ax.plot(t_plot, v_plot, label=case.name, color=color, linewidth=0.8, alpha=0.85)
+
+        peak_idx = np.argmax(np.abs(v_plot))
+        peak_val = v_plot[peak_idx]
+        peak_time = t_plot[peak_idx]
+        peak_infos.append(f"{case.name}: peak={peak_val:.4g} @ {peak_time:.2f}s")
+        self._draw_peak_marker(ax, peak_time, peak_val, color)
+        return True
+
+    @staticmethod
+    def _draw_peak_marker(ax, peak_time: float, peak_val: float, color: str) -> None:
+        ax.plot(peak_time, peak_val, 'o', color=color, markersize=5, zorder=5)
+        ax.axvline(
+            x=peak_time, color=color, linestyle="--",
+            linewidth=0.8, alpha=0.5, zorder=3,
+        )
+        ax.annotate(
+            f"▲{peak_val:.3g}\n@{peak_time:.1f}s",
+            xy=(peak_time, peak_val),
+            xycoords="data",
+            xytext=(peak_time, 0.88),
+            textcoords=("data", "axes fraction"),
+            fontsize=6,
+            color=color,
+            ha="center",
+            va="bottom",
+            arrowprops=dict(arrowstyle="->", color=color, lw=0.6),
+            bbox=dict(boxstyle="round,pad=0.2", fc="white", alpha=0.65, ec=color, lw=0.5),
+        )
+
+    def _apply_axes_labels(self, ax, y_label: str, type_label: str, floor_val) -> None:
         ax.set_xlabel("時間 [sec]", fontsize=9)
-        # UX改善（第11回⑤）: 正規化時はY軸ラベルを変更
         if getattr(self, "_normalize", False):
             ax.set_ylabel(f"{y_label.split('[')[0].strip()} [正規化値]", fontsize=9)
         else:
@@ -567,12 +563,6 @@ class TimeHistoryWidget(QWidget):
         ax.grid(linestyle="--", alpha=0.4)
         ax.legend(fontsize=7, loc="upper right")
         ax.axhline(y=0, color="gray", linewidth=0.5, alpha=0.5)
-
-        self._canvas.fig.tight_layout()
-        self._canvas.draw()
-
-        # ピーク情報ラベル
-        self._peak_label.setText("  |  ".join(peak_infos[:3]))
 
     def _get_time_history(
         self,
