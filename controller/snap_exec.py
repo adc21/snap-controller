@@ -6,10 +6,13 @@ SNAP は Windows 専用ソフトウェアのため、このモジュールは
 Windows 環境での実行を前提としています。
 """
 
+import logging
 import subprocess
 import threading
 from pathlib import Path
 from typing import Callable, Optional
+
+logger = logging.getLogger(__name__)
 
 
 def snap_exec(
@@ -88,7 +91,7 @@ def snap_exec(
                 if stdout_callback:
                     stdout_callback(line)
         except (ValueError, OSError):
-            pass  # プロセス kill 後の読み取りエラーを無視
+            logger.debug("プロセスkill後の読み取りエラーを無視")
 
     reader_thread = threading.Thread(target=_reader, daemon=True)
     reader_thread.start()

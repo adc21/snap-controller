@@ -310,7 +310,12 @@ class DamperPlacementWidget(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(4, 4, 4, 4)
 
-        # --- コントロール行 ---
+        layout.addLayout(self._build_ctrl_row())
+        layout.addLayout(self._build_main_area(), stretch=1)
+        layout.addWidget(self._build_summary_bar())
+        self._apply_floor_count()
+
+    def _build_ctrl_row(self) -> QHBoxLayout:
         ctrl_row = QHBoxLayout()
 
         ctrl_row.addWidget(QLabel("階数:"))
@@ -326,7 +331,6 @@ class DamperPlacementWidget(QWidget):
 
         ctrl_row.addStretch()
 
-        # コピー・貼り付けボタン（Excel互換）
         copy_btn = QPushButton("📋 Excelへコピー")
         copy_btn.setToolTip(
             "テーブルの内容をTSV形式でクリップボードにコピーします。\n"
@@ -347,7 +351,6 @@ class DamperPlacementWidget(QWidget):
         paste_btn.clicked.connect(self._paste_from_clipboard)
         ctrl_row.addWidget(paste_btn)
 
-        # プリセットボタン
         preset_btn = QPushButton("全層に一括設定")
         preset_btn.setToolTip("全ての層に同じダンパー設定を適用します")
         preset_btn.clicked.connect(self._apply_all_floors)
@@ -357,9 +360,9 @@ class DamperPlacementWidget(QWidget):
         clear_btn.clicked.connect(self._clear_all)
         ctrl_row.addWidget(clear_btn)
 
-        layout.addLayout(ctrl_row)
+        return ctrl_row
 
-        # --- メインエリア: テーブル（左）+ ビジュアル（右）---
+    def _build_main_area(self) -> QHBoxLayout:
         main_row = QHBoxLayout()
 
         # テーブル
@@ -385,12 +388,10 @@ class DamperPlacementWidget(QWidget):
         self._table.verticalHeader().setVisible(False)
         self._table.cellChanged.connect(self._on_cell_changed)
 
-        # Ctrl+V ショートカット（テーブルがフォーカスされているときに貼り付け）
         _paste_sc = QShortcut(QKeySequence("Ctrl+V"), self._table)
         _paste_sc.setContext(Qt.WidgetShortcut)
         _paste_sc.activated.connect(self._paste_from_clipboard)
 
-        # ヒントラベル（Excel列順の説明）
         _hint_lbl = QLabel(
             "<small>💡 Excel列順: <b>ダンパー種類</b> | <b>本数</b> | <b>方向</b> | <b>備考</b>　"
             "（上の階から順に）　Ctrl+V で貼り付け可能</small>"
@@ -399,7 +400,6 @@ class DamperPlacementWidget(QWidget):
         _hint_lbl.setWordWrap(True)
         _hint_lbl.setStyleSheet("color: #666; padding: 2px 0;")
         table_layout.addWidget(_hint_lbl)
-
         table_layout.addWidget(self._table)
 
         main_row.addWidget(table_group, stretch=2)
@@ -411,9 +411,9 @@ class DamperPlacementWidget(QWidget):
         visual_layout.addWidget(self._visual)
         main_row.addWidget(visual_group, stretch=1)
 
-        layout.addLayout(main_row, stretch=1)
+        return main_row
 
-        # ---- UX改善（新）: 配置バランスサマリーバー ----
+    def _build_summary_bar(self) -> QFrame:
         summary_frame = QFrame()
         summary_frame.setFrameShape(QFrame.StyledPanel)
         summary_frame.setStyleSheet(
@@ -432,7 +432,6 @@ class DamperPlacementWidget(QWidget):
         _summary_row.addStretch()
         _sf_layout.addLayout(_summary_row)
 
-        # 偏り警告行
         self._balance_warning = QFrame()
         self._balance_warning.setStyleSheet(
             "QFrame { background-color: #fff3e0; border: 1px solid #fb8c00; border-radius: 3px; }"
@@ -448,10 +447,7 @@ class DamperPlacementWidget(QWidget):
         self._balance_warning.setVisible(False)
         _sf_layout.addWidget(self._balance_warning)
 
-        layout.addWidget(summary_frame)
-
-        # 初期表示
-        self._apply_floor_count()
+        return summary_frame
 
     # ------------------------------------------------------------------
     # Table management

@@ -102,14 +102,8 @@ class Step4SummaryBar(QFrame):
     def _setup_ui(self) -> None:
         """サマリーバーのUIを構築します。"""
         is_dark = ThemeManager.is_dark()
-
-        if is_dark:
-            bar_bg = "#1e272e"
-            border_color = "#37474f"
-        else:
-            bar_bg = "#f5f7fa"
-            border_color = "#cfd8dc"
-
+        bar_bg = "#1e272e" if is_dark else "#f5f7fa"
+        border_color = "#37474f" if is_dark else "#cfd8dc"
         self.setStyleSheet(
             f"Step4SummaryBar, QFrame {{"
             f"  background-color: {bar_bg};"
@@ -122,7 +116,25 @@ class Step4SummaryBar(QFrame):
         outer.setContentsMargins(12, 6, 12, 6)
         outer.setSpacing(16)
 
-        # ---- 完了件数バッジ ----
+        self._build_count_badge(outer)
+        self._add_separator(outer)
+        self._build_best_case_section(outer)
+        self._add_separator(outer)
+        self._build_worst_case_section(outer)
+        self._add_separator(outer)
+        self._build_improve_section(outer)
+        outer.addStretch()
+        self._build_metric_nav(outer)
+        self._refresh_metric_label()
+
+    def _add_separator(self, layout: QHBoxLayout) -> None:
+        sep = QFrame()
+        sep.setFrameShape(QFrame.VLine)
+        sep.setFrameShadow(QFrame.Sunken)
+        sep.setStyleSheet("color: palette(mid);")
+        layout.addWidget(sep)
+
+    def _build_count_badge(self, outer: QHBoxLayout) -> None:
         self._count_lbl = QLabel("解析結果: なし")
         count_font = QFont()
         count_font.setPointSize(9)
@@ -130,14 +142,7 @@ class Step4SummaryBar(QFrame):
         self._count_lbl.setStyleSheet("color: gray;")
         outer.addWidget(self._count_lbl)
 
-        # ---- セパレーター ----
-        _sep1 = QFrame()
-        _sep1.setFrameShape(QFrame.VLine)
-        _sep1.setFrameShadow(QFrame.Sunken)
-        _sep1.setStyleSheet("color: palette(mid);")
-        outer.addWidget(_sep1)
-
-        # ---- 最良ケース ----
+    def _build_best_case_section(self, outer: QHBoxLayout) -> None:
         best_col = QVBoxLayout()
         best_col.setSpacing(1)
         best_col.setContentsMargins(0, 0, 0, 0)
@@ -166,14 +171,7 @@ class Step4SummaryBar(QFrame):
         self._best_val_lbl.setStyleSheet("color: #a5d6a7; font-size: 10px;")
         outer.addWidget(self._best_val_lbl)
 
-        # ---- セパレーター ----
-        _sep2 = QFrame()
-        _sep2.setFrameShape(QFrame.VLine)
-        _sep2.setFrameShadow(QFrame.Sunken)
-        _sep2.setStyleSheet("color: palette(mid);")
-        outer.addWidget(_sep2)
-
-        # ---- 最悪ケース ----
+    def _build_worst_case_section(self, outer: QHBoxLayout) -> None:
         worst_col = QVBoxLayout()
         worst_col.setSpacing(1)
         worst_col.setContentsMargins(0, 0, 0, 0)
@@ -191,58 +189,39 @@ class Step4SummaryBar(QFrame):
         self._worst_val_lbl.setStyleSheet("color: #ef9a9a; font-size: 10px;")
         outer.addWidget(self._worst_val_lbl)
 
-        # ---- セパレーター ----
-        _sep3 = QFrame()
-        _sep3.setFrameShape(QFrame.VLine)
-        _sep3.setFrameShadow(QFrame.Sunken)
-        _sep3.setStyleSheet("color: palette(mid);")
-        outer.addWidget(_sep3)
-
-        # ---- 改善率 ----
+    def _build_improve_section(self, outer: QHBoxLayout) -> None:
         self._improve_lbl = QLabel("")
         self._improve_lbl.setStyleSheet("color: #80cbc4; font-size: 10px;")
         outer.addWidget(self._improve_lbl)
 
-        outer.addStretch()
-
-        # ---- UX改善（第10回①）: 応答指標切り替えボタン ----
-        # 現在の指標名ラベル
+    def _build_metric_nav(self, outer: QHBoxLayout) -> None:
         self._metric_label = QLabel()
         self._metric_label.setStyleSheet(
             "color: #90a4ae; font-size: 9px; padding: 0 4px;"
         )
         outer.addWidget(self._metric_label)
 
-        # ◄ 前の指標
-        self._btn_prev_metric = QPushButton("◄")
-        self._btn_prev_metric.setFixedSize(22, 22)
-        self._btn_prev_metric.setStyleSheet(
+        nav_btn_style = (
             "QPushButton {"
             "  font-size: 10px; border: 1px solid #546e7a; border-radius: 3px;"
             "  background: transparent; color: #90a4ae;"
             "}"
             "QPushButton:hover { background: #546e7a; color: white; }"
         )
+
+        self._btn_prev_metric = QPushButton("◄")
+        self._btn_prev_metric.setFixedSize(22, 22)
+        self._btn_prev_metric.setStyleSheet(nav_btn_style)
         self._btn_prev_metric.setToolTip("前の応答指標に切り替えます")
         self._btn_prev_metric.clicked.connect(self._prev_metric)
         outer.addWidget(self._btn_prev_metric)
 
-        # ► 次の指標
         self._btn_next_metric = QPushButton("►")
         self._btn_next_metric.setFixedSize(22, 22)
-        self._btn_next_metric.setStyleSheet(
-            "QPushButton {"
-            "  font-size: 10px; border: 1px solid #546e7a; border-radius: 3px;"
-            "  background: transparent; color: #90a4ae;"
-            "}"
-            "QPushButton:hover { background: #546e7a; color: white; }"
-        )
+        self._btn_next_metric.setStyleSheet(nav_btn_style)
         self._btn_next_metric.setToolTip("次の応答指標に切り替えます")
         self._btn_next_metric.clicked.connect(self._next_metric)
         outer.addWidget(self._btn_next_metric)
-
-        # 初期ラベル更新
-        self._refresh_metric_label()
 
     # ------------------------------------------------------------------
     # Public API

@@ -24,11 +24,14 @@ UX改善② 第5回 (export_dialog.py):
 from __future__ import annotations
 
 import csv
+import logging
 import os
 import subprocess
 import sys
 from pathlib import Path
 from typing import List, Optional
+
+logger = logging.getLogger(__name__)
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
@@ -331,7 +334,7 @@ class ExportDialog(QDialog):
             else:
                 subprocess.Popen(["xdg-open", folder_path])
         except Exception:
-            pass  # 開けなくても致命的エラーにしない
+            logger.debug("フォルダを開けませんでした: %s", folder_path)
 
     @staticmethod
     def _export_csv(cases: List[AnalysisCase], path: str) -> None:

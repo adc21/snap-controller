@@ -7,10 +7,13 @@ SNAP の .s8i ファイルは行ベースのテキスト形式です。
 Updater はキーワード検索によってパラメータを特定し上書きします。
 """
 
+import logging
 import re
 import shutil
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+
+logger = logging.getLogger(__name__)
 
 
 class Updater:
@@ -138,5 +141,6 @@ class Updater:
                     self._lines = f.readlines()
                 return
             except Exception:
+                logger.debug("エンコード %s で読み込み失敗: %s", enc, self.source_path)
                 continue
         raise IOError(f"ファイルを読み込めませんでした: {self.source_path}")
