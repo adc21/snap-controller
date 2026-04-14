@@ -585,114 +585,34 @@ class ModelInfoWidget(QWidget):
         if not hasattr(self, "_floor_chart_layout"):
             return
 
-        # 既存ウィジェットをクリア
-        while self._floor_chart_layout.count():
-            item = self._floor_chart_layout.takeAt(0)
-            if item.widget():
-                item.widget().deleteLater()
+        self._clear_floor_chart_layout()
 
         if not model or not model.damper_elements:
             if hasattr(self, "_floor_chart_area"):
                 self._floor_chart_area.hide()
             return
 
-        # 各ダンパー要素の「上側節点(node_j)の z_grid」をフロアキーとして集計
-        from collections import defaultdict, OrderedDict
-        floor_counts: dict = defaultdict(int)
-        floor_units: dict = defaultdict(int)
-        for elem in model.damper_elements:
-            node_j_data = model.get_node(elem.node_j)
-            if node_j_data and node_j_data.z_grid:
-                floor_key = node_j_data.z_grid.strip()
-            else:
-                # z_grid がない場合は node_j の ID を使用
-                floor_key = f"N{elem.node_j}"
-            floor_counts[floor_key] += 1
-            floor_units[floor_key] += max(1, elem.quantity)
+        floor_counts, floor_units = self._aggregate_floor_damper_counts(model)
 
         if not floor_counts:
             self._floor_chart_area.hide()
             return
 
-        # フロアを z_grid の数値順（または文字列順）でソート
-        def _floor_sort_key(k: str):
-            """フロアキーを数値優先でソートするキー関数。"""
-            import re
-            digits = re.sub(r"[^0-9.]", "", k)
-            try:
-                return (0, float(digits))
-            except ValueError:
-                return (1, k)
-
-        sorted_floors = sorted(floor_counts.keys(), key=_floor_sort_key)
-
+        sorted_floors = sorted(floor_counts.keys(), key=self._floor_sort_key)
         max_count = max(floor_units.values()) if floor_units else 1
 
-        # タイトル行
         title_lbl = QLabel("📊 層別ダンパー配置数")
         title_lbl.setStyleSheet(
             "font-size: 10px; font-weight: bold; color: #1565c0; padding: 2px 0;"
         )
         self._floor_chart_layout.addWidget(title_lbl)
 
-        # 各フロアの横棒グラフ行（上階から表示）
         for floor_key in reversed(sorted_floors):
-            units = floor_units[floor_key]
-            count = floor_counts[floor_key]
-            ratio = units / max_count if max_count > 0 else 0
-
-            # 色: 最多層は濃い青、他は水色グラデーション
-            if units == max_count:
-                bar_color = "#1565c0"
-                text_color = "#0d47a1"
-            elif ratio >= 0.7:
-                bar_color = "#1976d2"
-                text_color = "#1565c0"
-            elif ratio >= 0.4:
-                bar_color = "#42a5f5"
-                text_color = "#1976d2"
-            else:
-                bar_color = "#90caf9"
-                text_color = "#1976d2"
-
-            row_widget = QWidget()
-            row_h = QHBoxLayout(row_widget)
-            row_h.setContentsMargins(0, 0, 0, 0)
-            row_h.setSpacing(4)
-
-            # フロアラベル (固定幅)
-            floor_lbl = QLabel(floor_key)
-            floor_lbl.setFixedWidth(40)
-            floor_lbl.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
-            floor_lbl.setStyleSheet(f"font-size: 10px; color: {text_color}; font-weight: bold;")
-            row_h.addWidget(floor_lbl)
-
-            # バー（幅をratioに比例させた固定QLabel）
-            bar_max_width = 120
-            bar_width = max(8, int(bar_max_width * ratio))
-            bar_lbl = QLabel()
-            bar_lbl.setFixedSize(bar_width, 12)
-            bar_lbl.setStyleSheet(
-                f"background-color: {bar_color}; border-radius: 3px;"
+            row_widget = self._build_floor_bar_row(
+                floor_key, floor_units, floor_counts, max_count, len(sorted_floors)
             )
-            bar_lbl.setToolTip(f"{floor_key}: {count}箇所 / {units}基")
-            row_h.addWidget(bar_lbl)
-
-            # 数値ラベル
-            count_lbl = QLabel(f"{units}基")
-            count_lbl.setStyleSheet(f"font-size: 10px; color: {text_color};")
-            row_h.addWidget(count_lbl)
-
-            # 最多層マーカー
-            if units == max_count and len(sorted_floors) > 1:
-                peak_lbl = QLabel("← 最多")
-                peak_lbl.setStyleSheet("font-size: 9px; color: #c62828; font-weight: bold;")
-                row_h.addWidget(peak_lbl)
-
-            row_h.addStretch()
             self._floor_chart_layout.addWidget(row_widget)
 
-        # 合計表示
         total_units = sum(floor_units.values())
         total_lbl = QLabel(f"合計: {total_units}基 / {len(sorted_floors)}層に配置")
         total_lbl.setStyleSheet(
@@ -702,6 +622,87 @@ class ModelInfoWidget(QWidget):
         self._floor_chart_layout.addWidget(total_lbl)
 
         self._floor_chart_area.show()
+
+    def _clear_floor_chart_layout(self) -> None:
+        while self._floor_chart_layout.count():
+            item = self._floor_chart_layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+
+    @staticmethod
+    def _aggregate_floor_damper_counts(model) -> tuple:
+        from collections import defaultdict
+        floor_counts: dict = defaultdict(int)
+        floor_units: dict = defaultdict(int)
+        for elem in model.damper_elements:
+            node_j_data = model.get_node(elem.node_j)
+            if node_j_data and node_j_data.z_grid:
+                floor_key = node_j_data.z_grid.strip()
+            else:
+                floor_key = f"N{elem.node_j}"
+            floor_counts[floor_key] += 1
+            floor_units[floor_key] += max(1, elem.quantity)
+        return floor_counts, floor_units
+
+    @staticmethod
+    def _floor_sort_key(k: str):
+        import re
+        digits = re.sub(r"[^0-9.]", "", k)
+        try:
+            return (0, float(digits))
+        except ValueError:
+            return (1, k)
+
+    @staticmethod
+    def _pick_bar_colors(ratio: float, is_peak: bool) -> tuple:
+        if is_peak:
+            return "#1565c0", "#0d47a1"
+        if ratio >= 0.7:
+            return "#1976d2", "#1565c0"
+        if ratio >= 0.4:
+            return "#42a5f5", "#1976d2"
+        return "#90caf9", "#1976d2"
+
+    def _build_floor_bar_row(
+        self, floor_key: str, floor_units: dict, floor_counts: dict,
+        max_count: int, total_floors: int,
+    ) -> QWidget:
+        units = floor_units[floor_key]
+        count = floor_counts[floor_key]
+        ratio = units / max_count if max_count > 0 else 0
+        is_peak = units == max_count
+        bar_color, text_color = self._pick_bar_colors(ratio, is_peak)
+
+        row_widget = QWidget()
+        row_h = QHBoxLayout(row_widget)
+        row_h.setContentsMargins(0, 0, 0, 0)
+        row_h.setSpacing(4)
+
+        floor_lbl = QLabel(floor_key)
+        floor_lbl.setFixedWidth(40)
+        floor_lbl.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        floor_lbl.setStyleSheet(f"font-size: 10px; color: {text_color}; font-weight: bold;")
+        row_h.addWidget(floor_lbl)
+
+        bar_max_width = 120
+        bar_width = max(8, int(bar_max_width * ratio))
+        bar_lbl = QLabel()
+        bar_lbl.setFixedSize(bar_width, 12)
+        bar_lbl.setStyleSheet(f"background-color: {bar_color}; border-radius: 3px;")
+        bar_lbl.setToolTip(f"{floor_key}: {count}箇所 / {units}基")
+        row_h.addWidget(bar_lbl)
+
+        count_lbl = QLabel(f"{units}基")
+        count_lbl.setStyleSheet(f"font-size: 10px; color: {text_color};")
+        row_h.addWidget(count_lbl)
+
+        if is_peak and total_floors > 1:
+            peak_lbl = QLabel("← 最多")
+            peak_lbl.setStyleSheet("font-size: 9px; color: #c62828; font-weight: bold;")
+            row_h.addWidget(peak_lbl)
+
+        row_h.addStretch()
+        return row_widget
 
     # ------------------------------------------------------------------
     # UX改善D: ドラッグ&ドロップ対応
