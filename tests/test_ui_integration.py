@@ -859,9 +859,8 @@ class TestMainWindowIntegration:
 
         # 必須メニュー項目の確認
         action_texts = " ".join(all_actions)
-        assert "最適化" in action_texts or "O)" in action_texts
+        assert "統合最適化" in action_texts or "O)" in action_texts
         assert "iRDT" in action_texts
-        assert "最小化" in action_texts or "M)" in action_texts
         assert "挿入" in action_texts or "J)" in action_texts
         assert "スイープ" in action_texts or "W)" in action_texts
         assert "カタログ" in action_texts or "K)" in action_texts

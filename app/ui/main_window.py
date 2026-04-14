@@ -651,25 +651,15 @@ class MainWindow(_MainWindowDialogsMixin, QMainWindow):
         act_catalog.triggered.connect(self._open_damper_catalog)
         analysis_menu.addAction(act_catalog)
 
-        act_optimize = QAction("ダンパー最適化(&O)…", self)
-        act_optimize.setShortcut("Ctrl+Shift+O")
-        act_optimize.triggered.connect(self._open_optimizer_dialog)
-        analysis_menu.addAction(act_optimize)
+        act_unified = QAction("統合最適化(&O)…", self)
+        act_unified.setShortcut("Ctrl+Shift+O")
+        act_unified.triggered.connect(self._open_unified_optimizer)
+        analysis_menu.addAction(act_unified)
 
         act_irdt = QAction("iRDT 設計ウィザード(&I)…", self)
         act_irdt.setShortcut("Ctrl+Shift+I")
         act_irdt.triggered.connect(self._open_irdt_wizard)
         analysis_menu.addAction(act_irdt)
-
-        act_minimizer = QAction("ダンパー本数最小化(&M)…", self)
-        act_minimizer.setShortcut("Ctrl+Shift+M")
-        act_minimizer.triggered.connect(self._open_minimizer_dialog)
-        analysis_menu.addAction(act_minimizer)
-
-        act_unified = QAction("統合最適化(&U)…", self)
-        act_unified.setShortcut("Ctrl+Shift+U")
-        act_unified.triggered.connect(self._open_unified_optimizer)
-        analysis_menu.addAction(act_unified)
 
         act_injector = QAction("iRDT/iOD ダンパー挿入(&J)…", self)
         act_injector.setShortcut("Ctrl+Shift+J")

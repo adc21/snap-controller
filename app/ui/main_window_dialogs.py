@@ -279,56 +279,6 @@ class _MainWindowDialogsMixin:
     # 最適化ダイアログ
     # ------------------------------------------------------------------
 
-    def _open_optimizer_dialog(self) -> None:
-        """ダンパー最適化ダイアログを開きます。"""
-        if self._project is None:
-            return
-        # 選択中のケースをベースケースとして使う
-        base_case = None
-        case_id = self._case_table.selected_case_id()
-        if case_id:
-            base_case = self._project.get_case(case_id)
-
-        from .optimizer_dialog import OptimizerDialog
-        dlg = OptimizerDialog(
-            base_case=base_case,
-            criteria=self._project.criteria,
-            snap_exe_path=self._project.snap_exe_path,
-            snap_work_dir=self._project.snap_work_dir,
-            parent=self,
-        )
-        if dlg.exec():
-            # 最良解をケースとして追加
-            best_params = dlg.best_params
-            result = dlg.result
-            if best_params and result and result.best:
-                from app.models import AnalysisCase
-                # パラメータ文字列を生成
-                param_str = ", ".join(
-                    f"{k}={v:.4g}" for k, v in best_params.items()
-                )
-                case = AnalysisCase(
-                    name=f"最適化結果 ({result.config.damper_type})",
-                    parameters=best_params,
-                    notes=f"最適化結果: {result.config.objective_label} = "
-                          f"{result.best.objective_value:.6g}\n"
-                          f"パラメータ: {param_str}\n"
-                          f"探索手法: {result.config.method}\n"
-                          f"評価数: {len(result.all_candidates)}",
-                )
-                if base_case and base_case.model_path:
-                    case.model_path = base_case.model_path
-                self._project.add_case(case)
-                self._case_table.refresh()
-                self._project._touch()
-                self._log.append_line(
-                    f"=== 最適化結果をケース追加: {case.name} "
-                    f"({param_str}) ==="
-                )
-                self.statusBar().showMessage(
-                    f"最適化結果をケース「{case.name}」として追加しました"
-                )
-
     def _open_irdt_wizard(self) -> None:
         """iRDT 設計ウィザードを開きます。"""
         # PeriodXbnReader があればそこからモード情報を取得
@@ -377,91 +327,13 @@ class _MainWindowDialogsMixin:
             8000,
         )
 
-    def _open_minimizer_dialog(self) -> None:
-        """ダンパー本数最小化ダイアログを開きます。"""
-        if self._project is None:
-            return
-
-        # 選択中のケースから .s8i パスを取得
-        base_case = None
-        case_id = self._case_table.selected_case_id()
-        if case_id:
-            base_case = self._project.get_case(case_id)
-
-        model_path = (base_case.model_path or "") if base_case else ""
-        if not model_path:
-            QMessageBox.warning(
-                self, "モデル未選択",
-                "解析ケースを選択してからダンパー本数最小化を実行してください。",
-            )
-            return
-
-        # .s8i からフロア→RD要素マッピングを構築
-        from app.services.snap_evaluator import build_floor_rd_map
-        try:
-            floor_rd_map, current_quantities, floor_keys = build_floor_rd_map(model_path)
-        except Exception as e:
-            QMessageBox.critical(
-                self, "モデル読み込みエラー",
-                f".s8i ファイルの読み込みに失敗しました:\n{e}",
-            )
-            return
-
-        if not floor_keys:
-            QMessageBox.warning(
-                self, "ダンパーなし",
-                "選択したモデルにダンパー要素（RD行）がありません。",
-            )
-            return
-
-        # 最大本数 = 現在の本数 * 2（余裕を持たせる）
-        max_quantities = {k: max(v * 2, 10) for k, v in current_quantities.items()}
-
-        # SnapEvaluator ベースの evaluate_fn を構築
-        evaluate_fn = None
-        if self._project.snap_exe_path and self._project.criteria:
-            from app.services.snap_evaluator import create_minimizer_evaluate_fn
-            evaluate_fn = create_minimizer_evaluate_fn(
-                snap_exe_path=self._project.snap_exe_path,
-                base_s8i_path=model_path,
-                criteria=self._project.criteria,
-                floor_rd_map=floor_rd_map,
-                log_callback=lambda msg: self._log.append_line(msg),
-                snap_work_dir=self._project.snap_work_dir,
-            )
-            if evaluate_fn:
-                self._log.append_line(
-                    f"[INFO] SNAP実評価関数でダンパー本数最小化を実行します。"
-                    f"（{len(floor_keys)}階, 合計{sum(current_quantities.values())}本）"
-                )
-
-        from .minimizer_dialog import MinimizerDialog
-        dlg = MinimizerDialog(
-            floor_keys=floor_keys,
-            current_quantities=current_quantities,
-            max_quantities=max_quantities,
-            evaluate_fn=evaluate_fn,
-            parent=self,
-            model_path=model_path,
-            floor_rd_map=floor_rd_map,
-        )
-        dlg.minimizationCompleted.connect(self._on_minimizer_completed)
-        dlg.exec()
-
-    def _on_minimizer_completed(self, result) -> None:
-        """ダンパー本数最小化結果を受け取ります。"""
-        self._log.append_line(
-            f"=== ダンパー最小化完了: 合計{result.final_count}本, "
-            f"マージン={result.final_margin:.4f} ==="
-        )
-        self.statusBar().showMessage(
-            f"ダンパー最小化完了 — {result.final_count}本配置",
-            8000,
-        )
-
     def _open_unified_optimizer(self) -> None:
         """統合最適化ダイアログを開きます。"""
         if self._project is None:
+            QMessageBox.warning(
+                self, "プロジェクト未読込",
+                "プロジェクトを読み込んでから統合最適化を実行してください。",
+            )
             return
 
         base_case = None
@@ -472,18 +344,31 @@ class _MainWindowDialogsMixin:
         if not base_case or not base_case.model_path:
             QMessageBox.warning(
                 self, "モデル未選択",
-                "解析ケースを選択してから統合最適化を実行してください。",
+                "解析ケースを選択してから統合最適化を実行してください。\n\n"
+                "手順:\n"
+                "1. Step 1 で .s8i ファイルを読み込む\n"
+                "2. ケーステーブルでケースを選択\n"
+                "3. 解析メニュー → 統合最適化",
             )
             return
 
-        from .unified_optimizer_dialog import UnifiedOptimizerDialog
-        dlg = UnifiedOptimizerDialog(
-            base_case=base_case,
-            criteria=self._project.criteria,
-            snap_exe_path=self._project.snap_exe_path,
-            snap_work_dir=self._project.snap_work_dir,
-            parent=self,
-        )
+        try:
+            from .unified_optimizer_dialog import UnifiedOptimizerDialog
+            dlg = UnifiedOptimizerDialog(
+                base_case=base_case,
+                criteria=self._project.criteria,
+                snap_exe_path=self._project.snap_exe_path,
+                snap_work_dir=self._project.snap_work_dir,
+                parent=self,
+            )
+        except Exception as e:
+            logger.exception("統合最適化ダイアログの構築に失敗")
+            QMessageBox.critical(
+                self, "統合最適化エラー",
+                f"ダイアログの初期化に失敗しました:\n{e}",
+            )
+            return
+
         if dlg.exec():
             best_params = dlg.best_params
             result = dlg.result
