@@ -164,8 +164,13 @@ class CaseCompareDialog(QDialog):
 
     def _setup_ui(self) -> None:
         layout = QVBoxLayout(self)
+        layout.addLayout(self._build_select_row())
+        layout.addWidget(self._build_summary_card())
+        self._populate_combos()
+        layout.addWidget(self._build_main_splitter(), stretch=1)
+        self._build_close_button(layout)
 
-        # ケース選択行
+    def _build_select_row(self) -> QHBoxLayout:
         select_row = QHBoxLayout()
         select_row.addWidget(QLabel("<b>ケースA:</b>"))
         self._combo_a = QComboBox()
@@ -185,18 +190,17 @@ class CaseCompareDialog(QDialog):
         swap_btn.setToolTip("ケースAとBを入れ替えます")
         swap_btn.clicked.connect(self._swap_cases)
         select_row.addWidget(swap_btn)
+        return select_row
 
-        layout.addLayout(select_row)
-
-        # UX改善（新①）: 総合改善判定サマリーカード
+    def _build_summary_card(self) -> QFrame:
         self._summary_card = QFrame()
         self._summary_card.setFrameShape(QFrame.StyledPanel)
         self._summary_card.setStyleSheet(
             "QFrame { border-radius: 6px; padding: 4px; }"
         )
         self._summary_card.setMaximumHeight(64)
-        summary_card_layout = QHBoxLayout(self._summary_card)
-        summary_card_layout.setContentsMargins(10, 4, 10, 4)
+        card_layout = QHBoxLayout(self._summary_card)
+        card_layout.setContentsMargins(10, 4, 10, 4)
         self._summary_improved_lbl = QLabel("✅ — 改善")
         self._summary_improved_lbl.setStyleSheet("color: #2e7d32; font-weight: bold; font-size: 12px;")
         self._summary_worsened_lbl = QLabel("⚠ — 悪化")
@@ -205,22 +209,21 @@ class CaseCompareDialog(QDialog):
         self._summary_equal_lbl.setStyleSheet("color: #555; font-size: 12px;")
         self._summary_best_lbl = QLabel("")
         self._summary_best_lbl.setStyleSheet("color: #1565c0; font-size: 11px;")
-        summary_card_layout.addWidget(self._summary_improved_lbl)
-        summary_card_layout.addSpacing(16)
-        summary_card_layout.addWidget(self._summary_worsened_lbl)
-        summary_card_layout.addSpacing(16)
-        summary_card_layout.addWidget(self._summary_equal_lbl)
-        summary_card_layout.addSpacing(24)
-        summary_card_layout.addWidget(self._summary_best_lbl)
-        summary_card_layout.addStretch()
-        layout.addWidget(self._summary_card)
+        card_layout.addWidget(self._summary_improved_lbl)
+        card_layout.addSpacing(16)
+        card_layout.addWidget(self._summary_worsened_lbl)
+        card_layout.addSpacing(16)
+        card_layout.addWidget(self._summary_equal_lbl)
+        card_layout.addSpacing(24)
+        card_layout.addWidget(self._summary_best_lbl)
+        card_layout.addStretch()
+        return self._summary_card
 
-        # コンボボックスにケースを追加
+    def _populate_combos(self) -> None:
         for case in self._completed:
             self._combo_a.addItem(case.name, case.id)
             self._combo_b.addItem(case.name, case.id)
 
-        # 初期選択
         if self._initial_a:
             idx = self._combo_a.findData(self._initial_a.id)
             if idx >= 0:
@@ -232,10 +235,15 @@ class CaseCompareDialog(QDialog):
         elif len(self._completed) > 1:
             self._combo_b.setCurrentIndex(1)
 
-        # メインスプリッター: テーブル（左） + グラフ（右）
+    def _build_main_splitter(self) -> QSplitter:
         main_splitter = QSplitter(Qt.Horizontal)
+        main_splitter.addWidget(self._build_table_panel())
+        main_splitter.addWidget(self._build_chart_panel())
+        main_splitter.setStretchFactor(0, 1)
+        main_splitter.setStretchFactor(1, 1)
+        return main_splitter
 
-        # 比較テーブル（左）
+    def _build_table_panel(self) -> QWidget:
         table_panel = QWidget()
         table_layout = QVBoxLayout(table_panel)
         table_layout.setContentsMargins(0, 0, 0, 0)
@@ -252,7 +260,6 @@ class CaseCompareDialog(QDialog):
         self._response_table.verticalHeader().setVisible(False)
         table_layout.addWidget(self._response_table)
 
-        # パラメータ差分テーブル
         table_layout.addWidget(QLabel("<b>パラメータ差分</b>"))
         self._param_table = QTableWidget(0, 4)
         self._param_table.setHorizontalHeaderLabels([
@@ -266,9 +273,9 @@ class CaseCompareDialog(QDialog):
         self._param_table.setMaximumHeight(200)
         table_layout.addWidget(self._param_table)
 
-        main_splitter.addWidget(table_panel)
+        return table_panel
 
-        # グラフ（右）
+    def _build_chart_panel(self) -> QWidget:
         chart_panel = QWidget()
         chart_layout = QVBoxLayout(chart_panel)
         chart_layout.setContentsMargins(0, 0, 0, 0)
@@ -287,19 +294,14 @@ class CaseCompareDialog(QDialog):
         self._canvas = _MplCanvas(self)
         chart_layout.addWidget(self._canvas)
 
-        # 差分バーチャート
         chart_layout.addWidget(QLabel("<b>応答値差分（ケースB − ケースA）</b>"))
         self._diff_canvas = _MplCanvas(self)
         self._diff_canvas.fig.set_size_inches(5, 2.5)
         chart_layout.addWidget(self._diff_canvas)
 
-        main_splitter.addWidget(chart_panel)
+        return chart_panel
 
-        main_splitter.setStretchFactor(0, 1)
-        main_splitter.setStretchFactor(1, 1)
-        layout.addWidget(main_splitter, stretch=1)
-
-        # ボタン行
+    def _build_close_button(self, layout: QVBoxLayout) -> None:
         btn_row = QHBoxLayout()
         btn_row.addStretch()
         close_btn = QPushButton("閉じる")

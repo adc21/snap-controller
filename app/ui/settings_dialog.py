@@ -143,12 +143,16 @@ class SettingsDialog(QDialog):
 
     def _setup_ui(self) -> None:
         layout = QVBoxLayout(self)
+        layout.addWidget(self._build_snap_group())
+        layout.addWidget(self._build_demo_group())
+        layout.addWidget(self._build_ui_group())
+        layout.addWidget(self._build_autosave_group())
+        layout.addWidget(self._build_dialog_buttons())
 
-        # ---- SNAP デフォルト設定 ----
+    def _build_snap_group(self) -> QGroupBox:
         snap_group = QGroupBox("SNAP 解析エンジン")
         snap_form = QFormLayout(snap_group)
 
-        # UX改善③ 第5回: exe パス行 + リアルタイムバッジ
         exe_row = QHBoxLayout()
         self._exe_edit = QLineEdit()
         self._exe_edit.setPlaceholderText("SNAP.exe のフルパスを指定してください")
@@ -159,12 +163,10 @@ class SettingsDialog(QDialog):
         exe_row.addWidget(exe_btn)
         snap_form.addRow("デフォルト SNAP.exe:", exe_row)
 
-        # バッジラベル（行の次の行に配置）
         self._exe_badge = QLabel("（未設定）")
         self._exe_badge.setStyleSheet("color: #757575; font-size: 10px;")
         snap_form.addRow("", self._exe_badge)
 
-        # UX改善③ 第5回: work dir 行 + リアルタイムバッジ
         work_row = QHBoxLayout()
         self._work_dir_edit = QLineEdit()
         self._work_dir_edit.setPlaceholderText("例: C:\\Users\\xxx\\kozosystem\\SNAPV8\\work")
@@ -185,17 +187,16 @@ class SettingsDialog(QDialog):
                 "解析結果の読み込みに使用します。</small>"
             )
         )
-        layout.addWidget(snap_group)
 
-        # UX改善③ 第5回: テキスト変化でリアルタイム更新
         self._exe_edit.textChanged.connect(
             lambda text: self._refresh_path_badge(text, self._exe_badge, is_file=True)
         )
         self._work_dir_edit.textChanged.connect(
             lambda text: self._refresh_path_badge(text, self._work_badge, is_file=False)
         )
+        return snap_group
 
-        # ---- デモ/解析設定 ----
+    def _build_demo_group(self) -> QGroupBox:
         demo_group = QGroupBox("デモ・解析設定")
         demo_form = QFormLayout(demo_group)
 
@@ -204,9 +205,9 @@ class SettingsDialog(QDialog):
         self._floors_spin.setSuffix(" 層")
         self._floors_spin.setToolTip("デモ実行時に使用するダミー建物の階数")
         demo_form.addRow("デモ実行 デフォルト階数:", self._floors_spin)
-        layout.addWidget(demo_group)
+        return demo_group
 
-        # ---- UI 設定 ----
+    def _build_ui_group(self) -> QGroupBox:
         ui_group = QGroupBox("UI 設定")
         ui_form = QFormLayout(ui_group)
 
@@ -225,7 +226,6 @@ class SettingsDialog(QDialog):
         self._sound_check = QCheckBox("解析完了時にサウンドで通知する")
         ui_form.addRow(self._sound_check)
 
-        # UX改善⑤: 解析完了後の自動STEP4遷移オプション
         self._auto_step4_check = QCheckBox("解析完了後に自動的に「STEP4: 結果・戦略」へ移動する")
         self._auto_step4_check.setToolTip(
             "チェックすると、バッチ解析が完了した際に自動的にSTEP4（結果確認）画面へ切り替わります。\n"
@@ -238,9 +238,9 @@ class SettingsDialog(QDialog):
                 "<small>※ テーマの変更はアプリケーションの再起動後に反映されます。</small>"
             )
         )
-        layout.addWidget(ui_group)
+        return ui_group
 
-        # ---- 自動保存設定 ----
+    def _build_autosave_group(self) -> QGroupBox:
         autosave_group = QGroupBox("自動保存")
         autosave_form = QFormLayout(autosave_group)
 
@@ -267,18 +267,17 @@ class SettingsDialog(QDialog):
                 "バックアップは最大 5 世代まで保持されます。</small>"
             )
         )
-        layout.addWidget(autosave_group)
+        return autosave_group
 
-        # ---- ボタン ----
+    def _build_dialog_buttons(self) -> QDialogButtonBox:
         btn_box = QDialogButtonBox(
             QDialogButtonBox.Ok | QDialogButtonBox.Cancel
         )
         btn_box.accepted.connect(self._on_ok)
         btn_box.rejected.connect(self.reject)
-        # リセットボタン
         reset_btn = btn_box.addButton("デフォルトに戻す", QDialogButtonBox.ResetRole)
         reset_btn.clicked.connect(self._reset_defaults)
-        layout.addWidget(btn_box)
+        return btn_box
 
     # ------------------------------------------------------------------
     # Load / Save
