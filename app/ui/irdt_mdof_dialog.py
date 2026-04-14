@@ -11,19 +11,24 @@ from __future__ import annotations
 import math
 from typing import List, Optional, Sequence
 
+from pathlib import Path
+
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QDoubleValidator
 from PySide6.QtWidgets import (
     QAbstractItemView,
+    QApplication,
     QComboBox,
     QDialog,
     QDialogButtonBox,
+    QFileDialog,
     QFormLayout,
     QGroupBox,
     QHBoxLayout,
     QHeaderView,
     QLabel,
     QLineEdit,
+    QMessageBox,
     QPushButton,
     QSpinBox,
     QTableWidget,
@@ -129,6 +134,12 @@ class IRDTMdofDialog(QDialog):
         btn_reset = QPushButton("リセット")
         btn_reset.clicked.connect(self._on_reset)
         btn_row.addWidget(btn_reset)
+        self._btn_copy = QPushButton("クリップボードへコピー")
+        self._btn_copy.clicked.connect(self._on_copy_clipboard)
+        btn_row.addWidget(self._btn_copy)
+        self._btn_csv = QPushButton("CSV出力")
+        self._btn_csv.clicked.connect(self._on_export_csv)
+        btn_row.addWidget(self._btn_csv)
         btn_row.addStretch(1)
         btn_close = QDialogButtonBox(QDialogButtonBox.Close)
         btn_close.rejected.connect(self.reject)
@@ -316,3 +327,41 @@ class IRDTMdofDialog(QDialog):
         if value is None or (isinstance(value, float) and (math.isnan(value) or math.isinf(value))):
             return "—"
         return f"{value:.{decimals}f}"
+
+    # ---- 出力 ---------------------------------------------------------
+    def _build_export_rows(self, separator: str = "\t") -> str:
+        """結果テーブルを TSV/CSV 文字列に整形します。"""
+        headers = ["階", "周期 [s]", "固有ベクトル [-]", "cd [kNs/m]", "kb [kN/m]"]
+        lines = [separator.join(headers)]
+        for row in range(self._result_table.rowCount()):
+            cells = [str(row + 1)]
+            for col in range(self._result_table.columnCount()):
+                item = self._result_table.item(row, col)
+                cells.append(item.text() if item else "")
+            lines.append(separator.join(cells))
+        summary = [
+            f"μ{separator}{self._lbl_mu.text()}",
+            f"γ{separator}{self._lbl_gamma.text()}",
+            f"h{separator}{self._lbl_h.text()}",
+        ]
+        return "\n".join(lines + [""] + summary)
+
+    def _on_copy_clipboard(self) -> None:
+        if self._result_table.rowCount() == 0:
+            return
+        QApplication.clipboard().setText(self._build_export_rows(separator="\t"))
+
+    def _on_export_csv(self) -> None:
+        if self._result_table.rowCount() == 0:
+            return
+        path_str, _ = QFileDialog.getSaveFileName(
+            self, "iRDT MDOF 結果をCSVに保存", "irdt_mdof.csv", "CSV (*.csv)"
+        )
+        if not path_str:
+            return
+        try:
+            content = self._build_export_rows(separator=",")
+            # UTF-8 BOM 付きで Excel 互換
+            Path(path_str).write_text(content, encoding="utf-8-sig")
+        except OSError as exc:
+            QMessageBox.warning(self, "CSV保存失敗", f"書き込みに失敗しました:\n{exc}")

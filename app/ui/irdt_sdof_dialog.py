@@ -15,6 +15,7 @@ from typing import Optional
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QDoubleValidator, QIntValidator
 from PySide6.QtWidgets import (
+    QApplication,
     QCheckBox,
     QDialog,
     QDialogButtonBox,
@@ -163,6 +164,9 @@ class IRDTSdofDialog(QDialog):
         btn_reset = QPushButton("リセット")
         btn_reset.clicked.connect(self._on_reset)
         btn_row.addWidget(btn_reset)
+        self._btn_copy = QPushButton("結果をコピー")
+        self._btn_copy.clicked.connect(self._on_copy_clipboard)
+        btn_row.addWidget(self._btn_copy)
         btn_row.addStretch(1)
         btn_close = QDialogButtonBox(QDialogButtonBox.Close)
         btn_close.rejected.connect(self.reject)
@@ -260,6 +264,19 @@ class IRDTSdofDialog(QDialog):
         if value is None or (isinstance(value, float) and (math.isnan(value) or math.isinf(value))):
             return "—"
         return f"{value:.{decimals}f}"
+
+    def _on_copy_clipboard(self) -> None:
+        """最適値を「項目<TAB>値」形式でクリップボードへコピー。"""
+        rows = [
+            ("μ [-]", self._lbl_mu.text()),
+            ("cd [kNs/m/基]", self._lbl_cd.text()),
+            ("hd [%]", self._lbl_hd.text()),
+            ("kb [kN/m/基]", self._lbl_kb.text()),
+            ("Td [s]", self._lbl_td.text()),
+            ("fd [Hz]", self._lbl_fd.text()),
+        ]
+        text = "\n".join(f"{k}\t{v}" for k, v in rows)
+        QApplication.clipboard().setText(text)
 
     def _draw_chart(
         self,

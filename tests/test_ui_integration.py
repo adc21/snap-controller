@@ -1253,6 +1253,42 @@ class TestDialogInteractions:
         assert dlg._input_mode == "vector"
         assert "固有ベクトル" in dlg._input_table.horizontalHeaderItem(1).text()
 
+    def test_irdt_sdof_copy_clipboard(self, qapp):
+        """SDOF: クリップボードコピーで結果が TAB 区切りでコピーされる。"""
+        from PySide6.QtWidgets import QApplication
+        from app.ui.irdt_sdof_dialog import IRDTSdofDialog
+        dlg = IRDTSdofDialog()
+        dlg._on_copy_clipboard()
+        text = QApplication.clipboard().text()
+        assert "μ [-]" in text
+        assert "cd [kNs/m/基]" in text
+        assert "\t" in text
+        # 行数 = 6 項目
+        assert len(text.split("\n")) == 6
+
+    def test_irdt_mdof_export_rows_csv(self, qapp):
+        """MDOF: _build_export_rows が CSV 形式でヘッダー + 行データ + サマリを含む。"""
+        from app.ui.irdt_mdof_dialog import IRDTMdofDialog
+        dlg = IRDTMdofDialog()
+        content = dlg._build_export_rows(separator=",")
+        lines = content.split("\n")
+        assert lines[0].startswith("階,周期")
+        assert "μ," in content
+        assert "γ," in content
+        assert "h," in content
+        # デフォルト 2 層 → ヘッダ1 + データ2 + 空行1 + サマリ3 = 7 行
+        assert dlg._result_table.rowCount() == 2
+        assert len(lines) == 7
+
+    def test_irdt_mdof_copy_clipboard(self, qapp):
+        """MDOF: クリップボードコピーで TSV 形式がコピーされる。"""
+        from PySide6.QtWidgets import QApplication
+        from app.ui.irdt_mdof_dialog import IRDTMdofDialog
+        dlg = IRDTMdofDialog()
+        dlg._on_copy_clipboard()
+        text = QApplication.clipboard().text()
+        assert "階\t周期" in text  # タブ区切りのヘッダー
+
 
 # ===================================================================
 # MainWindow 統合テスト
