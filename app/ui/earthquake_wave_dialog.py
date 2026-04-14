@@ -125,8 +125,13 @@ class EarthquakeWaveDialog(QDialog):
 
     def _setup_ui(self) -> None:
         layout = QVBoxLayout(self)
+        self._build_filter_row(layout)
+        self._build_main_splitter(layout)
+        self._build_settings_row(layout)
+        self._build_dialog_buttons(layout)
 
-        # ---- 検索・フィルタ行 ----
+    def _build_filter_row(self, layout: QVBoxLayout) -> None:
+        """検索・カテゴリフィルタ行を構築する。"""
         filter_row = QHBoxLayout()
 
         filter_row.addWidget(QLabel("検索:"))
@@ -148,7 +153,8 @@ class EarthquakeWaveDialog(QDialog):
 
         layout.addLayout(filter_row)
 
-        # ---- メインエリア: リスト（左）+ 詳細（右） ----
+    def _build_main_splitter(self, layout: QVBoxLayout) -> None:
+        """リスト（左）+ 詳細（右）のスプリッターを構築する。"""
         splitter = QSplitter(Qt.Horizontal)
 
         # 地震波リスト
@@ -162,7 +168,6 @@ class EarthquakeWaveDialog(QDialog):
         self._wave_list.currentItemChanged.connect(self._on_wave_selected)
         list_layout.addWidget(self._wave_list)
 
-        # 件数ラベル
         self._count_label = QLabel("")
         list_layout.addWidget(self._count_label)
         splitter.addWidget(list_group)
@@ -170,8 +175,17 @@ class EarthquakeWaveDialog(QDialog):
         # 詳細パネル
         detail_group = QGroupBox("地震波情報")
         detail_layout = QVBoxLayout(detail_group)
+        self._build_detail_panel(detail_layout)
+        detail_layout.addStretch()
+        splitter.addWidget(detail_group)
+        splitter.setStretchFactor(0, 1)
+        splitter.setStretchFactor(1, 1)
 
-        # UX改善（第4回）②: カテゴリ説明バナー（地震波選択時に更新）
+        layout.addWidget(splitter, stretch=1)
+
+    def _build_detail_panel(self, detail_layout: QVBoxLayout) -> None:
+        """詳細パネルの中身（カテゴリバナー・情報フォーム・スケール計算）を構築する。"""
+        # カテゴリ説明バナー
         self._category_banner = QFrame()
         self._category_banner.setFrameShape(QFrame.StyledPanel)
         self._category_banner.setMaximumHeight(60)
@@ -212,7 +226,11 @@ class EarthquakeWaveDialog(QDialog):
         self._detail_desc.setMaximumHeight(80)
         detail_layout.addWidget(self._detail_desc)
 
-        # UX改善（第4回）②: 設計レベル自動スケール計算パネル
+        # 設計レベル自動スケール計算パネル
+        self._build_scale_panel(detail_layout)
+
+    def _build_scale_panel(self, detail_layout: QVBoxLayout) -> None:
+        """設計レベル別推奨スケール自動計算パネルを構築する。"""
         scale_frame = QFrame()
         scale_frame.setFrameShape(QFrame.StyledPanel)
         scale_frame.setStyleSheet(
@@ -256,14 +274,9 @@ class EarthquakeWaveDialog(QDialog):
         self._design_level_combo.currentIndexChanged.connect(self._recalculate_recommended_scale)
 
         detail_layout.addWidget(scale_frame)
-        detail_layout.addStretch()
-        splitter.addWidget(detail_group)
-        splitter.setStretchFactor(0, 1)
-        splitter.setStretchFactor(1, 1)
 
-        layout.addWidget(splitter, stretch=1)
-
-        # ---- 入力設定行 ----
+    def _build_settings_row(self, layout: QVBoxLayout) -> None:
+        """入力設定行（方向・倍率・カスタム追加）を構築する。"""
         settings_group = QGroupBox("入力設定")
         settings_layout = QHBoxLayout(settings_group)
 
@@ -288,7 +301,8 @@ class EarthquakeWaveDialog(QDialog):
 
         layout.addWidget(settings_group)
 
-        # ---- ボタン ----
+    def _build_dialog_buttons(self, layout: QVBoxLayout) -> None:
+        """ダイアログの適用/閉じるボタンを構築する。"""
         btn_box = QDialogButtonBox()
         self._apply_btn = QPushButton("ケースに適用")
         self._apply_btn.setDefault(True)

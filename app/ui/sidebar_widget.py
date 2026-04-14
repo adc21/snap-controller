@@ -124,8 +124,19 @@ class SidebarWidget(QWidget):
         title_label.setStyleSheet("font-size: 16px; font-weight: 900; margin-bottom: 16px;")
         layout.addWidget(title_label)
 
-        # UX改善（第7回②）: ステップ完了フラッシュバナー
-        # set_step_state("done") 時に3秒間表示して自動非表示になるバナー。
+        self._build_flash_banner(layout)
+        self._build_step_buttons(layout)
+
+        layout.addStretch()
+
+        self._build_footer(layout)
+
+        # デフォルトでSTEP 1を選択
+        if self._buttons:
+            self._buttons[0].setChecked(True)
+
+    def _build_flash_banner(self, layout: QVBoxLayout) -> None:
+        """ステップ完了フラッシュバナーを構築する。"""
         self._flash_banner = QFrame()
         self._flash_banner.setStyleSheet(
             "QFrame {"
@@ -152,14 +163,14 @@ class SidebarWidget(QWidget):
         _flash_layout.addWidget(self._flash_text_lbl, stretch=1)
         layout.addWidget(self._flash_banner)
 
-        # フラッシュ自動非表示タイマー
         self._flash_timer = QTimer(self)
         self._flash_timer.setSingleShot(True)
         self._flash_timer.timeout.connect(lambda: self._flash_banner.setVisible(False))
 
-        # ステップの既存 done 状態を追跡（重複フラッシュを防ぐ）
         self._step_done_states: list[bool] = [False, False, False, False]
 
+    def _build_step_buttons(self, layout: QVBoxLayout) -> None:
+        """4つのステップボタン+バッジ+状態インジケーターを構築する。"""
         self._btn_group = QButtonGroup(self)
         self._btn_group.setExclusive(True)
         self._btn_group.idClicked.connect(self._on_step_clicked)
@@ -171,9 +182,7 @@ class SidebarWidget(QWidget):
             ("STEP 4: 結果・戦略", "fa5s.chart-bar"),
         ]
 
-        # UX改善（新③）: 各ステップボタンに表示する詳細ツールチップ
         _step_tooltips = [
-            # STEP1
             "【STEP 1: モデル設定】\n"
             "解析に使う SNAP 入力ファイル (.s8i) を読み込みます。\n\n"
             "できること:\n"
@@ -182,8 +191,6 @@ class SidebarWidget(QWidget):
             "  • s8i ファイル内容のプレビュー\n"
             "  • 最近使ったファイルの再読み込み\n\n"
             "完了したら → STEP2 へ",
-
-            # STEP2
             "【STEP 2: ケース設計】\n"
             "比較する解析ケースを複数設定します。\n\n"
             "できること:\n"
@@ -194,8 +201,6 @@ class SidebarWidget(QWidget):
             "  • テンプレートの保存・適用\n\n"
             "前提: STEP1 で s8i ファイルを読み込んでいること\n"
             "完了したら → STEP3 へ",
-
-            # STEP3
             "【STEP 3: 解析実行】\n"
             "設定したケースを SNAP で解析します。\n\n"
             "できること:\n"
@@ -206,8 +211,6 @@ class SidebarWidget(QWidget):
             "前提: STEP2 でケースが1件以上あること\n"
             "      SNAP 実行ファイル (Snap.exe) が設定済みであること\n"
             "完了したら → STEP4 へ",
-
-            # STEP4
             "【STEP 4: 結果・戦略】\n"
             "解析結果を確認・比較して次の戦略を検討します。\n\n"
             "できること:\n"
@@ -222,17 +225,15 @@ class SidebarWidget(QWidget):
 
         self._buttons = []
         self._badge_labels: list[QLabel] = []
-        self._state_indicators: list[QLabel] = []  # UX改善（新）: 状態インジケーター
+        self._state_indicators: list[QLabel] = []
         icon_color = "#d4d4d4" if ThemeManager.is_dark() else "#333333"
 
         for idx, (label, icon_name) in enumerate(steps):
-            # ---- UX改善（新）: ステップボタン + 状態インジケーターを横並びに ----
             btn_row_widget = QWidget()
             btn_row_layout = QHBoxLayout(btn_row_widget)
             btn_row_layout.setContentsMargins(0, 0, 4, 0)
             btn_row_layout.setSpacing(0)
 
-            # ステップボタン
             btn = QToolButton()
             btn.setText(label)
             btn.setIcon(qta.icon(icon_name, color=icon_color, color_active="white"))
@@ -240,12 +241,10 @@ class SidebarWidget(QWidget):
             btn.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
             btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
             btn.setCheckable(True)
-            # UX改善（新③）: ステップボタンに詳細ツールチップを設定
             btn.setToolTip(_step_tooltips[idx])
             self._btn_group.addButton(btn, idx)
             btn_row_layout.addWidget(btn, stretch=1)
 
-            # UX改善（新）: 状態インジケーター（ボタン右端に固定幅のラベル）
             state_lbl = QLabel(_STATE_STYLES[STEP_STATE_PENDING]["text"])
             state_lbl.setFixedWidth(20)
             state_lbl.setAlignment(Qt.AlignCenter)
@@ -260,20 +259,18 @@ class SidebarWidget(QWidget):
             layout.addWidget(btn_row_widget)
             self._buttons.append(btn)
 
-            # ---- UX改善1: バッジラベル（ボタン直下に小さく表示） ----
             badge = QLabel("")
             badge.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
             badge.setStyleSheet(
                 "color: #888888; font-size: 10px; padding-right: 16px; "
                 "padding-bottom: 4px; margin: 0px 8px;"
             )
-            badge.setVisible(False)  # バッジテキストがある時だけ表示
+            badge.setVisible(False)
             layout.addWidget(badge)
             self._badge_labels.append(badge)
 
-        layout.addStretch()
-
-        # ---- セパレーターとヒント表示 ----
+    def _build_footer(self, layout: QVBoxLayout) -> None:
+        """セパレーター・ヒント・プロジェクト状態サマリーを構築する。"""
         sep = QFrame()
         sep.setFrameShape(QFrame.HLine)
         sep.setStyleSheet("color: palette(mid); margin: 0 8px;")
@@ -285,10 +282,6 @@ class SidebarWidget(QWidget):
         hint.setStyleSheet("color: #888888; font-size: 10px; padding: 8px 12px 4px 12px;")
         layout.addWidget(hint)
 
-        # UX改善（新）: プロジェクト状態サマリーラベル
-        # update_project_summary() で外部から更新します。
-        # プロジェクトが未読み込みの場合はグレーで案内テキストを表示し、
-        # 読み込み後はファイル名・ケース数・完了数をコンパクトに1行表示します。
         sep2 = QFrame()
         sep2.setFrameShape(QFrame.HLine)
         sep2.setStyleSheet("color: palette(mid); margin: 0 8px;")
@@ -305,10 +298,6 @@ class SidebarWidget(QWidget):
             "モデルファイル名 / ケース数 / 解析完了数 が表示されます。"
         )
         layout.addWidget(self._status_label)
-
-        # デフォルトでSTEP 1を選択
-        if self._buttons:
-            self._buttons[0].setChecked(True)
 
     def _on_step_clicked(self, id: int) -> None:
         self.stepChanged.emit(id)
