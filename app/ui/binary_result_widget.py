@@ -1141,11 +1141,40 @@ class BinaryResultWidget(QWidget):
         ax.clear()
         dt = float(self._dt_spin.value())
 
+        plotted, summaries, loop_x, loop_y, time_y = self._draw_hysteresis_entries(
+            ax, cat_name, rec_idx, mode, fields, dt
+        )
+
+        if plotted == 0:
+            self._show_hysteresis_empty(canvas, info_label, summaries)
+            return
+
+        first_bc = self._first_category(cat_name)
+        rec_name = first_bc.record_name(rec_idx) if first_bc else f"rec{rec_idx}"
+        if mode == "loop":
+            self._apply_hysteresis_loop_axes(ax, rec_name, loop_x, loop_y)
+        else:
+            self._apply_hysteresis_time_axes(ax, rec_name, time_y)
+        if plotted > 1:
+            ax.legend(loc="best", fontsize=8)
+        canvas.fig.tight_layout()
+        canvas.draw()
+        info_label.setText("  |  ".join(summaries))
+
+    def _draw_hysteresis_entries(
+        self,
+        ax,
+        cat_name: str,
+        rec_idx: int,
+        mode: str,
+        fields: dict,
+        dt: float,
+    ) -> Tuple[int, List[str], List[np.ndarray], List[np.ndarray], List[np.ndarray]]:
         plotted = 0
         summaries: List[str] = []
-        all_y_loop_x: List[np.ndarray] = []
-        all_y_loop_y: List[np.ndarray] = []
-        all_y_time: List[np.ndarray] = []
+        loop_x: List[np.ndarray] = []
+        loop_y: List[np.ndarray] = []
+        time_y: List[np.ndarray] = []
         for e in self._active_entries:
             bc = e.loader.get(cat_name)
             if not bc or not bc.hst or bc.hst.header is None:
@@ -1162,76 +1191,112 @@ class BinaryResultWidget(QWidget):
                 continue
 
             if mode == "loop":
-                ax.plot(D, F, linewidth=0.7, label=e.name)
-                all_y_loop_x.append(D)
-                all_y_loop_y.append(F)
-                try:
-                    e_abs = float(np.trapz(F, D))
-                except Exception:
-                    logger.debug("エネルギー積分計算失敗: %s", e.name)
-                    e_abs = 0.0
-                summaries.append(
-                    f"{e.name}: |F|max={float(np.max(np.abs(F))):.4g}, "
-                    f"|D|max={float(np.max(np.abs(D))):.4g}, ∮FdD≈{e_abs:.4g}"
-                )
+                self._plot_hysteresis_loop(ax, e.name, D, F, loop_x, loop_y, summaries)
+                plotted += 1
             else:
-                if mode == "force_time":
-                    y = F; ylabel = "荷重 F"
-                elif mode == "disp_time":
-                    y = D; ylabel = "変位 D"
-                else:
-                    try:
-                        y = bc.hst.time_series(rec_idx, fields["累積エネルギー"])
-                    except Exception:
-                        logger.debug("累積エネルギー読込失敗: %s", e.name)
-                        continue
-                    ylabel = "累積エネルギー"
-                ax.plot(t, y, linewidth=0.9, label=e.name)
-                if y.size:
-                    all_y_time.append(y)
-                    p = int(np.argmax(np.abs(y)))
-                    summaries.append(
-                        f"{e.name}: max={float(y[p]):+.4g} @ t={float(t[p]):.2f}s"
-                    )
-            plotted += 1
+                ok = self._plot_hysteresis_time(
+                    ax, e, bc, rec_idx, fields, mode, t, F, D, time_y, summaries
+                )
+                if ok:
+                    plotted += 1
+        return plotted, summaries, loop_x, loop_y, time_y
 
-        if plotted == 0:
-            err_detail = "\n".join(summaries) if summaries else ""
-            canvas.show_message(
-                "このレコードのデータが読み取れませんでした\n" + err_detail
-                if err_detail else "どのケースにもこのレコードがありません",
-                color="red" if err_detail else "gray",
-            )
-            info_label.setText(err_detail)
-            return
+    @staticmethod
+    def _plot_hysteresis_loop(
+        ax,
+        name: str,
+        D: np.ndarray,
+        F: np.ndarray,
+        loop_x: List[np.ndarray],
+        loop_y: List[np.ndarray],
+        summaries: List[str],
+    ) -> None:
+        ax.plot(D, F, linewidth=0.7, label=name)
+        loop_x.append(D)
+        loop_y.append(F)
+        try:
+            e_abs = float(np.trapz(F, D))
+        except Exception:
+            logger.debug("エネルギー積分計算失敗: %s", name)
+            e_abs = 0.0
+        summaries.append(
+            f"{name}: |F|max={float(np.max(np.abs(F))):.4g}, "
+            f"|D|max={float(np.max(np.abs(D))):.4g}, ∮FdD≈{e_abs:.4g}"
+        )
 
-        first_bc = self._first_category(cat_name)
-        rec_name = first_bc.record_name(rec_idx) if first_bc else f"rec{rec_idx}"
-        if mode == "loop":
-            ax.set_xlabel("変位 D")
-            ax.set_ylabel("荷重 F")
-            ax.set_title(f"{rec_name} 履歴ループ")
-            ax.axhline(0, color="#888", linewidth=0.5)
-            ax.axvline(0, color="#888", linewidth=0.5)
-            # X/Y 軸ともデータに合わせてスケール
-            if all_y_loop_x and all_y_loop_y:
-                _set_tight_ylim(ax, np.concatenate(all_y_loop_y))
-                dx = np.concatenate(all_y_loop_x)
-                dx_range = float(dx.max() - dx.min())
-                m = dx_range * 0.1 if dx_range > 1e-15 else max(abs(float(dx.max())) * 0.2, 1e-6)
-                ax.set_xlim(float(dx.min()) - m, float(dx.max()) + m)
+    @staticmethod
+    def _plot_hysteresis_time(
+        ax,
+        e,
+        bc,
+        rec_idx: int,
+        fields: dict,
+        mode: str,
+        t: np.ndarray,
+        F: np.ndarray,
+        D: np.ndarray,
+        time_y: List[np.ndarray],
+        summaries: List[str],
+    ) -> bool:
+        if mode == "force_time":
+            y = F
+        elif mode == "disp_time":
+            y = D
         else:
-            ax.set_xlabel("時間 [s]")
-            ax.set_title(f"{rec_name}")
-            ax.grid(True, linestyle=":", alpha=0.5)
-            # Y軸をデータ範囲にフィット
-            if all_y_time:
-                _set_tight_ylim(ax, np.concatenate(all_y_time))
-        if plotted > 1:
-            ax.legend(loc="best", fontsize=8)
-        canvas.fig.tight_layout()
-        canvas.draw()
-        info_label.setText("  |  ".join(summaries))
+            try:
+                y = bc.hst.time_series(rec_idx, fields["累積エネルギー"])
+            except Exception:
+                logger.debug("累積エネルギー読込失敗: %s", e.name)
+                return False
+        ax.plot(t, y, linewidth=0.9, label=e.name)
+        if y.size:
+            time_y.append(y)
+            p = int(np.argmax(np.abs(y)))
+            summaries.append(
+                f"{e.name}: max={float(y[p]):+.4g} @ t={float(t[p]):.2f}s"
+            )
+        return True
+
+    @staticmethod
+    def _show_hysteresis_empty(canvas, info_label: QLabel, summaries: List[str]) -> None:
+        err_detail = "\n".join(summaries) if summaries else ""
+        canvas.show_message(
+            "このレコードのデータが読み取れませんでした\n" + err_detail
+            if err_detail else "どのケースにもこのレコードがありません",
+            color="red" if err_detail else "gray",
+        )
+        info_label.setText(err_detail)
+
+    @staticmethod
+    def _apply_hysteresis_loop_axes(
+        ax,
+        rec_name: str,
+        loop_x: List[np.ndarray],
+        loop_y: List[np.ndarray],
+    ) -> None:
+        ax.set_xlabel("変位 D")
+        ax.set_ylabel("荷重 F")
+        ax.set_title(f"{rec_name} 履歴ループ")
+        ax.axhline(0, color="#888", linewidth=0.5)
+        ax.axvline(0, color="#888", linewidth=0.5)
+        if loop_x and loop_y:
+            _set_tight_ylim(ax, np.concatenate(loop_y))
+            dx = np.concatenate(loop_x)
+            dx_range = float(dx.max() - dx.min())
+            m = dx_range * 0.1 if dx_range > 1e-15 else max(abs(float(dx.max())) * 0.2, 1e-6)
+            ax.set_xlim(float(dx.min()) - m, float(dx.max()) + m)
+
+    @staticmethod
+    def _apply_hysteresis_time_axes(
+        ax,
+        rec_name: str,
+        time_y: List[np.ndarray],
+    ) -> None:
+        ax.set_xlabel("時間 [s]")
+        ax.set_title(f"{rec_name}")
+        ax.grid(True, linestyle=":", alpha=0.5)
+        if time_y:
+            _set_tight_ylim(ax, np.concatenate(time_y))
 
     # ------------------------------------------------------------------
     # 最大値 (.xbn)
