@@ -1109,6 +1109,102 @@ class TestDialogInteractions:
         dlg._on_add_param_clicked()
         assert len(dlg._param_rows) == initial + 2
 
+    def test_sweep_generic_mode_case_has_parameters(self, qapp):
+        """汎用モードでは case.parameters に値が入る (従来動作)。"""
+        from app.ui.sweep_dialog import SweepDialog, PARAM_TYPE_GENERIC
+        dlg = SweepDialog()
+        row = dlg._param_rows[0]
+        row._type_combo.setCurrentIndex(
+            row._type_combo.findData(PARAM_TYPE_GENERIC)
+        )
+        row._param_key.setText("Cd")
+        row._min_spin.setValue(100.0)
+        row._max_spin.setValue(300.0)
+        row._step_spin.setValue(100.0)
+
+        cases = []
+        for combo in [(100.0,), (200.0,), (300.0,)]:
+            case = dlg._build_case_from_combo("test", "", [row], combo)
+            cases.append(case)
+
+        assert len(cases) == 3
+        assert cases[0].parameters["Cd"] == 100.0
+        assert cases[2].parameters["Cd"] == 300.0
+        # 汎用モードでは damper_params は書き換えられない
+        assert not cases[0].damper_params
+
+    def test_sweep_damper_field_mode_writes_damper_params(self, qapp):
+        """ダンパー定義フィールドモードでは case.damper_params に書き込まれる。"""
+        from app.ui.sweep_dialog import (
+            SweepDialog, _SweepParamRow, PARAM_TYPE_DAMPER_FIELD,
+        )
+
+        # ダミーのダンパー定義を注入
+        class _DummyDef:
+            def __init__(self, name, keyword):
+                self.name = name
+                self.keyword = keyword
+                self.values = []
+        defs = [_DummyDef("C1", "DVOD")]
+
+        # field_labels 取得関数のモック
+        def _labels(kw):
+            return {8: "C0", 12: "α"}
+        def _units(kw):
+            return {8: "kN·s/mm", 12: "—"}
+
+        row = _SweepParamRow(
+            0, damper_defs=defs, floor_keys=[],
+            field_labels_getter=_labels, field_units_getter=_units,
+        )
+        # デフォルトで damper_field モード、C1/C0 が選択されているはず
+        assert row.param_type == PARAM_TYPE_DAMPER_FIELD
+        assert row.damper_def_name == "C1"
+        assert row.damper_field_index_1based == 8
+
+        dlg = SweepDialog()
+        dlg._damper_defs = defs
+        cases = []
+        for combo in [(500.0,), (800.0,)]:
+            case = dlg._build_case_from_combo("test", "", [row], combo)
+            cases.append(case)
+
+        # damper_params が正しく設定される (1-indexed 文字列キー、文字列値)
+        assert cases[0].damper_params == {"C1": {"8": "500.0"}}
+        assert cases[1].damper_params == {"C1": {"8": "800.0"}}
+
+    def test_sweep_floor_count_mode_writes_rd_overrides(self, qapp):
+        """ダンパー基数モードでは case.parameters["_rd_overrides"] に書き込まれる。"""
+        from app.ui.sweep_dialog import (
+            SweepDialog, _SweepParamRow, PARAM_TYPE_FLOOR_COUNT,
+        )
+
+        row = _SweepParamRow(
+            0, damper_defs=[], floor_keys=["F3", "F5"],
+        )
+        row._type_combo.setCurrentIndex(
+            row._type_combo.findData(PARAM_TYPE_FLOOR_COUNT)
+        )
+        # F3 を選択
+        row._floor_combo.setCurrentIndex(row._floor_combo.findData("F3"))
+        assert row.floor_key == "F3"
+
+        dlg = SweepDialog()
+        # F3階に RD 行番号 10, 11 が割り当てられているとする
+        dlg._floor_rd_map = {"F3": [10, 11], "F5": [20]}
+
+        case = dlg._build_case_from_combo("test", "", [row], (6.0,))
+        rd = case.parameters.get("_rd_overrides", {})
+        # 基数 6 が行10,11に均等分配 (各3)
+        assert rd.get("10") == {"quantity": 3}
+        assert rd.get("11") == {"quantity": 3}
+
+        # 端数あり (5 = 3+2)
+        case2 = dlg._build_case_from_combo("test", "", [row], (5.0,))
+        rd2 = case2.parameters.get("_rd_overrides", {})
+        qtys = sorted([rd2["10"]["quantity"], rd2["11"]["quantity"]])
+        assert qtys == [2, 3]
+
     def test_injector_add_remove_rows(self, qapp):
         from app.ui.damper_injector_dialog import DamperInjectorDialog
         dlg = DamperInjectorDialog()

@@ -33,6 +33,7 @@ UX改善（新⑤）: 3段階警告レベル + 推定解析時間表示。
 from __future__ import annotations
 
 import itertools
+import logging
 import math
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -53,6 +54,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPushButton,
     QSpinBox,
+    QStackedWidget,
     QTableWidget,
     QTableWidgetItem,
     QTextEdit,
@@ -62,8 +64,10 @@ from PySide6.QtWidgets import (
 
 from app.models import AnalysisCase
 
+logger = logging.getLogger(__name__)
 
-# よく使うスイープ対象パラメータのプリセット
+
+# よく使うスイープ対象パラメータのプリセット (汎用モード用)
 _PRESET_PARAMS = [
     ("DAMPING", "減衰定数", 0.01, 0.10, 0.01),
     ("DT", "解析時間刻み", 0.001, 0.01, 0.001),
@@ -76,9 +80,19 @@ _PRESET_PARAMS = [
 # 最大同時スイープパラメータ数
 _MAX_SWEEP_PARAMS = 4
 
+# パラメータ種別
+PARAM_TYPE_DAMPER_FIELD = "damper_field"  # ダンパー定義フィールド (.s8i のダンパー物理パラメータ)
+PARAM_TYPE_FLOOR_COUNT = "floor_count"    # ダンパー基数 (RD要素 quantity)
+PARAM_TYPE_GENERIC = "generic"            # 汎用 (parameters 辞書に保存、SNAPには直接反映されない)
+
 
 class _SweepParamRow(QWidget):
     """1つのスイープパラメータの入力行ウィジェット。
+
+    パラメータ種別 (ダンパー定義フィールド / ダンパー基数 / 汎用) を切替可能で、
+    種別に応じた選択UI (ダンパー定義コンボ・フィールドコンボ・階コンボ) を表示します。
+    ダンパー定義フィールドや基数として指定した場合、生成ケースの .s8i 書き換えに
+    実際に反映されます (damper_params / _rd_overrides へ変換)。
 
     UX改善（新）: paramsChanged シグナルを通じてパラメータ変更をSweepDialogに通知し、
     リアルタイムのケース数プレビューを実現します。
@@ -86,21 +100,48 @@ class _SweepParamRow(QWidget):
 
     paramsChanged = Signal()  # UX改善（新）: パラメータが変更されたときに発火
 
-    def __init__(self, index: int, parent: Optional[QWidget] = None) -> None:
+    def __init__(
+        self,
+        index: int,
+        damper_defs: Optional[List[Any]] = None,
+        floor_keys: Optional[List[str]] = None,
+        field_labels_getter=None,
+        field_units_getter=None,
+        parent: Optional[QWidget] = None,
+    ) -> None:
         super().__init__(parent)
         self._index = index
+        self._damper_defs = damper_defs or []
+        self._floor_keys = floor_keys or []
+        self._field_labels_getter = field_labels_getter
+        self._field_units_getter = field_units_getter
         self._setup_ui()
 
     def _setup_ui(self) -> None:
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 4, 0, 4)
 
-        # ヘッダー行: タイトル + プリセット選択
+        # ヘッダー行: タイトル + 種別 + 汎用モード時のプリセット
         header = QHBoxLayout()
         self._label = QLabel(f"<b>パラメータ {self._index + 1}</b>")
         header.addWidget(self._label)
 
-        header.addWidget(QLabel("プリセット:"))
+        header.addWidget(QLabel("種別:"))
+        self._type_combo = QComboBox()
+        self._type_combo.addItem("ダンパー定義フィールド", PARAM_TYPE_DAMPER_FIELD)
+        self._type_combo.addItem("ダンパー基数 (各階)", PARAM_TYPE_FLOOR_COUNT)
+        self._type_combo.addItem("汎用 (SNAPには反映なし)", PARAM_TYPE_GENERIC)
+        self._type_combo.setToolTip(
+            "ダンパー定義フィールド: .s8i のダンパー物理パラメータ (C0, αなど)を書換\n"
+            "ダンパー基数: 指定階の RD 要素 quantity を書換\n"
+            "汎用: ケースメタデータに保存のみ (SNAPには直接反映されません)"
+        )
+        self._type_combo.currentIndexChanged.connect(self._on_type_changed)
+        header.addWidget(self._type_combo)
+
+        # 汎用モード時のみ表示されるプリセット (一旦全て作る)
+        self._preset_label = QLabel("プリセット:")
+        header.addWidget(self._preset_label)
         self._preset_combo = QComboBox()
         self._preset_combo.addItem("（カスタム）")
         for key, label, *_ in _PRESET_PARAMS:
@@ -119,50 +160,220 @@ class _SweepParamRow(QWidget):
 
         layout.addLayout(header)
 
-        # パラメータ入力行
+        # 種別ごとの選択 UI (QStackedWidget)
+        self._selector_stack = QStackedWidget()
+        self._selector_stack.addWidget(self._build_damper_field_selector())
+        self._selector_stack.addWidget(self._build_floor_count_selector())
+        self._selector_stack.addWidget(self._build_generic_selector())
+        layout.addWidget(self._selector_stack)
+
+        # 値域入力行 (共通)
         form = QFormLayout()
         form.setContentsMargins(16, 0, 0, 0)
-
-        self._param_key = QLineEdit()
-        self._param_key.setPlaceholderText("例: DAMPING, Cd, alpha ...")
-        form.addRow("パラメータキー:", self._param_key)
 
         self._min_spin = QDoubleSpinBox()
         self._min_spin.setDecimals(6)
         self._min_spin.setRange(-1e12, 1e12)
         self._min_spin.setValue(0.01)
-        self._min_spin.valueChanged.connect(self.paramsChanged.emit)  # UX改善（新）
+        self._min_spin.valueChanged.connect(self.paramsChanged.emit)
         form.addRow("最小値:", self._min_spin)
 
         self._max_spin = QDoubleSpinBox()
         self._max_spin.setDecimals(6)
         self._max_spin.setRange(-1e12, 1e12)
         self._max_spin.setValue(0.10)
-        self._max_spin.valueChanged.connect(self.paramsChanged.emit)  # UX改善（新）
+        self._max_spin.valueChanged.connect(self.paramsChanged.emit)
         form.addRow("最大値:", self._max_spin)
 
         self._step_spin = QDoubleSpinBox()
         self._step_spin.setDecimals(6)
         self._step_spin.setRange(1e-6, 1e12)
         self._step_spin.setValue(0.01)
-        self._step_spin.valueChanged.connect(self.paramsChanged.emit)  # UX改善（新）
+        self._step_spin.valueChanged.connect(self.paramsChanged.emit)
         form.addRow("刻み幅:", self._step_spin)
 
-        self._param_key.textChanged.connect(self.paramsChanged.emit)  # UX改善（新）
-
         layout.addLayout(form)
+
+        # 初期状態は .s8i が利用可能ならダンパー定義、そうでなければ汎用
+        if self._damper_defs:
+            self._type_combo.setCurrentIndex(0)
+        else:
+            # 型コンボの先頭2つを無効化
+            for item_idx in (0, 1):
+                self._type_combo.setItemData(
+                    item_idx, False, Qt.UserRole - 1,  # 無効化フラグ
+                )
+            self._type_combo.setCurrentIndex(2)
+        self._on_type_changed()
+
+    def _build_damper_field_selector(self) -> QWidget:
+        """ダンパー定義フィールド選択 UI。"""
+        w = QWidget()
+        form = QFormLayout(w)
+        form.setContentsMargins(16, 0, 0, 0)
+
+        self._def_combo = QComboBox()
+        for ddef in self._damper_defs:
+            kw = getattr(ddef, "keyword", "")
+            nm = getattr(ddef, "name", "")
+            self._def_combo.addItem(f"{nm} ({kw})", (nm, kw))
+        self._def_combo.currentIndexChanged.connect(self._on_damper_def_changed)
+        form.addRow("ダンパー定義:", self._def_combo)
+
+        self._field_combo = QComboBox()
+        self._field_combo.currentIndexChanged.connect(lambda _i: self.paramsChanged.emit())
+        form.addRow("フィールド:", self._field_combo)
+
+        # 初期化
+        if self._damper_defs:
+            self._on_damper_def_changed()
+        return w
+
+    def _build_floor_count_selector(self) -> QWidget:
+        """階別基数 (quantity) 選択 UI。"""
+        w = QWidget()
+        form = QFormLayout(w)
+        form.setContentsMargins(16, 0, 0, 0)
+
+        self._floor_combo = QComboBox()
+        for fk in self._floor_keys:
+            self._floor_combo.addItem(fk, fk)
+        self._floor_combo.currentIndexChanged.connect(lambda _i: self.paramsChanged.emit())
+        form.addRow("階:", self._floor_combo)
+
+        hint = QLabel(
+            "<small>指定階の RD 要素 quantity を一括で同じ値に書き換えます。"
+            "整数値での刻み幅推奨。</small>"
+        )
+        hint.setWordWrap(True)
+        form.addRow(hint)
+        return w
+
+    def _build_generic_selector(self) -> QWidget:
+        """汎用パラメータ (キー入力) UI。"""
+        w = QWidget()
+        form = QFormLayout(w)
+        form.setContentsMargins(16, 0, 0, 0)
+
+        self._param_key = QLineEdit()
+        self._param_key.setPlaceholderText("例: DAMPING, Cd, alpha ...")
+        # textChanged は str 引数を伴うので lambda で吸収
+        self._param_key.textChanged.connect(lambda _t: self.paramsChanged.emit())
+        form.addRow("パラメータキー:", self._param_key)
+
+        hint = QLabel(
+            "<small>⚠ 汎用パラメータは case.parameters に記録されるだけで、"
+            "SNAP の .s8i 書き換えには反映されません。</small>"
+        )
+        hint.setWordWrap(True)
+        hint.setStyleSheet("color: #e65100;")
+        form.addRow(hint)
+        return w
+
+    def _on_type_changed(self) -> None:
+        """種別コンボの変更ハンドラ。"""
+        idx = self._type_combo.currentIndex()
+        self._selector_stack.setCurrentIndex(idx)
+        # 汎用モードのときのみプリセットを有効化
+        is_generic = (self._type_combo.currentData() == PARAM_TYPE_GENERIC)
+        self._preset_label.setVisible(is_generic)
+        self._preset_combo.setVisible(is_generic)
+        self.paramsChanged.emit()
+
+    def _on_damper_def_changed(self) -> None:
+        """ダンパー定義切替時: フィールド一覧を更新。"""
+        self._field_combo.clear()
+        data = self._def_combo.currentData()
+        if not data:
+            return
+        _, keyword = data
+        if self._field_labels_getter is None:
+            return
+        try:
+            labels = self._field_labels_getter(keyword)
+        except Exception as e:
+            logger.debug("field labels 取得失敗: %s", e)
+            return
+        units = {}
+        if self._field_units_getter is not None:
+            try:
+                units = self._field_units_getter(keyword)
+            except Exception as e:
+                logger.debug("field units 取得失敗: %s", e)
+
+        # 最適化対象外のフィールドをスキップ
+        _skip_keywords = (
+            "種別", "k-DB", "番号", "型番", "モデル",
+            "考慮", "初期解析", "疲労損傷", "重量種別",
+            "計算", "しない", "する",
+        )
+        for field_idx_1based in sorted(labels.keys()):
+            label_text = labels[field_idx_1based]
+            if any(kw in label_text for kw in _skip_keywords):
+                continue
+            unit = units.get(field_idx_1based, "")
+            unit_str = f" [{unit}]" if unit and unit != "—" else ""
+            display = f"{label_text}{unit_str}"
+            # data: (field_idx_1based, label_text)
+            self._field_combo.addItem(display, (field_idx_1based, label_text))
+        self.paramsChanged.emit()
 
     # ------------------------------------------------------------------
     # Properties
     # ------------------------------------------------------------------
 
     @property
+    def param_type(self) -> str:
+        """現在のパラメータ種別 (PARAM_TYPE_*)。"""
+        return self._type_combo.currentData() or PARAM_TYPE_GENERIC
+
+    @property
     def param_key(self) -> str:
+        """表示名としてのパラメータキー。ケース名生成用。
+
+        - damper_field: "{def_name}.{field_label}"
+        - floor_count: "F{floor_key}基数"
+        - generic: LineEdit の内容
+        """
+        t = self.param_type
+        if t == PARAM_TYPE_DAMPER_FIELD:
+            def_data = self._def_combo.currentData()
+            fld_data = self._field_combo.currentData()
+            if def_data and fld_data:
+                return f"{def_data[0]}.{fld_data[1]}"
+            return ""
+        if t == PARAM_TYPE_FLOOR_COUNT:
+            fk = self._floor_combo.currentData()
+            if fk:
+                return f"{fk}基数"
+            return ""
         return self._param_key.text().strip()
 
     @param_key.setter
     def param_key(self, value: str) -> None:
+        # 汎用モードのキーのみセット可能
         self._param_key.setText(value)
+
+    @property
+    def damper_def_name(self) -> str:
+        """(damper_field モード時) 選択中のダンパー定義名。"""
+        data = self._def_combo.currentData()
+        return data[0] if data else ""
+
+    @property
+    def damper_field_index_1based(self) -> int:
+        """(damper_field モード時) 選択中のフィールド 1-based インデックス。
+
+        .s8i の DamperDefinition.values は 0-based で values[0]=name, values[1]=field1...
+        damper_params 辞書のキーは 1-indexed 文字列として格納。
+        """
+        data = self._field_combo.currentData()
+        return int(data[0]) if data else 0
+
+    @property
+    def floor_key(self) -> str:
+        """(floor_count モード時) 選択中の階キー。"""
+        return self._floor_combo.currentData() or ""
 
     @property
     def min_val(self) -> float:
@@ -228,7 +439,8 @@ class _SweepParamRow(QWidget):
             return
         preset = _PRESET_PARAMS[index - 1]
         key, label, min_val, max_val, step_val = preset
-        self._param_key.setText(key)
+        if self.param_type == PARAM_TYPE_GENERIC:
+            self._param_key.setText(key)
         self._min_spin.setValue(min_val)
         self._max_spin.setValue(max_val)
         self._step_spin.setValue(step_val)
@@ -253,12 +465,39 @@ class SweepDialog(QDialog):
         self._base_case = base_case
         self._generated: List[AnalysisCase] = []
         self._param_rows: List[_SweepParamRow] = []
+        # .s8i を解析して取得 (ダンパー定義 / 階マッピング)
+        self._damper_defs: List[Any] = []
+        self._floor_rd_map: Dict[str, List[int]] = {}
+        self._floor_keys: List[str] = []
+        self._parse_base_model()
         self.setWindowTitle("パラメータスイープ — 一括ケース生成")
         self.setMinimumWidth(720)
         self.setMinimumHeight(620)
         self._setup_ui()
         if base_case:
             self._load_base_case(base_case)
+
+    def _parse_base_model(self) -> None:
+        """ベースケースの .s8i を解析し、ダンパー定義と階構成を取得する。
+
+        解析失敗時も汎用モードは利用可能なのでエラーは握りつぶしてログのみ出す。
+        """
+        if not self._base_case or not self._base_case.model_path:
+            return
+        try:
+            from app.models.s8i_parser import parse_s8i
+            model = parse_s8i(self._base_case.model_path)
+            self._damper_defs = list(model.damper_defs)
+        except Exception as e:
+            logger.debug("s8i 解析失敗: %s", e)
+
+        try:
+            from app.services.snap_evaluator import build_floor_rd_map
+            frm, _qty, keys = build_floor_rd_map(self._base_case.model_path)
+            self._floor_rd_map = dict(frm)
+            self._floor_keys = list(keys)
+        except Exception as e:
+            logger.debug("floor_rd_map 構築失敗: %s", e)
 
     @property
     def generated_cases(self) -> List[AnalysisCase]:
@@ -372,7 +611,26 @@ class SweepDialog(QDialog):
     def _add_param_row(self) -> _SweepParamRow:
         """スイープパラメータ行を追加します。"""
         idx = len(self._param_rows)
-        row = _SweepParamRow(idx, parent=self)
+        # ダンパーフィールド label/unit 取得関数を渡す (遅延 import で循環回避)
+        try:
+            from .damper_field_data import (
+                get_damper_field_labels, get_damper_field_units,
+            )
+            labels_getter = get_damper_field_labels
+            units_getter = get_damper_field_units
+        except Exception as e:
+            logger.debug("damper_field_data import 失敗: %s", e)
+            labels_getter = None
+            units_getter = None
+
+        row = _SweepParamRow(
+            idx,
+            damper_defs=self._damper_defs,
+            floor_keys=self._floor_keys,
+            field_labels_getter=labels_getter,
+            field_units_getter=units_getter,
+            parent=self,
+        )
         if row._remove_btn is not None:
             row._remove_btn.clicked.connect(lambda checked=False, r=row: self._remove_param_row(r))
         # UX改善（新）: パラメータ変更時にリアルタイムでケース数を更新
@@ -541,7 +799,7 @@ class SweepDialog(QDialog):
             if not row.param_key:
                 QMessageBox.warning(
                     self, "入力エラー",
-                    f"パラメータ {row._index + 1} のキーを入力してください。"
+                    f"パラメータ {row._index + 1} の設定 (ダンパー定義/フィールド/階/キー) を確認してください。"
                 )
                 return
             vals = row.compute_values()
@@ -559,8 +817,8 @@ class SweepDialog(QDialog):
         if len(keys) != len(set(keys)):
             QMessageBox.warning(
                 self, "入力エラー",
-                "同じパラメータキーが複数指定されています。\n"
-                "各パラメータは異なるキーを指定してください。"
+                "同じパラメータが複数指定されています。\n"
+                "各パラメータは異なる対象を指定してください。"
             )
             return
 
@@ -594,43 +852,24 @@ class SweepDialog(QDialog):
         self._preview_table.setRowCount(0)
 
         # テーブルのカラムを更新
-        col_count = 1 + len(all_keys)  # ケース名 + 各パラメータ値
+        col_count = 1 + len(all_keys)
         self._preview_table.setColumnCount(col_count)
         headers = ["ケース名"] + [f"{k} の値" for k in all_keys]
         self._preview_table.setHorizontalHeaderLabels(headers)
 
         for combo in combinations:
-            # ケース名生成
-            param_strs = [f"{k}={v}" for k, v in zip(all_keys, combo)]
-            case_name = f"{prefix}_{'_'.join(param_strs)}"
-
-            # パラメータ辞書
-            params = dict(zip(all_keys, combo))
-
-            case = AnalysisCase(
-                name=case_name,
-                model_path=model_path,
-                parameters=params,
+            case = self._build_case_from_combo(
+                prefix, model_path, valid_rows, combo,
             )
-            # ベースケースのパラメータを引き継ぎ
-            if self._base_case:
-                merged = dict(self._base_case.parameters)
-                merged.update(params)
-                case.parameters = merged
-                if self._base_case.damper_params:
-                    case.damper_params = dict(self._base_case.damper_params)
-                if not model_path and self._base_case.model_path:
-                    case.model_path = self._base_case.model_path
-
             self._generated.append(case)
 
             # テーブル行
-            row = self._preview_table.rowCount()
-            self._preview_table.insertRow(row)
-            self._preview_table.setItem(row, 0, QTableWidgetItem(case_name))
+            tblrow = self._preview_table.rowCount()
+            self._preview_table.insertRow(tblrow)
+            self._preview_table.setItem(tblrow, 0, QTableWidgetItem(case.name))
             for col_idx, val in enumerate(combo):
                 self._preview_table.setItem(
-                    row, 1 + col_idx, QTableWidgetItem(str(val))
+                    tblrow, 1 + col_idx, QTableWidgetItem(str(val))
                 )
 
         n = len(self._generated)
@@ -639,6 +878,86 @@ class SweepDialog(QDialog):
         )
         self._count_label.setText(f"<b>{n}</b> ケース生成  [{grid_info}]")
         self._buttons.button(QDialogButtonBox.Ok).setEnabled(n > 0)
+
+    def _build_case_from_combo(
+        self,
+        prefix: str,
+        model_path: str,
+        rows: List["_SweepParamRow"],
+        combo: Tuple[float, ...],
+    ) -> AnalysisCase:
+        """1つのパラメータ組合せから AnalysisCase を生成する。
+
+        パラメータ種別に応じて正しいフィールドに値を格納する:
+          - damper_field → case.damper_params[def_name][idx_1based_str] = str(value)
+          - floor_count  → case.parameters["_rd_overrides"][row_idx_str] = {"quantity": int}
+          - generic      → case.parameters[param_key] = value
+        これにより分析実行時に .s8i 書き換えに反映される。
+        """
+        # ベースからの引継ぎ
+        if self._base_case:
+            base_params = dict(self._base_case.parameters)
+            base_damper_params: Dict[str, Dict[str, str]] = {
+                k: dict(v) for k, v in (self._base_case.damper_params or {}).items()
+            }
+        else:
+            base_params = {}
+            base_damper_params = {}
+
+        # _rd_overrides も (あれば) 引き継ぐが、コピーする
+        base_rd_overrides = {}
+        existing_rd = base_params.get("_rd_overrides")
+        if isinstance(existing_rd, dict):
+            base_rd_overrides = {k: dict(v) if isinstance(v, dict) else v
+                                 for k, v in existing_rd.items()}
+
+        generic_params: Dict[str, float] = {}
+        damper_params = base_damper_params
+        rd_overrides = base_rd_overrides
+
+        # パラメータ種別ごとに振り分け
+        for row, value in zip(rows, combo):
+            t = row.param_type
+            if t == PARAM_TYPE_DAMPER_FIELD:
+                def_name = row.damper_def_name
+                field_idx_1b = row.damper_field_index_1based
+                if def_name and field_idx_1b > 0:
+                    damper_params.setdefault(def_name, {})[str(field_idx_1b)] = str(value)
+            elif t == PARAM_TYPE_FLOOR_COUNT:
+                fk = row.floor_key
+                row_indices = self._floor_rd_map.get(fk, [])
+                qty = int(round(value))
+                if row_indices:
+                    n_elems = len(row_indices)
+                    per = qty // n_elems
+                    rem = qty - per * n_elems
+                    for i, rid in enumerate(row_indices):
+                        q = per + (1 if i < rem else 0)
+                        rd_overrides[str(rid)] = {"quantity": q}
+            else:  # PARAM_TYPE_GENERIC
+                generic_params[row.param_key] = value
+
+        # parameters 辞書構築 (ベース + 汎用 + _rd_overrides)
+        merged_params = dict(base_params)
+        merged_params.update(generic_params)
+        if rd_overrides:
+            merged_params["_rd_overrides"] = rd_overrides
+
+        # ケース名
+        parts = [f"{r.param_key}={v}" for r, v in zip(rows, combo)]
+        case_name = f"{prefix}_{'_'.join(parts)}"
+
+        # model_path の補完
+        resolved_model_path = model_path
+        if not resolved_model_path and self._base_case and self._base_case.model_path:
+            resolved_model_path = self._base_case.model_path
+
+        return AnalysisCase(
+            name=case_name,
+            model_path=resolved_model_path,
+            parameters=merged_params,
+            damper_params=damper_params,
+        )
 
     # ------------------------------------------------------------------
     # Accept
