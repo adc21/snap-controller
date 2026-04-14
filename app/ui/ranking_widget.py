@@ -133,8 +133,13 @@ class RankingWidget(QWidget):
     def _setup_ui(self) -> None:
         layout = QVBoxLayout(self)
         layout.setContentsMargins(4, 4, 4, 4)
+        self._build_ctrl_row(layout)
+        self._build_best_banner(layout)
+        self._build_ranking_table(layout)
+        self._build_summary_label(layout)
+        self._build_redesign_button_row(layout)
 
-        # --- コントロール行 ---
+    def _build_ctrl_row(self, layout: QVBoxLayout) -> None:
         ctrl_row = QHBoxLayout()
 
         ctrl_row.addWidget(QLabel("ソート項目:"))
@@ -159,7 +164,7 @@ class RankingWidget(QWidget):
         ctrl_row.addStretch()
         layout.addLayout(ctrl_row)
 
-        # ---- UX改善（新）: 1位ケース強調バナー ----
+    def _build_best_banner(self, layout: QVBoxLayout) -> None:
         self._best_banner = QFrame()
         self._best_banner.setFrameShape(QFrame.StyledPanel)
         self._best_banner.setStyleSheet(
@@ -183,7 +188,7 @@ class RankingWidget(QWidget):
         self._best_banner.setVisible(False)
         layout.addWidget(self._best_banner)
 
-        # --- ランキングテーブル ---
+    def _build_ranking_table(self, layout: QVBoxLayout) -> None:
         # UX改善（第10回④）: 「総合」列を追加 (col=6)
         self._table = QTableWidget(0, 7)
         self._table.setHorizontalHeaderLabels([
@@ -196,8 +201,6 @@ class RankingWidget(QWidget):
             self._table.horizontalHeader().setSectionResizeMode(
                 col, QHeaderView.ResizeToContents
             )
-        # 「総合」列のヘッダーにツールチップを設定
-        self._table.horizontalHeaderItem(6) if self._table.columnCount() > 6 else None
         self._table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self._table.setSelectionMode(QAbstractItemView.SingleSelection)
         self._table.setEditTriggers(QAbstractItemView.NoEditTriggers)
@@ -206,11 +209,11 @@ class RankingWidget(QWidget):
         self._table.itemSelectionChanged.connect(self._on_selection_changed)
         layout.addWidget(self._table)
 
-        # --- サマリー ---
+    def _build_summary_label(self, layout: QVBoxLayout) -> None:
         self._summary_label = QLabel("")
         layout.addWidget(self._summary_label)
 
-        # --- UX改善①新: 「基点として再設計」ボタン ---
+    def _build_redesign_button_row(self, layout: QVBoxLayout) -> None:
         redesign_row = QHBoxLayout()
         self._btn_use_as_base = QPushButton("🔁  このケースを基点に再設計  (STEP2へ)")
         self._btn_use_as_base.setToolTip(

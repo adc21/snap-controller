@@ -237,8 +237,12 @@ class TimeHistoryWidget(QWidget):
     def _setup_ui(self) -> None:
         layout = QVBoxLayout(self)
         layout.setContentsMargins(4, 4, 4, 4)
+        self._build_top_ctrl_row(layout)
+        self._build_main_area(layout)
+        self._build_info_row(layout)
+        self._show_empty()
 
-        # --- 上部コントロール行 ---
+    def _build_top_ctrl_row(self, layout: QVBoxLayout) -> None:
         ctrl_row = QHBoxLayout()
 
         ctrl_row.addWidget(QLabel("応答種類:"))
@@ -278,7 +282,6 @@ class TimeHistoryWidget(QWidget):
         self._normalize_cb.stateChanged.connect(self._on_normalize_toggled)
         ctrl_row.addWidget(self._normalize_cb)
 
-        # 改善A: グラフ画像クリップボードコピーボタン
         btn_copy_chart = QPushButton("📋 コピー")
         btn_copy_chart.setToolTip("現在の時刻歴グラフをクリップボードに画像コピーします（Word・メールへ貼り付け可）")
         btn_copy_chart.setMaximumWidth(80)
@@ -289,10 +292,13 @@ class TimeHistoryWidget(QWidget):
 
         layout.addLayout(ctrl_row)
 
-        # --- メインエリア: チェックリスト（左）+ グラフ右エリア（右）---
+    def _build_main_area(self, layout: QVBoxLayout) -> None:
         main_row = QHBoxLayout()
+        self._build_case_checklist(main_row)
+        self._build_chart_area(main_row)
+        layout.addLayout(main_row, stretch=1)
 
-        # ケース選択リスト
+    def _build_case_checklist(self, main_row: QHBoxLayout) -> None:
         group = QGroupBox("表示するケース")
         group.setMaximumWidth(220)
         group_layout = QVBoxLayout(group)
@@ -306,22 +312,19 @@ class TimeHistoryWidget(QWidget):
         group_layout.addWidget(self._scroll_area)
         main_row.addWidget(group)
 
-        # グラフ（ナビゲーションツールバー付き）
+    def _build_chart_area(self, main_row: QHBoxLayout) -> None:
         chart_area = QWidget()
         chart_area_layout = QVBoxLayout(chart_area)
         chart_area_layout.setContentsMargins(0, 0, 0, 0)
         chart_area_layout.setSpacing(0)
         self._canvas = _MplTimeCanvas(self)
-        # 改善B: Matplotlibナビゲーションツールバー（ズーム・パン・ホーム・保存）
         self._nav_toolbar = NavigationToolbar(self._canvas, self)
         self._nav_toolbar.setMaximumHeight(30)
         chart_area_layout.addWidget(self._nav_toolbar)
         chart_area_layout.addWidget(self._canvas)
         main_row.addWidget(chart_area, stretch=1)
 
-        layout.addLayout(main_row, stretch=1)
-
-        # --- 下部情報行 ---
+    def _build_info_row(self, layout: QVBoxLayout) -> None:
         info_row = QHBoxLayout()
         self._peak_label = QLabel("")
         info_row.addWidget(self._peak_label)
@@ -344,9 +347,6 @@ class TimeHistoryWidget(QWidget):
         info_row.addWidget(self._time_end)
 
         layout.addLayout(info_row)
-
-        # 初期描画
-        self._show_empty()
 
     # ------------------------------------------------------------------
     # UX改善（第11回⑤）: 正規化表示トグル
