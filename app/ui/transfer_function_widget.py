@@ -604,72 +604,22 @@ class TransferFunctionWidget(QWidget):
         ax = self._canvas.ax
         ax.clear()
 
-        if not self._entries:
-            self._canvas.show_message("ケースが選択されていません")
-            self._peak_label.setText("")
-            self._status_label.setText("")
+        selection = self._prepare_refresh_selection()
+        if selection is None:
             return
-
-        cat = self._cat_combo.currentText()
-        rec_idx = self._rec_combo.currentData()
-        field_idx = self._field_combo.currentData()
-
-        if not cat or rec_idx is None or field_idx is None:
-            self._canvas.show_message("カテゴリ / レコード / 成分を選択してください")
-            self._peak_label.setText("")
-            self._status_label.setText("")
-            return
+        cat, rec_idx, field_idx = selection
 
         colors = plt.rcParams["axes.prop_cycle"].by_key()["color"]
-        use_log = self._log_check.isChecked()
         peak_texts: List[str] = []
         plotted = 0
 
         for ci, (case_name, loader) in enumerate(self._entries):
-            bc = loader.get(cat)
-            if not bc or not bc.hst or not bc.hst.header:
+            fft_data = self._compute_case_fft(loader, cat, rec_idx, field_idx)
+            if fft_data is None:
                 continue
-            hst = bc.hst
-            h = hst.header
-
-            if rec_idx >= h.num_records or field_idx >= h.fields_per_record:
-                continue
-
-            try:
-                hst.ensure_loaded()
-                y = hst.time_series(rec_idx, field_idx)
-            except Exception:
-                continue
-
-            if len(y) < 2:
-                continue
-
-            n = len(y)
-            dt = hst.dt
-
-            # FFT 振幅スペクトル
-            Y = rfft(y)
-            freqs = rfftfreq(n, d=dt)
-            amplitude = np.abs(Y) * (2.0 / n)
-
-            # DC 成分を除外して表示（index 1 以降）
-            freqs = freqs[1:]
-            amplitude = amplitude[1:]
-
-            if len(freqs) == 0:
-                continue
-
-            # ピーク検出
-            peak_idx = int(np.argmax(amplitude))
-            peak_freq = float(freqs[peak_idx])
-            peak_amp = float(amplitude[peak_idx])
-
-            c = colors[ci % len(colors)]
-            ax.plot(freqs, amplitude, color=c, linewidth=0.9,
-                    label=case_name, alpha=0.85)
-            # ピークマーカー
-            ax.plot(peak_freq, peak_amp, "v", color=c, markersize=7)
-
+            freqs, amplitude, peak_freq, peak_amp = fft_data
+            self._plot_case_fft(ax, freqs, amplitude, peak_freq, peak_amp,
+                                case_name, colors[ci % len(colors)])
             peak_texts.append(
                 f"{case_name}: f={peak_freq:.3f} Hz (T={1/peak_freq:.3f} s), "
                 f"|H|={peak_amp:.4g}"
@@ -685,20 +635,82 @@ class TransferFunctionWidget(QWidget):
             self._status_label.setText(f"{cat}.hst データなし")
             return
 
-        # 基準データのオーバーレイ
-        if self._reference_data is not None:
-            ref = self._reference_data
-            ax.plot(
-                ref["freqs"], ref["amplitude"],
-                color="gray", linewidth=1.2, linestyle="--",
-                label=ref["name"], alpha=0.6,
-            )
+        if self._plot_reference_overlay(ax):
             plotted += 1
 
-        # 軸設定
-        if use_log:
-            ax.set_yscale("log")
+        self._finalize_fft_axes(ax, cat)
+        self._peak_label.setText("  |  ".join(peak_texts))
+        self._status_label.setText(
+            f"{plotted} ケースをプロット  "
+            f"[{cat} / rec={rec_idx} / field={field_idx}]"
+        )
 
+    def _prepare_refresh_selection(self):
+        """選択状態を検証し (cat, rec_idx, field_idx) を返す。不正なら None。"""
+        if not self._entries:
+            self._canvas.show_message("ケースが選択されていません")
+            self._peak_label.setText("")
+            self._status_label.setText("")
+            return None
+        cat = self._cat_combo.currentText()
+        rec_idx = self._rec_combo.currentData()
+        field_idx = self._field_combo.currentData()
+        if not cat or rec_idx is None or field_idx is None:
+            self._canvas.show_message("カテゴリ / レコード / 成分を選択してください")
+            self._peak_label.setText("")
+            self._status_label.setText("")
+            return None
+        return cat, rec_idx, field_idx
+
+    @staticmethod
+    def _compute_case_fft(loader, cat: str, rec_idx: int, field_idx: int):
+        """1ケースのFFTを計算。 (freqs, amp, peak_freq, peak_amp) を返す。不可なら None。"""
+        bc = loader.get(cat)
+        if not bc or not bc.hst or not bc.hst.header:
+            return None
+        hst = bc.hst
+        h = hst.header
+        if rec_idx >= h.num_records or field_idx >= h.fields_per_record:
+            return None
+        try:
+            hst.ensure_loaded()
+            y = hst.time_series(rec_idx, field_idx)
+        except Exception:
+            return None
+        if len(y) < 2:
+            return None
+        n = len(y)
+        Y = rfft(y)
+        freqs = rfftfreq(n, d=hst.dt)
+        amplitude = np.abs(Y) * (2.0 / n)
+        freqs = freqs[1:]
+        amplitude = amplitude[1:]
+        if len(freqs) == 0:
+            return None
+        peak_idx = int(np.argmax(amplitude))
+        return freqs, amplitude, float(freqs[peak_idx]), float(amplitude[peak_idx])
+
+    @staticmethod
+    def _plot_case_fft(ax, freqs, amplitude, peak_freq: float, peak_amp: float,
+                      case_name: str, color) -> None:
+        ax.plot(freqs, amplitude, color=color, linewidth=0.9,
+                label=case_name, alpha=0.85)
+        ax.plot(peak_freq, peak_amp, "v", color=color, markersize=7)
+
+    def _plot_reference_overlay(self, ax) -> bool:
+        if self._reference_data is None:
+            return False
+        ref = self._reference_data
+        ax.plot(
+            ref["freqs"], ref["amplitude"],
+            color="gray", linewidth=1.2, linestyle="--",
+            label=ref["name"], alpha=0.6,
+        )
+        return True
+
+    def _finalize_fft_axes(self, ax, cat: str) -> None:
+        if self._log_check.isChecked():
+            ax.set_yscale("log")
         rec_name = self._rec_combo.currentText()
         field_name = self._field_combo.currentText()
         ax.set_xlabel("周波数 [Hz]")
@@ -709,10 +721,3 @@ class TransferFunctionWidget(QWidget):
         ax.legend(fontsize=8)
         self._canvas.fig.tight_layout()
         self._canvas.draw()
-
-        # ピーク情報
-        self._peak_label.setText("  |  ".join(peak_texts))
-        self._status_label.setText(
-            f"{plotted} ケースをプロット  "
-            f"[{cat} / rec={rec_idx} / field={field_idx}]"
-        )

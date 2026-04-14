@@ -535,55 +535,11 @@ def create_snap_evaluator(
     exe_path = snap_exe_path or base_case.snap_exe_path
     model_path = base_case.model_path
 
-    if not exe_path or not model_path:
-        if log_callback:
-            log_callback("[WARN] SNAP.exe またはモデルパスが未設定です。モック評価を使用します。")
+    if not _validate_unified_paths(exe_path, model_path, log_callback):
         return None
 
-    if not Path(exe_path).exists():
-        if log_callback:
-            log_callback(f"[WARN] SNAP.exe が見つかりません: {exe_path}。モック評価を使用します。")
-        return None
-
-    if not Path(model_path).exists():
-        if log_callback:
-            log_callback(f"[WARN] モデルファイルが見つかりません: {model_path}。モック評価を使用します。")
-        return None
-
-    # ダンパー定義名を推定
-    damper_def_name = ""
-    if base_case.damper_params:
-        # damper_params の最初のキーをダンパー定義名として使用
-        for key in base_case.damper_params:
-            damper_def_name = key
-            break
-
-    # param_field_map: param_ranges のキーから damper_params のフィールドインデックスへ
-    param_field_map: Dict[str, int] = {}
-    if damper_def_name and damper_def_name in (base_case.damper_params or {}):
-        overrides = base_case.damper_params[damper_def_name]
-        if isinstance(overrides, dict):
-            # overrides: {field_idx_str: value}
-            # param_ranges のキーが overrides のキーに一致するものを探す
-            override_keys = list(overrides.keys())
-            for pr in param_ranges:
-                # パラメータキーがフィールドインデックスの場合
-                if pr.key in override_keys:
-                    try:
-                        param_field_map[pr.key] = int(pr.key)
-                    except ValueError:
-                        logger.debug("パラメータキーを整数変換できず: %s", pr.key)
-                # または、フィールドインデックス順にマッピング
-                for idx_str in override_keys:
-                    try:
-                        idx = int(idx_str)
-                        # ラベルの一部がマッチする場合
-                        if pr.key.lower() in str(overrides.get(idx_str, "")).lower():
-                            param_field_map[pr.key] = idx
-                    except (ValueError, TypeError):
-                        logger.debug("overrideキー変換失敗: %s", idx_str)
-
-    # RD オーバーライドを取得
+    damper_def_name = _resolve_damper_def_name("", base_case)
+    param_field_map = _build_legacy_param_field_map(param_ranges, damper_def_name, base_case)
     rd_overrides = base_case.parameters.get("_rd_overrides", {})
 
     try:
@@ -610,6 +566,35 @@ def create_snap_evaluator(
         if log_callback:
             log_callback(f"[WARN] {e}。モック評価を使用します。")
         return None
+
+
+def _build_legacy_param_field_map(
+    param_ranges: List["ParameterRange"],
+    damper_def_name: str,
+    base_case: "AnalysisCase",
+) -> Dict[str, int]:
+    """create_snap_evaluator 用の fuzzy マッピング (legacy)。"""
+    param_field_map: Dict[str, int] = {}
+    if not (damper_def_name and damper_def_name in (base_case.damper_params or {})):
+        return param_field_map
+    overrides = base_case.damper_params[damper_def_name]
+    if not isinstance(overrides, dict):
+        return param_field_map
+    override_keys = list(overrides.keys())
+    for pr in param_ranges:
+        if pr.key in override_keys:
+            try:
+                param_field_map[pr.key] = int(pr.key)
+            except ValueError:
+                logger.debug("パラメータキーを整数変換できず: %s", pr.key)
+        for idx_str in override_keys:
+            try:
+                idx = int(idx_str)
+                if pr.key.lower() in str(overrides.get(idx_str, "")).lower():
+                    param_field_map[pr.key] = idx
+            except (ValueError, TypeError):
+                logger.debug("overrideキー変換失敗: %s", idx_str)
+    return param_field_map
 
 
 def create_unified_evaluator(
