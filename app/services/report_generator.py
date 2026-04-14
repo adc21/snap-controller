@@ -543,21 +543,49 @@ def _build_opt_parameter_space_chart(result: Any) -> Optional[str]:
     if not all_candidates:
         return None
 
-    cfg = result.config
+    param_keys, param_labels = _opt_param_keys_labels(result.config, all_candidates)
+    if not param_keys:
+        return None
+
+    rows_data = _opt_collect_rows(all_candidates, param_keys)
+    if not rows_data:
+        return None
+
+    obj_label = str(getattr(result.config, "objective_label", None) or
+                    getattr(result.config, "objective_key", "") or "目的関数値")
+
+    if len(param_keys) == 1:
+        img_data = _opt_plot_1d(rows_data, param_keys[0], param_labels[0], obj_label)
+    else:
+        img_data = _opt_plot_2d(rows_data, param_keys, param_labels, obj_label, result)
+
+    if img_data is None:
+        return None
+
+    return f"""
+    <section class="opt-chart-section">
+        <h2>パラメータ空間探索</h2>
+        <div class="chart-container" style="max-width:700px;">
+            <img src="data:image/png;base64,{img_data}" alt="パラメータ空間探索">
+        </div>
+    </section>
+    """
+
+
+def _opt_param_keys_labels(cfg: Any, all_candidates: list):
+    """パラメータキーとラベルリストを抽出する。"""
     param_ranges = getattr(cfg, "parameters", None) or []
     param_keys = [getattr(pr, "key", "") for pr in param_ranges]
     param_labels = [getattr(pr, "label", None) or getattr(pr, "key", "") for pr in param_ranges]
-
-    # フォールバック: config にパラメータ定義がない場合
     if not param_keys and all_candidates:
         first_params = getattr(all_candidates[0], "params", {}) or {}
         param_keys = list(first_params.keys())
         param_labels = param_keys[:]
+    return param_keys, param_labels
 
-    if not param_keys:
-        return None
 
-    # データ収集
+def _opt_collect_rows(all_candidates: list, param_keys: list) -> List[Dict]:
+    """候補リストからプロット用データ行を収集する。"""
     rows_data: List[Dict] = []
     for c in all_candidates:
         params = getattr(c, "params", {}) or {}
@@ -571,124 +599,93 @@ def _build_opt_parameter_space_chart(result: Any) -> Optional[str]:
                 rows_data.append(row)
             except (ValueError, TypeError):
                 continue
+    return rows_data
 
-    if not rows_data:
+
+def _opt_fig_to_base64(fig) -> str:
+    """matplotlib figureをbase64 PNG文字列に変換して閉じる。"""
+    fig.tight_layout()
+    buf = io.BytesIO()
+    fig.savefig(buf, format="png", bbox_inches="tight")
+    plt.close(fig)
+    buf.seek(0)
+    return base64.b64encode(buf.read()).decode("ascii")
+
+
+def _opt_plot_1d(rows_data, k0, label0, obj_label) -> str:
+    """1パラメータ: X=パラメータ値, Y=目的関数値 の散布図を生成。"""
+    x_vals = [r[k0] for r in rows_data if k0 in r]
+    y_vals = [r["_obj"] for r in rows_data if k0 in r]
+    feas_flags = [r["_feas"] for r in rows_data if k0 in r]
+
+    fig, ax = plt.subplots(figsize=(7, 4), dpi=120)
+    inf_x = [x for x, f in zip(x_vals, feas_flags) if not f]
+    inf_y = [y for y, f in zip(y_vals, feas_flags) if not f]
+    feas_x = [x for x, f in zip(x_vals, feas_flags) if f]
+    feas_y = [y for y, f in zip(y_vals, feas_flags) if f]
+
+    if inf_x:
+        ax.scatter(inf_x, inf_y, c="#e74c3c", marker="x", s=20, alpha=0.5,
+                   linewidths=0.8, label="制約違反")
+    if feas_x:
+        ax.scatter(feas_x, feas_y, c="#3498db", marker="o", s=20, alpha=0.7,
+                   label="実行可能")
+
+    ax.set_xlabel(_esc(label0), fontsize=9)
+    ax.set_ylabel(_esc(obj_label), fontsize=9)
+    ax.set_title("パラメータ空間探索", fontsize=11, fontweight="bold")
+    ax.tick_params(labelsize=8)
+    ax.grid(alpha=0.3)
+    ax.legend(fontsize=8)
+    return _opt_fig_to_base64(fig)
+
+
+def _opt_plot_2d(rows_data, param_keys, param_labels, obj_label, result) -> Optional[str]:
+    """2+パラメータ: 最初の2つで散布図（色=目的関数値）を生成。"""
+    k0, k1 = param_keys[0], param_keys[1]
+    valid_rows = [r for r in rows_data if k0 in r and k1 in r]
+    if not valid_rows:
         return None
 
-    obj_label = str(getattr(cfg, "objective_label", None) or
-                    getattr(cfg, "objective_key", "") or "目的関数値")
+    x_vals = [r[k0] for r in valid_rows]
+    y_vals = [r[k1] for r in valid_rows]
+    c_vals = [r["_obj"] for r in valid_rows]
 
-    obj_vals_all = [r["_obj"] for r in rows_data]
-    obj_min = min(obj_vals_all)
-    obj_max = max(obj_vals_all)
+    fig, ax = plt.subplots(figsize=(7, 5), dpi=120)
 
-    img_data: Optional[str] = None
+    import numpy as np
+    c_arr = np.array(c_vals, dtype=float)
+    scatter = ax.scatter(x_vals, y_vals, c=c_arr, cmap="RdYlGn_r",
+                         s=20, alpha=0.75, edgecolors="none")
+    cb = fig.colorbar(scatter, ax=ax, shrink=0.8)
+    cb.set_label(_esc(obj_label), fontsize=8)
+    cb.ax.tick_params(labelsize=7)
 
-    if len(param_keys) == 1:
-        # 1パラメータ: X=パラメータ値, Y=目的関数値
-        k0 = param_keys[0]
-        x_vals = [r[k0] for r in rows_data if k0 in r]
-        y_vals = [r["_obj"] for r in rows_data if k0 in r]
-        feas_flags = [r["_feas"] for r in rows_data if k0 in r]
+    # 最良解をスター印で強調
+    best = getattr(result, "best", None)
+    if best:
+        best_params = getattr(best, "params", {}) or {}
+        bx, by = best_params.get(k0), best_params.get(k1)
+        if bx is not None and by is not None:
+            ax.scatter([float(bx)], [float(by)], c="#e74c3c", marker="*",
+                       s=120, zorder=5, label="最良解")
+            ax.legend(fontsize=8)
 
-        fig, ax = plt.subplots(figsize=(7, 4), dpi=120)
-        inf_x = [x for x, f in zip(x_vals, feas_flags) if not f]
-        inf_y = [y for y, f in zip(y_vals, feas_flags) if not f]
-        feas_x = [x for x, f in zip(x_vals, feas_flags) if f]
-        feas_y = [y for y, f in zip(y_vals, feas_flags) if f]
+    ax.set_xlabel(_esc(param_labels[0]), fontsize=9)
+    ax.set_ylabel(_esc(param_labels[1]), fontsize=9)
+    ax.tick_params(labelsize=8)
+    ax.grid(alpha=0.2)
 
-        if inf_x:
-            ax.scatter(inf_x, inf_y, c="#e74c3c", marker="x", s=20, alpha=0.5,
-                       linewidths=0.8, label="制約違反")
-        if feas_x:
-            ax.scatter(feas_x, feas_y, c="#3498db", marker="o", s=20, alpha=0.7,
-                       label="実行可能")
-
-        ax.set_xlabel(_esc(param_labels[0]), fontsize=9)
-        ax.set_ylabel(_esc(obj_label), fontsize=9)
-        ax.set_title("パラメータ空間探索", fontsize=11, fontweight="bold")
-        ax.tick_params(labelsize=8)
-        ax.grid(alpha=0.3)
-        ax.legend(fontsize=8)
-
-        fig.tight_layout()
-        buf = io.BytesIO()
-        fig.savefig(buf, format="png", bbox_inches="tight")
-        plt.close(fig)
-        buf.seek(0)
-        img_data = base64.b64encode(buf.read()).decode("ascii")
-
+    if len(param_keys) > 2:
+        extra = ", ".join(_esc(param_labels[i]) for i in range(2, len(param_keys)))
+        ax.set_title(
+            f"パラメータ空間探索 ({_esc(param_labels[0])} vs {_esc(param_labels[1])}, 色=目的関数値)\n"
+            f"その他軸: {extra}",
+            fontsize=10, fontweight="bold")
     else:
-        # 2+パラメータ: 最初の2つでスキャッタ、色=目的関数値
-        k0, k1 = param_keys[0], param_keys[1]
-        valid_rows = [r for r in rows_data if k0 in r and k1 in r]
-        if not valid_rows:
-            return None
-
-        x_vals = [r[k0] for r in valid_rows]
-        y_vals = [r[k1] for r in valid_rows]
-        c_vals = [r["_obj"] for r in valid_rows]
-        feas_flags = [r["_feas"] for r in valid_rows]
-
-        fig, ax = plt.subplots(figsize=(7, 5), dpi=120)
-
-        import numpy as np
-        c_arr = np.array(c_vals, dtype=float)
-        scatter = ax.scatter(
-            x_vals, y_vals,
-            c=c_arr,
-            cmap="RdYlGn_r",
-            s=20, alpha=0.75,
-            edgecolors="none",
-        )
-        cb = fig.colorbar(scatter, ax=ax, shrink=0.8)
-        cb.set_label(_esc(obj_label), fontsize=8)
-        cb.ax.tick_params(labelsize=7)
-
-        # 最良解をスター印で強調
-        best = getattr(result, "best", None)
-        if best:
-            best_params = getattr(best, "params", {}) or {}
-            bx = best_params.get(k0)
-            by = best_params.get(k1)
-            if bx is not None and by is not None:
-                ax.scatter([float(bx)], [float(by)], c="#e74c3c", marker="*",
-                           s=120, zorder=5, label="最良解")
-                ax.legend(fontsize=8)
-
-        ax.set_xlabel(_esc(param_labels[0]), fontsize=9)
-        ax.set_ylabel(_esc(param_labels[1]), fontsize=9)
         ax.set_title("パラメータ空間探索 (色=目的関数値)", fontsize=11, fontweight="bold")
-        ax.tick_params(labelsize=8)
-        ax.grid(alpha=0.2)
 
-        # 追加パラメータ軸がある場合の注記
-        if len(param_keys) > 2:
-            extra = ", ".join(_esc(param_labels[i]) for i in range(2, len(param_keys)))
-            ax.set_title(
-                f"パラメータ空間探索 ({_esc(param_labels[0])} vs {_esc(param_labels[1])}, 色=目的関数値)\n"
-                f"その他軸: {extra}",
-                fontsize=10, fontweight="bold"
-            )
-
-        fig.tight_layout()
-        buf = io.BytesIO()
-        fig.savefig(buf, format="png", bbox_inches="tight")
-        plt.close(fig)
-        buf.seek(0)
-        img_data = base64.b64encode(buf.read()).decode("ascii")
-
-    if img_data is None:
-        return None
-
-    return f"""
-    <section class="opt-chart-section">
-        <h2>パラメータ空間探索</h2>
-        <div class="chart-container" style="max-width:700px;">
-            <img src="data:image/png;base64,{img_data}" alt="パラメータ空間探索">
-        </div>
-    </section>
-    """
+    return _opt_fig_to_base64(fig)
 
 
 # ---------------------------------------------------------------------------

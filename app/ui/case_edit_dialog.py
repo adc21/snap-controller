@@ -1834,124 +1834,93 @@ class CaseEditDialog(QDialog):
                 ci.setBackground(_COLOR_CHANGED if changed else _COLOR_UNCHANGED)
 
     def _update_banner(self) -> None:
-        """
-        UX改善②: 変更サマリーバナーを詳細情報付きで更新します。
+        """変更サマリーバナー・タイトルバー・タブバッジを更新する。"""
+        def_detail_parts, def_changes = self._collect_def_changes()
+        rd_detail_parts, rd_changes = self._collect_rd_changes()
+        total = def_changes + rd_changes
+        self._apply_banner_and_title(total, def_detail_parts, rd_detail_parts)
+        self._update_tab_badges(def_changes, rd_changes)
+        if hasattr(self, "_tabs") and self._tabs.currentIndex() == 4:
+            self._update_diff_tab()
 
-        変更件数だけでなく、最初の2〜3件の具体的なパラメータ名と変更前後の値を
-        バナーに表示します。例: 「🔧 Ce: 500.0 → 600.0 / 📐 RD-1: 基数 1 → 2」
-        変更が多い場合は「（+N件）」と省略します。
-
-        タイトルバーにも「*（変更中）」プレフィックスを表示します。
-        """
-        # ─────────── ダンパー定義の変更を収集 ───────────
-        def_detail_parts: List[str] = []
-        def_changes = 0
-        field_labels_cache: Dict[str, Any] = {}
+    def _collect_def_changes(self):
+        """ダンパー定義テーブルの変更件数と詳細パーツを返す。"""
+        detail_parts: List[str] = []
+        changes = 0
         for ddef in (self._s8i.damper_defs if self._s8i else []):
             tbl = self._damper_def_tables.get(ddef.name)
             if not tbl:
                 continue
             fl = _get_damper_field_labels(ddef.keyword)
-            field_labels_cache[ddef.name] = fl
             for r in range(tbl.rowCount()):
                 vi = tbl.item(r, _DEF_COL_VALUE)
                 oi = tbl.item(r, _DEF_COL_ORIG)
                 if vi and oi and vi.text().strip() != oi.text().strip():
-                    def_changes += 1
-                    if len(def_detail_parts) < 2:
+                    changes += 1
+                    if len(detail_parts) < 2:
                         field_idx = r + 1
                         label = fl.get(field_idx, f"F{field_idx}")
-                        def_detail_parts.append(
-                            f"<b>{label}</b>: {oi.text()} → {vi.text()}"
-                        )
+                        detail_parts.append(
+                            f"<b>{label}</b>: {oi.text()} → {vi.text()}")
+        return detail_parts, changes
 
-        # ─────────── 配置計画の変更を収集 ───────────
-        rd_detail_parts: List[str] = []
-        rd_changes = 0
-        if self._s8i:
-            for i, elem in enumerate(self._s8i.damper_elements):
-                qty_changed = (
-                    i < len(self._rd_qty_spins)
-                    and self._rd_qty_spins[i].value() != elem.quantity
-                )
-                def_changed = (
-                    i < len(self._rd_def_combos)
-                    and self._rd_def_combos[i].currentText() != elem.damper_def_name
-                )
-                if qty_changed or def_changed:
-                    rd_changes += 1
-                    if len(rd_detail_parts) < 1:
-                        parts_inner = []
-                        if qty_changed:
-                            parts_inner.append(
-                                f"基数 {elem.quantity} → {self._rd_qty_spins[i].value()}"
-                            )
-                        if def_changed:
-                            parts_inner.append(
-                                f"定義 {elem.damper_def_name} → "
-                                f"{self._rd_def_combos[i].currentText()}"
-                            )
-                        rd_detail_parts.append(
-                            f"<b>{elem.name}</b>: {', '.join(parts_inner)}"
-                        )
+    def _collect_rd_changes(self):
+        """配置計画の変更件数と詳細パーツを返す。"""
+        detail_parts: List[str] = []
+        changes = 0
+        if not self._s8i:
+            return detail_parts, changes
+        for i, elem in enumerate(self._s8i.damper_elements):
+            qty_changed = (i < len(self._rd_qty_spins)
+                           and self._rd_qty_spins[i].value() != elem.quantity)
+            def_changed = (i < len(self._rd_def_combos)
+                           and self._rd_def_combos[i].currentText() != elem.damper_def_name)
+            if qty_changed or def_changed:
+                changes += 1
+                if len(detail_parts) < 1:
+                    parts_inner = []
+                    if qty_changed:
+                        parts_inner.append(
+                            f"基数 {elem.quantity} → {self._rd_qty_spins[i].value()}")
+                    if def_changed:
+                        parts_inner.append(
+                            f"定義 {elem.damper_def_name} → "
+                            f"{self._rd_def_combos[i].currentText()}")
+                    detail_parts.append(
+                        f"<b>{elem.name}</b>: {', '.join(parts_inner)}")
+        return detail_parts, changes
 
-        total = def_changes + rd_changes
+    def _apply_banner_and_title(self, total, def_detail_parts, rd_detail_parts):
+        """変更件数に応じてバナー表示とタイトルバーを更新する。"""
         if total > 0:
-            # 詳細テキストを組み立て
-            banner_parts: List[str] = []
-            shown = 0
-            for p in def_detail_parts:
-                banner_parts.append(f"🔧 {p}")
-                shown += 1
-            for p in rd_detail_parts:
-                banner_parts.append(f"📐 {p}")
-                shown += 1
-
-            remaining = total - shown
+            banner_parts = [f"🔧 {p}" for p in def_detail_parts]
+            banner_parts += [f"📐 {p}" for p in rd_detail_parts]
+            remaining = total - len(banner_parts)
             summary = "  /  ".join(banner_parts)
             if remaining > 0:
                 summary += f"  <span style='color:#888;'>（+{remaining}件の変更）</span>"
-
             self._banner_label.setText(summary)
             self._banner_label.setTextFormat(Qt.RichText)
             self._banner.show()
-            # タイトルバーに「*（変更あり）」プレフィックスを表示
             self.setWindowTitle(
-                f"* ケース設定 — {self._case.name}  [{total}項目変更中]"
-            )
+                f"* ケース設定 — {self._case.name}  [{total}項目変更中]")
         else:
             self._banner.hide()
-            # 変更なし → 通常タイトルに戻す
             self.setWindowTitle(f"ケース設定 — {self._case.name}")
 
-        # UX改善（新）: 変更があるタブに ● バッジを付けて変更箇所を一目で把握できるようにする
-        # タブインデックス: 0=基本設定, 1=ダンパー定義, 2=配置計画, 3=メモ
-
-        # --- タブ0: 基本設定（ケース名・出力ディレクトリの変更を検出）---
+    def _update_tab_badges(self, def_changes, rd_changes):
+        """変更があるタブに件数バッジを付与する。"""
         basic_changes = 0
         if hasattr(self, "_name_edit") and self._name_edit.text().strip() != self._orig_name:
             basic_changes += 1
         if hasattr(self, "_out_edit") and self._out_edit.text().strip() != self._orig_output_dir:
             basic_changes += 1
         self._tabs.setTabText(
-            0,
-            f"⚙ 基本設定  ●  ({basic_changes})" if basic_changes > 0 else "⚙ 基本設定"
-        )
-
-        # --- タブ1: ダンパー定義 ---
+            0, f"⚙ 基本設定  ●  ({basic_changes})" if basic_changes > 0 else "⚙ 基本設定")
         self._tabs.setTabText(
-            1,
-            f"🔧 ダンパー定義  ●  ({def_changes})" if def_changes > 0 else "🔧 ダンパー定義"
-        )
-        # --- タブ2: 配置計画 ---
+            1, f"🔧 ダンパー定義  ●  ({def_changes})" if def_changes > 0 else "🔧 ダンパー定義")
         self._tabs.setTabText(
-            2,
-            f"📐 配置計画  ●  ({rd_changes})" if rd_changes > 0 else "📐 配置計画"
-        )
-
-        # --- タブ4: 変更差分 — 現在表示中なら自動更新 ---
-        if hasattr(self, "_tabs") and self._tabs.currentIndex() == 4:
-            self._update_diff_tab()
+            2, f"📐 配置計画  ●  ({rd_changes})" if rd_changes > 0 else "📐 配置計画")
 
     def _on_name_edit_changed(self, text: str) -> None:
         """

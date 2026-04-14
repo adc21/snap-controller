@@ -759,9 +759,42 @@ class CompareChartWidget(QWidget):
         idx = self._combo.currentIndex()
         key, label, unit = _RESPONSE_ITEMS[idx]
 
-        # UX改善（新）: 最良ケース（指標の最大値が最小）を事前に特定する
-        # 各ケースの指標最大値を計算し、最小のものを「最良ケース」とする
-        case_max_values: dict = {}  # {case.id: max_value_across_floors}
+        case_max_values, best_case_id = self._compute_best_case(selected, key)
+        baseline_id = getattr(self, "_baseline_case_id", None)
+        baseline_max: Optional[float] = case_max_values.get(baseline_id) if baseline_id else None
+
+        has_data = False
+        for case, color_idx in selected:
+            floors, values = self._extract_floor_data(case, key)
+            if floors is None:
+                continue
+
+            improve_suffix = self._compute_improve_suffix(
+                case, baseline_id, baseline_max, case_max_values)
+            plot_style = self._resolve_plot_style(
+                case, color_idx, best_case_id, baseline_id, improve_suffix)
+
+            ax.plot(values, floors,
+                    marker=plot_style["mk"], markersize=plot_style["mks"],
+                    label=plot_style["legend"], color=plot_style["color"],
+                    linewidth=plot_style["lw"], zorder=plot_style["zorder"])
+
+            self._annotate_peak(ax, floors, values, color_idx,
+                                plot_style["color"], plot_style["is_best"])
+            has_data = True
+
+        if not has_data:
+            self._show_empty("選択されたケースにデータがありません")
+            return
+
+        self._finalize_axes(ax, selected, key, label, unit)
+
+    # -- _draw サブメソッド群 ------------------------------------------
+
+    @staticmethod
+    def _compute_best_case(selected, key):
+        """各ケースの指標最大値を計算し、最良ケースIDを特定する。"""
+        case_max_values: dict = {}
         for case, _ in selected:
             result_data = case.result_summary.get("result_data", {})
             floor_dict = result_data.get(key, {})
@@ -771,140 +804,93 @@ class CompareChartWidget(QWidget):
                     floor_dict = {1: scalar}
             if floor_dict:
                 case_max_values[case.id] = max(floor_dict.values())
-
-        best_case_id: Optional[str] = None
+        best_case_id = None
         if len(case_max_values) >= 2:
-            # 2件以上のケースに有効データがある場合のみハイライト
             best_case_id = min(case_max_values, key=case_max_values.__getitem__)
+        return case_max_values, best_case_id
 
-        # UX改善（第11回②）: ベースラインケースの最大応答値を取得
-        baseline_id = getattr(self, "_baseline_case_id", None)
-        baseline_max: Optional[float] = case_max_values.get(baseline_id) if baseline_id else None
+    @staticmethod
+    def _extract_floor_data(case, key):
+        """ケースから階別データを抽出し (floors, values) を返す。データなしなら (None, None)。"""
+        result_data = case.result_summary.get("result_data", {})
+        floor_dict = result_data.get(key, {})
+        if not floor_dict:
+            scalar = case.result_summary.get(key)
+            if scalar is not None:
+                floor_dict = {1: scalar}
+        if not floor_dict:
+            return None, None
+        if 0 not in floor_dict:
+            floor0_val = _get_floor0_value(key, result_data)
+            floor_dict = {0: floor0_val, **floor_dict}
+        floors = sorted(floor_dict.keys())
+        values = [floor_dict[f] for f in floors]
+        return floors, values
 
-        has_data = False
-        for case, color_idx in selected:
-            result_data = case.result_summary.get("result_data", {})
-            floor_dict = result_data.get(key, {})
-            if not floor_dict:
-                scalar = case.result_summary.get(key)
-                if scalar is not None:
-                    floor_dict = {1: scalar}
-            if not floor_dict:
-                continue
+    @staticmethod
+    def _compute_improve_suffix(case, baseline_id, baseline_max, case_max_values):
+        """ベースライン比の改善率サフィックス文字列を計算する。"""
+        if baseline_max is None or baseline_max == 0 or case.id == baseline_id:
+            return ""
+        case_max = case_max_values.get(case.id)
+        if case_max is None:
+            return ""
+        pct = (case_max - baseline_max) / abs(baseline_max) * 100.0
+        sign = "+" if pct >= 0 else ""
+        return f" ({sign}{pct:.1f}%)"
 
-            # 0層（地盤面）を常にプロット
-            if 0 not in floor_dict:
-                floor0_val = _get_floor0_value(key, result_data)
-                floor_dict = {0: floor0_val, **floor_dict}
+    @staticmethod
+    def _resolve_plot_style(case, color_idx, best_case_id, baseline_id, improve_suffix):
+        """ケースの描画スタイル(色・線幅・マーカー・凡例ラベル)を決定する。"""
+        is_best = (best_case_id is not None and case.id == best_case_id)
+        is_baseline = (baseline_id is not None and case.id == baseline_id)
+        if is_best:
+            return dict(color="#FFD700", lw=2.8, mk="*", mks=10, zorder=10,
+                        legend=f"🏆 {case.name}（最良）{improve_suffix}",
+                        is_best=True)
+        if is_baseline:
+            return dict(color=_COLORS[color_idx % len(_COLORS)], lw=2.2, mk="D",
+                        mks=6, zorder=8, legend=f"📌 {case.name}（基準）",
+                        is_best=False)
+        return dict(color=_COLORS[color_idx % len(_COLORS)], lw=1.5, mk="o",
+                    mks=5, zorder=5, legend=f"{case.name}{improve_suffix}",
+                    is_best=False)
 
-            floors = sorted(floor_dict.keys())
-            values = [floor_dict[f] for f in floors]
-
-            # UX改善（第11回②）: 改善率サフィックスを凡例ラベルに追加
-            improve_suffix = ""
-            if baseline_max is not None and baseline_max != 0 and case.id != baseline_id:
-                case_max = case_max_values.get(case.id)
-                if case_max is not None:
-                    pct = (case_max - baseline_max) / abs(baseline_max) * 100.0
-                    sign = "+" if pct >= 0 else ""
-                    improve_suffix = f" ({sign}{pct:.1f}%)"
-
-            # UX改善（新）: 最良ケースはゴールド・太線・スターでハイライト
-            is_best = (best_case_id is not None and case.id == best_case_id)
-            is_baseline = (baseline_id is not None and case.id == baseline_id)
-            if is_best:
-                plot_color = "#FFD700"   # ゴールド
-                lw = 2.8
-                mk = "*"
-                mks = 10
-                best_suffix = "" if improve_suffix else ""
-                legend_label = f"🏆 {case.name}（最良）{improve_suffix}"
-                zorder = 10  # 最前面に描画
-            elif is_baseline:
-                plot_color = _COLORS[color_idx % len(_COLORS)]
-                lw = 2.2
-                mk = "D"
-                mks = 6
-                legend_label = f"📌 {case.name}（基準）"
-                zorder = 8
-            else:
-                plot_color = _COLORS[color_idx % len(_COLORS)]
-                lw = 1.5
-                mk = "o"
-                mks = 5
-                legend_label = f"{case.name}{improve_suffix}"
-                zorder = 5
-
-            ax.plot(values, floors,
-                    marker=mk, markersize=mks,
-                    label=legend_label,
-                    color=plot_color,
-                    linewidth=lw,
-                    zorder=zorder)
-
-            # UX改善（新）: 最良ケースの最大値にスターアノテーションを追加
-            if is_best and values:
-                max_val = max(values)
-                max_floor = floors[values.index(max_val)]
-                ax.annotate(
-                    f"最良\n{max_val:.4g}",
-                    xy=(max_val, max_floor),
-                    xytext=(8, 4),
-                    textcoords="offset points",
-                    fontsize=7,
-                    color="#FFD700",
-                    fontweight="bold",
-                    bbox=dict(
-                        boxstyle="round,pad=0.2",
-                        facecolor="#333333" if ThemeManager.is_dark() else "#fffde7",
-                        edgecolor="#FFD700",
-                        alpha=0.85,
-                    ),
-                )
-            elif not is_best and values:
-                # UX改善（第9回③）: 最良ケース以外も最大値位置に数値アノテーションを追加
-                # グラフから直接ピーク値を読み取れるよう、各ケースの最大応答値を表示します。
-                max_val = max(values)
-                max_floor = floors[values.index(max_val)]
-                # 奇数/偶数ケースでオフセット方向を交互にしてラベルの重複を避ける
-                y_offset = 6 if (color_idx % 2 == 0) else -14
-                ax.annotate(
-                    f"{max_val:.4g}",
-                    xy=(max_val, max_floor),
-                    xytext=(-2, y_offset),
-                    textcoords="offset points",
-                    fontsize=7,
-                    color=plot_color,
-                    bbox=dict(
-                        boxstyle="round,pad=0.15",
-                        facecolor="#2b2b2b" if ThemeManager.is_dark() else "#ffffff",
-                        edgecolor=plot_color,
-                        alpha=0.75,
-                    ),
-                    arrowprops=dict(
-                        arrowstyle="-",
-                        color=plot_color,
-                        alpha=0.5,
-                        lw=0.8,
-                    ),
-                )
-            has_data = True
-
-        if not has_data:
-            self._show_empty("選択されたケースにデータがありません")
+    @staticmethod
+    def _annotate_peak(ax, floors, values, color_idx, plot_color, is_best):
+        """ケースの最大応答値にアノテーションを描画する。"""
+        if not values:
             return
+        max_val = max(values)
+        max_floor = floors[values.index(max_val)]
+        if is_best:
+            ax.annotate(
+                f"最良\n{max_val:.4g}", xy=(max_val, max_floor),
+                xytext=(8, 4), textcoords="offset points",
+                fontsize=7, color="#FFD700", fontweight="bold",
+                bbox=dict(boxstyle="round,pad=0.2",
+                          facecolor="#333333" if ThemeManager.is_dark() else "#fffde7",
+                          edgecolor="#FFD700", alpha=0.85))
+        else:
+            y_offset = 6 if (color_idx % 2 == 0) else -14
+            ax.annotate(
+                f"{max_val:.4g}", xy=(max_val, max_floor),
+                xytext=(-2, y_offset), textcoords="offset points",
+                fontsize=7, color=plot_color,
+                bbox=dict(boxstyle="round,pad=0.15",
+                          facecolor="#2b2b2b" if ThemeManager.is_dark() else "#ffffff",
+                          edgecolor=plot_color, alpha=0.75),
+                arrowprops=dict(arrowstyle="-", color=plot_color, alpha=0.5, lw=0.8))
 
+    def _finalize_axes(self, ax, selected, key, label, unit):
+        """軸ラベル・タイトル・凡例・基準線を設定し描画を確定する。"""
         ax.set_xlabel(f"{label}  [{unit}]", fontsize=9)
         ax.set_ylabel("層", fontsize=9)
         ax.set_title(f"ケース比較 — {label}", fontsize=10)
         ax.tick_params(labelsize=8)
         ax.grid(linestyle="--", alpha=0.4)
-
-        # --- 性能基準線のオーバーレイ ---
         self._draw_criteria_line(ax, key)
-
         ax.legend(fontsize=8, loc="best")
-        # Y 軸を整数刻みにする
         y_ticks = sorted({f for case, _ in selected
                           for f in case.result_summary.get("result_data", {}).get(key, {}).keys()})
         if y_ticks:
