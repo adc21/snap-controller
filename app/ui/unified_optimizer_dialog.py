@@ -72,7 +72,23 @@ from app.services.optimizer import (
     ParameterRange,
 )
 from app.services.snap_evaluator import build_floor_rd_map, create_unified_evaluator
+from app.services.optimizer_analytics import (
+    compute_convergence_diagnostics,
+    compute_correlation_analysis,
+    compute_sensitivity,
+    compute_sobol_sensitivity,
+    export_optimization_log,
+)
 from .damper_field_data import get_damper_field_labels, get_damper_field_units
+from .optimizer_analysis_dialogs import (
+    ComparisonDialog,
+    CorrelationDialog,
+    DiagnosticsDialog,
+    HeatmapDialog,
+    ParetoDialog,
+    SensitivityDialog,
+    SobolDialog,
+)
 from .theme import ThemeManager, MPL_STYLES
 
 logger = logging.getLogger(__name__)
@@ -651,6 +667,9 @@ class UnifiedOptimizerDialog(QDialog):
         btn_row2.addWidget(self._save_plot_btn)
         gl.addLayout(btn_row2)
 
+        # 分析ボタン行
+        self._build_analysis_buttons(gl)
+
         layout.addWidget(group)
 
     def _build_progress_bar(self, layout: QVBoxLayout) -> None:
@@ -674,6 +693,17 @@ class UnifiedOptimizerDialog(QDialog):
         self._save_json_btn.clicked.connect(self._on_save_json)
         self._load_json_btn.clicked.connect(self._on_load_json)
         self._save_plot_btn.clicked.connect(self._on_save_plot)
+
+        # 分析ボタン
+        self._sensitivity_btn.clicked.connect(self._on_run_sensitivity)
+        self._sobol_btn.clicked.connect(self._on_run_sobol)
+        self._diagnostics_btn.clicked.connect(self._on_show_diagnostics)
+        self._correlation_btn.clicked.connect(self._on_show_correlation)
+        self._heatmap_btn.clicked.connect(self._on_show_heatmap)
+        self._pareto_btn.clicked.connect(self._on_show_pareto)
+        self._log_btn.clicked.connect(self._on_export_log)
+        self._comparison_btn.clicked.connect(self._on_show_comparison)
+
         self._obj2_enabled.toggled.connect(self._on_obj2_toggled)
         self._def_combo.currentIndexChanged.connect(self._on_damper_def_changed)
         self._iter_spin.valueChanged.connect(self._update_estimate)
@@ -792,6 +822,8 @@ class UnifiedOptimizerDialog(QDialog):
         if result.best:
             self._show_candidate_detail(result.best)
             self._apply_btn.setEnabled(True)
+
+        self._enable_analysis_buttons()
 
         elapsed = time.time() - self._start_time
         elapsed_str = time.strftime("%M:%S", time.gmtime(elapsed))
@@ -1312,6 +1344,8 @@ class UnifiedOptimizerDialog(QDialog):
             self._show_candidate_detail(result.best)
             self._apply_btn.setEnabled(True)
 
+        self._enable_analysis_buttons()
+
         n_cands = len(result.all_candidates)
         feasible_count = len(result.feasible_candidates)
         self._progress_label.setText(
@@ -1331,6 +1365,249 @@ class UnifiedOptimizerDialog(QDialog):
             QMessageBox.information(self, "保存完了", f"画像を保存しました。\n{path}")
         except Exception as e:
             QMessageBox.warning(self, "エラー", f"画像保存に失敗:\n{e}")
+
+    # ------------------------------------------------------------------
+    # 分析ボタン
+    # ------------------------------------------------------------------
+    def _build_analysis_buttons(self, layout: QVBoxLayout) -> None:
+        """感度解析・収束診断などの分析ボタン行を構築。"""
+        lbl = QLabel("分析")
+        f = lbl.font()
+        f.setBold(True)
+        lbl.setFont(f)
+        lbl.setStyleSheet("color: gray;")
+        layout.addWidget(lbl)
+
+        row1 = QHBoxLayout()
+        self._sensitivity_btn = QPushButton("感度解析")
+        self._sensitivity_btn.setEnabled(False)
+        self._sensitivity_btn.setToolTip("最良解周りのパラメータ感度をOAT法で解析")
+        row1.addWidget(self._sensitivity_btn)
+
+        self._sobol_btn = QPushButton("Sobol解析")
+        self._sobol_btn.setEnabled(False)
+        self._sobol_btn.setToolTip("Sobolグローバル感度解析（交互作用込み）")
+        row1.addWidget(self._sobol_btn)
+
+        self._diagnostics_btn = QPushButton("収束診断")
+        self._diagnostics_btn.setEnabled(False)
+        self._diagnostics_btn.setToolTip("収束品質スコア・推奨アクション表示")
+        row1.addWidget(self._diagnostics_btn)
+        layout.addLayout(row1)
+
+        row2 = QHBoxLayout()
+        self._correlation_btn = QPushButton("相関分析")
+        self._correlation_btn.setEnabled(False)
+        self._correlation_btn.setToolTip("パラメータ間の相関行列ヒートマップ")
+        row2.addWidget(self._correlation_btn)
+
+        self._heatmap_btn = QPushButton("空間ヒートマップ")
+        self._heatmap_btn.setEnabled(False)
+        self._heatmap_btn.setToolTip("パラメータ空間の探索密度を可視化")
+        row2.addWidget(self._heatmap_btn)
+
+        self._pareto_btn = QPushButton("Pareto Front")
+        self._pareto_btn.setEnabled(False)
+        self._pareto_btn.setToolTip("多目的結果のParetoフロント表示")
+        row2.addWidget(self._pareto_btn)
+        layout.addLayout(row2)
+
+        row3 = QHBoxLayout()
+        self._log_btn = QPushButton("評価ログ")
+        self._log_btn.setEnabled(False)
+        self._log_btn.setToolTip("全評価履歴をCSVに出力")
+        row3.addWidget(self._log_btn)
+
+        self._comparison_btn = QPushButton("結果比較")
+        self._comparison_btn.setToolTip("複数JSON結果の比較表示")
+        row3.addWidget(self._comparison_btn)
+        layout.addLayout(row3)
+
+    def _enable_analysis_buttons(self) -> None:
+        """結果に応じて分析ボタンを有効化。"""
+        has_result = self._result is not None
+        has_best = has_result and self._result.best is not None
+        has_config = has_result and self._result.config is not None
+        n_cands = len(self._candidates)
+        n_params = 0
+        if has_config:
+            n_params = len(self._result.config.parameters)
+
+        self._sensitivity_btn.setEnabled(has_best and has_config)
+        self._sobol_btn.setEnabled(has_config and n_params >= 1)
+        self._diagnostics_btn.setEnabled(has_result and n_cands >= 3)
+        self._correlation_btn.setEnabled(
+            has_result and n_cands >= 3 and n_params >= 2
+        )
+        self._heatmap_btn.setEnabled(
+            has_result and has_config and n_params >= 2 and n_cands >= 3
+        )
+        self._pareto_btn.setEnabled(has_result and n_cands >= 1)
+        self._log_btn.setEnabled(has_result and n_cands >= 1)
+
+    # ------------------------------------------------------------------
+    # 分析アクション
+    # ------------------------------------------------------------------
+    def _on_run_sensitivity(self) -> None:
+        """最良解周りの OAT 感度解析を実行。"""
+        if not self._result or not self._result.best or not self._result.config:
+            return
+
+        config = self._result.config
+        best_params = self._result.best.params
+        evaluate_fn = self._get_or_create_evaluator(config)
+
+        try:
+            sensitivity = compute_sensitivity(
+                evaluate_fn=evaluate_fn,
+                best_params=best_params,
+                parameters=config.parameters,
+                objective_key=config.objective_key,
+            )
+            sensitivity.objective_label = config.objective_label
+        except Exception as exc:
+            logger.warning("感度解析に失敗: %s", exc, exc_info=True)
+            QMessageBox.warning(self, "感度解析エラー", str(exc))
+            return
+
+        dlg = SensitivityDialog(sensitivity, parent=self)
+        dlg.exec()
+
+    def _on_run_sobol(self) -> None:
+        """Sobol グローバル感度解析を実行。"""
+        if not self._result or not self._result.config:
+            return
+
+        config = self._result.config
+        n_params = len(config.parameters)
+        n_base = 64
+        n_evals = n_base * (2 * n_params + 2)
+
+        reply = QMessageBox.question(
+            self, "Sobol感度解析",
+            f"Sobol分散ベース感度解析を実行します。\n\n"
+            f"パラメータ数: {n_params}\n"
+            f"推定評価回数: {n_evals} 回\n\n"
+            f"実行しますか？",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+
+        evaluate_fn = self._get_or_create_evaluator(config)
+
+        try:
+            sobol = compute_sobol_sensitivity(
+                evaluate_fn=evaluate_fn,
+                parameters=config.parameters,
+                objective_key=config.objective_key,
+                n_samples=n_base,
+                objective_label=config.objective_label,
+            )
+        except Exception as exc:
+            logger.warning("Sobol解析に失敗: %s", exc, exc_info=True)
+            QMessageBox.warning(self, "Sobol解析エラー", str(exc))
+            return
+
+        dlg = SobolDialog(sobol, parent=self)
+        dlg.exec()
+
+    def _on_show_diagnostics(self) -> None:
+        """収束品質診断ダイアログを表示。"""
+        if not self._result:
+            return
+        diag = compute_convergence_diagnostics(self._result)
+        if diag is None:
+            QMessageBox.information(
+                self, "診断不可", "候補数が不足しているため診断できません。"
+            )
+            return
+        dlg = DiagnosticsDialog(diag, parent=self)
+        dlg.exec()
+
+    def _on_show_correlation(self) -> None:
+        """パラメータ相関分析ダイアログを表示。"""
+        if not self._result:
+            return
+        corr = compute_correlation_analysis(self._result)
+        if corr is None:
+            QMessageBox.information(
+                self, "相関分析",
+                "候補数またはパラメータ数が不足しています。\n"
+                "（3候補以上・2パラメータ以上が必要）",
+            )
+            return
+        dlg = CorrelationDialog(corr, parent=self)
+        dlg.exec()
+
+    def _on_show_heatmap(self) -> None:
+        """パラメータ空間ヒートマップを表示。"""
+        if not self._result or not self._result.config:
+            return
+        if len(self._result.config.parameters) < 2:
+            QMessageBox.information(
+                self, "情報", "ヒートマップには2パラメータ以上必要です。"
+            )
+            return
+        dlg = HeatmapDialog(self._result, parent=self)
+        dlg.exec()
+
+    def _on_show_pareto(self) -> None:
+        """Pareto front ダイアログを表示。"""
+        if not self._result:
+            return
+        dlg = ParetoDialog(self._result, parent=self)
+        dlg.exec()
+
+    def _on_export_log(self) -> None:
+        """全評価履歴をCSVログとして出力。"""
+        if not self._result:
+            return
+        path, _ = QFileDialog.getSaveFileName(
+            self, "評価ログ出力先を選択", "optimization_log.csv",
+            "CSV Files (*.csv);;All Files (*)",
+        )
+        if not path:
+            return
+        try:
+            export_optimization_log(self._result, path)
+            QMessageBox.information(
+                self, "評価ログ出力完了",
+                f"全{len(self._result.all_candidates)}件の評価履歴を出力:\n{path}",
+            )
+        except Exception as exc:
+            logger.exception("評価ログ出力エラー")
+            QMessageBox.warning(self, "出力エラー", str(exc))
+
+    def _on_show_comparison(self) -> None:
+        """結果比較ダイアログを表示。"""
+        dlg = ComparisonDialog(parent=self)
+        dlg.exec()
+
+    def _get_or_create_evaluator(self, config: OptimizationConfig):
+        """感度解析等で使う評価関数を構築。SNAP接続時は実解析、未接続時はモック。"""
+        if self._base_case and self._snap_exe_path:
+            evaluate_fn = create_unified_evaluator(
+                snap_exe_path=self._snap_exe_path,
+                base_case=self._base_case,
+                param_ranges=config.parameters,
+                snap_work_dir=self._snap_work_dir,
+                timeout=config.snap_timeout,
+                damper_def_name=(
+                    self._selected_damper_def().name
+                    if self._selected_damper_def() else ""
+                ),
+            )
+            if evaluate_fn is not None:
+                return evaluate_fn
+
+        from app.services.optimizer import _mock_evaluate
+        base = {}
+        if config.base_case and config.base_case.result_summary:
+            base = config.base_case.result_summary
+        return lambda params: _mock_evaluate(
+            params, base, config.objective_key
+        )
 
     # ------------------------------------------------------------------
     # ユーティリティ

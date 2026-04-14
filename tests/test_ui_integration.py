@@ -185,6 +185,104 @@ class TestDialogInstantiation:
         dlg._obj2_enabled.setChecked(True)
         assert dlg._method_combo.currentData() == "nsga2"
 
+    def test_unified_optimizer_analysis_buttons_exist(self, qapp):
+        """統合最適化ダイアログの分析ボタンが存在し、初期状態で無効。"""
+        from app.ui.unified_optimizer_dialog import UnifiedOptimizerDialog
+        dlg = UnifiedOptimizerDialog()
+
+        # 分析ボタンの存在確認
+        assert hasattr(dlg, "_sensitivity_btn")
+        assert hasattr(dlg, "_sobol_btn")
+        assert hasattr(dlg, "_diagnostics_btn")
+        assert hasattr(dlg, "_correlation_btn")
+        assert hasattr(dlg, "_heatmap_btn")
+        assert hasattr(dlg, "_pareto_btn")
+        assert hasattr(dlg, "_log_btn")
+        assert hasattr(dlg, "_comparison_btn")
+
+        # 初期状態: 結果がないので分析系は無効
+        assert not dlg._sensitivity_btn.isEnabled()
+        assert not dlg._sobol_btn.isEnabled()
+        assert not dlg._diagnostics_btn.isEnabled()
+        assert not dlg._correlation_btn.isEnabled()
+        assert not dlg._heatmap_btn.isEnabled()
+        assert not dlg._pareto_btn.isEnabled()
+        assert not dlg._log_btn.isEnabled()
+        # 結果比較はいつでも可能
+        assert dlg._comparison_btn.isEnabled()
+
+    def test_unified_optimizer_analysis_buttons_enable(self, qapp):
+        """結果セット後に分析ボタンが有効化される。"""
+        from app.ui.unified_optimizer_dialog import UnifiedOptimizerDialog
+        from app.services.optimizer import (
+            OptimizationCandidate, OptimizationConfig, OptimizationResult,
+            ParameterRange,
+        )
+
+        dlg = UnifiedOptimizerDialog()
+
+        params = [
+            ParameterRange(key="field_8", label="C0", min_val=100, max_val=1000,
+                           step=50, is_integer=False, is_floor_count=False),
+            ParameterRange(key="field_12", label="alpha", min_val=0.1, max_val=1.0,
+                           step=0.05, is_integer=False, is_floor_count=False),
+        ]
+        config = OptimizationConfig(
+            objective_key="max_drift", objective_label="最大層間変形角",
+            parameters=params, constraints={}, method="random", max_iterations=10,
+        )
+
+        cands = []
+        for i in range(5):
+            cands.append(OptimizationCandidate(
+                iteration=i, params={"field_8": 200 + i * 100, "field_12": 0.3 + i * 0.1},
+                objective_value=0.01 - i * 0.001, is_feasible=True,
+                response_values={"max_drift": 0.01 - i * 0.001},
+            ))
+        best = min(cands, key=lambda c: c.objective_value)
+        result = OptimizationResult(config=config, all_candidates=cands, best=best)
+
+        dlg._result = result
+        dlg._candidates = list(cands)
+        dlg._enable_analysis_buttons()
+
+        assert dlg._sensitivity_btn.isEnabled()
+        assert dlg._sobol_btn.isEnabled()
+        assert dlg._diagnostics_btn.isEnabled()
+        assert dlg._correlation_btn.isEnabled()
+        assert dlg._heatmap_btn.isEnabled()
+        assert dlg._pareto_btn.isEnabled()
+        assert dlg._log_btn.isEnabled()
+
+    def test_unified_optimizer_diagnostics_action(self, qapp):
+        """収束診断が実行可能。"""
+        from app.ui.unified_optimizer_dialog import UnifiedOptimizerDialog
+        from app.services.optimizer import (
+            OptimizationCandidate, OptimizationConfig, OptimizationResult,
+            ParameterRange,
+        )
+        from app.services.optimizer_analytics import compute_convergence_diagnostics
+
+        dlg = UnifiedOptimizerDialog()
+        params = [ParameterRange(key="field_8", label="C0", min_val=100,
+                                  max_val=1000, step=50, is_integer=False,
+                                  is_floor_count=False)]
+        config = OptimizationConfig(
+            objective_key="max_drift", objective_label="最大層間変形角",
+            parameters=params, constraints={}, method="random", max_iterations=20,
+        )
+        cands = [OptimizationCandidate(
+            iteration=i, params={"field_8": 200 + i * 50},
+            objective_value=0.01 - i * 0.0003, is_feasible=True,
+            response_values={"max_drift": 0.01 - i * 0.0003},
+        ) for i in range(10)]
+        result = OptimizationResult(config=config, all_candidates=cands)
+
+        diag = compute_convergence_diagnostics(result)
+        assert diag is not None
+        assert 0 <= diag.quality_score <= 100
+        assert diag.quality_label in ("優良", "良好", "要注意", "不十分")
+
     def test_damper_injector_dialog(self, qapp):
         from app.ui.damper_injector_dialog import DamperInjectorDialog
         dlg = DamperInjectorDialog()
