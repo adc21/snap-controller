@@ -51,11 +51,18 @@ class TestDialogInstantiation:
         dlg = OptimizerDialog()
         assert dlg is not None
 
-    def test_irdt_wizard_dialog(self, qapp):
-        from app.ui.irdt_wizard_dialog import IrdtWizardDialog
-        dlg = IrdtWizardDialog()
+    def test_irdt_sdof_dialog(self, qapp):
+        from app.ui.irdt_sdof_dialog import IRDTSdofDialog
+        dlg = IRDTSdofDialog()
         assert dlg is not None
-        assert dlg._stack.count() == 5
+        # デフォルト値で計算が走り μ=0.05 が表示されること
+        assert "0.05" in dlg._lbl_mu.text()
+
+    def test_irdt_mdof_dialog(self, qapp):
+        from app.ui.irdt_mdof_dialog import IRDTMdofDialog
+        dlg = IRDTMdofDialog()
+        assert dlg is not None
+        assert dlg._result_table.rowCount() == 2
 
     def test_minimizer_dialog(self, qapp):
         from app.ui.minimizer_dialog import MinimizerDialog
@@ -1223,33 +1230,28 @@ class TestDialogInteractions:
         assert row._spring.value() == 0.0
         row._type_combo.setCurrentText("iRDT")
 
-    def test_irdt_wizard_full_navigation(self, qapp):
-        """5ステップ全てを往復できること。"""
-        from app.ui.irdt_wizard_dialog import IrdtWizardDialog
-        dlg = IrdtWizardDialog(floor_masses=[1e6, 1e6, 1e6])
-        # Forward
-        for i in range(4):
-            dlg._go_next()
-        assert dlg._stack.currentIndex() == 4
-        # Backward
-        for i in range(4):
-            dlg._go_back()
-        assert dlg._stack.currentIndex() == 0
-        # Forward again — recompute should not crash
-        for i in range(4):
-            dlg._go_next()
-        assert dlg._placement_plan is not None
-        assert len(dlg._node_rows) > 0
+    def test_irdt_sdof_auto_toggle(self, qapp):
+        """自動最適化 ON/OFF で cd/kb 入力欄の表示が切り替わること。"""
+        from app.ui.irdt_sdof_dialog import IRDTSdofDialog
+        dlg = IRDTSdofDialog()
+        assert dlg._auto_check.isChecked()
+        assert not dlg._cd_edit.isVisible()
+        dlg._auto_check.setChecked(False)
+        # QWidget.isVisible() は実表示がないと False を返すため、状態で確認
+        assert dlg._cd_edit.isVisibleTo(dlg)
+        assert dlg._kb_edit.isVisibleTo(dlg)
 
-    def test_irdt_wizard_mu_slider_sync(self, qapp):
-        """μスライダーとスピンボックスが同期すること。"""
-        from app.ui.irdt_wizard_dialog import IrdtWizardDialog
-        dlg = IrdtWizardDialog()
-        dlg._go_next()  # Step 2
-        dlg._mu_slider.setValue(50)  # 0.050
-        assert dlg._mu_spin.value() == pytest.approx(0.050, abs=0.001)
-        dlg._mu_spin.setValue(0.100)
-        assert dlg._mu_slider.value() == 100
+    def test_irdt_mdof_mode_switch(self, qapp):
+        """MDOF: stiffness ⇄ vector モード切替で列ヘッダーが変わること。"""
+        from app.ui.irdt_mdof_dialog import IRDTMdofDialog
+        dlg = IRDTMdofDialog()
+        # 初期: stiffness モード
+        assert dlg._input_mode == "stiffness"
+        assert "剛性" in dlg._input_table.horizontalHeaderItem(1).text()
+        # vector モードへ
+        dlg._mode_combo.setCurrentIndex(1)
+        assert dlg._input_mode == "vector"
+        assert "固有ベクトル" in dlg._input_table.horizontalHeaderItem(1).text()
 
 
 # ===================================================================
@@ -2550,27 +2552,6 @@ class TestConstraintMarginColumn:
         )
         dlg._populate_result_table(result)
         assert dlg._result_table.item(0, 4).text() == "—"
-        dlg.close()
-
-
-class TestIrdtVariationControl:
-    """iRDTウィザード感度解析変動幅コントロールのテスト。"""
-
-    def test_variation_spin_exists(self, qapp):
-        """変動幅スピンボックスが存在し、デフォルト20%。"""
-        from app.ui.irdt_wizard_dialog import IrdtWizardDialog
-        dlg = IrdtWizardDialog()
-        assert hasattr(dlg, "_variation_spin")
-        assert dlg._variation_spin.value() == 20
-        assert dlg._variation_spin.minimum() == 5
-        assert dlg._variation_spin.maximum() == 50
-        dlg.close()
-
-    def test_variation_spin_suffix(self, qapp):
-        """スピンボックスに%サフィックスがある。"""
-        from app.ui.irdt_wizard_dialog import IrdtWizardDialog
-        dlg = IrdtWizardDialog()
-        assert dlg._variation_spin.suffix() == " %"
         dlg.close()
 
 

@@ -656,10 +656,14 @@ class MainWindow(_MainWindowDialogsMixin, QMainWindow):
         act_unified.triggered.connect(self._open_unified_optimizer)
         analysis_menu.addAction(act_unified)
 
-        act_irdt = QAction("iRDT 設計ウィザード(&I)…", self)
-        act_irdt.setShortcut("Ctrl+Shift+I")
-        act_irdt.triggered.connect(self._open_irdt_wizard)
-        analysis_menu.addAction(act_irdt)
+        act_irdt_sdof = QAction("iRDT最適解 - 1質点系(&I)…", self)
+        act_irdt_sdof.setShortcut("Ctrl+Shift+I")
+        act_irdt_sdof.triggered.connect(self._open_irdt_sdof)
+        analysis_menu.addAction(act_irdt_sdof)
+
+        act_irdt_mdof = QAction("iRDT最適解 - 多質点系(&M)…", self)
+        act_irdt_mdof.triggered.connect(self._open_irdt_mdof)
+        analysis_menu.addAction(act_irdt_mdof)
 
         act_injector = QAction("iRDT/iOD ダンパー挿入(&J)…", self)
         act_injector.setShortcut("Ctrl+Shift+J")

@@ -279,53 +279,17 @@ class _MainWindowDialogsMixin:
     # 最適化ダイアログ
     # ------------------------------------------------------------------
 
-    def _open_irdt_wizard(self) -> None:
-        """iRDT 設計ウィザードを開きます。"""
-        # PeriodXbnReader があればそこからモード情報を取得
-        period_reader = None
-        floor_masses = None
-        for e in self._binary_result._entries.values():
-            if e.loader:
-                try:
-                    pr = e.loader.period_reader()
-                    if pr and pr.modes:
-                        period_reader = pr
-                        break
-                except Exception:
-                    logger.debug("固有値解析結果の読込み失敗", exc_info=True)
-        # 層質量: プロジェクトの s8i モデルから取得を試みる
-        if self._project and hasattr(self._project, "model") and self._project.model:
-            model = self._project.model
-            if hasattr(model, "floor_masses"):
-                floor_masses = model.floor_masses
-
-        # ベース .s8i パスを取得
-        base_s8i_path = None
-        if self._project and hasattr(self._project, "cases") and self._project.cases:
-            for case in self._project.cases:
-                if case.model_path and Path(case.model_path).exists():
-                    base_s8i_path = case.model_path
-                    break
-
-        from .irdt_wizard_dialog import IrdtWizardDialog
-        dlg = IrdtWizardDialog(
-            period_reader=period_reader,
-            floor_masses=floor_masses,
-            base_s8i_path=base_s8i_path,
-            parent=self,
-        )
-        dlg.designCompleted.connect(self._on_irdt_design_completed)
+    def _open_irdt_sdof(self) -> None:
+        """iRDT最適解 - 1質点系ダイアログを開きます。"""
+        from .irdt_sdof_dialog import IRDTSdofDialog
+        dlg = IRDTSdofDialog(parent=self)
         dlg.exec()
 
-    def _on_irdt_design_completed(self, plan) -> None:
-        """iRDT 設計結果を受け取ります。"""
-        self._log.append_line(f"=== iRDT 設計完了: モード{plan.target_mode}, "
-                              f"μ={plan.total_mass_ratio:.4f} ===")
-        self.statusBar().showMessage(
-            f"iRDT 設計完了 — モード{plan.target_mode}, "
-            f"質量比 μ={plan.total_mass_ratio:.4f}",
-            8000,
-        )
+    def _open_irdt_mdof(self) -> None:
+        """iRDT最適解 - 多質点系ダイアログを開きます。"""
+        from .irdt_mdof_dialog import IRDTMdofDialog
+        dlg = IRDTMdofDialog(parent=self)
+        dlg.exec()
 
     def _open_unified_optimizer(self) -> None:
         """統合最適化ダイアログを開きます。"""
