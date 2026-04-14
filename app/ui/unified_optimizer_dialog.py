@@ -457,30 +457,36 @@ class UnifiedOptimizerDialog(QDialog):
         layout.addWidget(group)
 
     def _build_constraints(self, layout: QVBoxLayout) -> None:
-        """制約条件パネル。"""
+        """制約条件パネル。PerformanceCriteria の有効項目を自動読込。"""
         group = QGroupBox("制約条件")
         gl = QFormLayout(group)
 
         self._constraint_widgets: Dict[str, QDoubleSpinBox] = {}
 
-        defaults = {
-            "max_drift": (0.01, "最大層間変形角 <"),
-            "shear_coeff": (0.30, "せん断力係数 <"),
-        }
-
-        if self._criteria:
-            if self._criteria.max_drift:
-                defaults["max_drift"] = (self._criteria.max_drift, "最大層間変形角 <")
-            if self._criteria.max_shear_coeff:
-                defaults["shear_coeff"] = (self._criteria.max_shear_coeff, "せん断力係数 <")
-
-        for key, (val, label) in defaults.items():
-            spin = QDoubleSpinBox()
-            spin.setDecimals(4)
-            spin.setRange(0, 10)
-            spin.setValue(val)
-            gl.addRow(f"{label}", spin)
-            self._constraint_widgets[key] = spin
+        if self._criteria and self._criteria.items:
+            # PerformanceCriteria の有効項目から制約を構築
+            for item in self._criteria.items:
+                if not item.enabled or item.limit_value is None:
+                    continue
+                spin = QDoubleSpinBox()
+                spin.setDecimals(item.decimals)
+                spin.setRange(0, 1e6)
+                spin.setValue(item.limit_value)
+                gl.addRow(f"{item.label} ({item.unit}) <", spin)
+                self._constraint_widgets[item.key] = spin
+        else:
+            # デフォルト制約（criteria未設定時）
+            defaults = [
+                ("max_drift", 0.005, "最大層間変形角 <", 6),
+                ("shear_coeff", 0.30, "せん断力係数 <", 4),
+            ]
+            for key, val, label, decimals in defaults:
+                spin = QDoubleSpinBox()
+                spin.setDecimals(decimals)
+                spin.setRange(0, 10)
+                spin.setValue(val)
+                gl.addRow(label, spin)
+                self._constraint_widgets[key] = spin
 
         layout.addWidget(group)
 
