@@ -124,6 +124,8 @@ class _BuildingVisualWidget(QWidget):
         margin = 30
         n_floors = len(self._configs)
 
+        colors = self._get_theme_colors()
+
         if n_floors == 0:
             painter.setPen(QPen(QColor("#888888")))
             painter.drawText(
@@ -133,114 +135,153 @@ class _BuildingVisualWidget(QWidget):
             painter.end()
             return
 
-        # 建物の描画エリア
+        layout = self._compute_building_layout(w, h, margin, n_floors)
+        self._paint_building_frame(painter, layout, colors)
+
+        font = QFont()
+        font.setPointSize(9)
+        painter.setFont(font)
+
+        for i, config in enumerate(reversed(self._configs)):
+            floor_idx = n_floors - 1 - i
+            self._paint_floor_layer(painter, config, floor_idx, layout, colors, font)
+
+        self._paint_legend(painter, w, h, margin, layout["building_bottom"], colors["text_color"])
+
+        painter.end()
+
+    @staticmethod
+    def _compute_building_layout(w: int, h: int, margin: int, n_floors: int) -> dict:
         building_left = margin + 30
         building_right = w - margin - 20
         building_top = margin
         building_bottom = h - margin
         building_w = building_right - building_left
         floor_h = (building_bottom - building_top) / n_floors
+        return {
+            "building_left": building_left,
+            "building_right": building_right,
+            "building_top": building_top,
+            "building_bottom": building_bottom,
+            "building_w": building_w,
+            "floor_h": floor_h,
+        }
 
-        # 背景色を取得
+    def _get_theme_colors(self) -> dict:
         bg_color = self.palette().color(self.backgroundRole())
         is_dark = bg_color.lightnessF() < 0.5
-        line_color = QColor("#cccccc") if is_dark else QColor("#444444")
-        text_color = QColor("#dddddd") if is_dark else QColor("#333333")
-        floor_bg = QColor(60, 60, 80, 40) if is_dark else QColor(200, 220, 240, 60)
+        return {
+            "is_dark": is_dark,
+            "line_color": QColor("#cccccc") if is_dark else QColor("#444444"),
+            "text_color": QColor("#dddddd") if is_dark else QColor("#333333"),
+            "floor_bg": QColor(60, 60, 80, 40) if is_dark else QColor(200, 220, 240, 60),
+        }
 
-        # 建物外枠
-        painter.setPen(QPen(line_color, 2))
-        painter.setBrush(QBrush(floor_bg))
+    @staticmethod
+    def _paint_building_frame(painter: QPainter, layout: dict, colors: dict) -> None:
+        painter.setPen(QPen(colors["line_color"], 2))
+        painter.setBrush(QBrush(colors["floor_bg"]))
         painter.drawRect(
-            int(building_left), int(building_top),
-            int(building_w), int(building_bottom - building_top)
+            int(layout["building_left"]), int(layout["building_top"]),
+            int(layout["building_w"]),
+            int(layout["building_bottom"] - layout["building_top"])
         )
 
-        # 各層を描画（下から上へ）
-        font = QFont()
-        font.setPointSize(9)
+    @staticmethod
+    def _paint_floor_layer(
+        painter: QPainter,
+        config: "FloorDamperConfig",
+        floor_idx: int,
+        layout: dict,
+        colors: dict,
+        font: QFont,
+    ) -> None:
+        from PySide6.QtCore import QRectF
+
+        building_left = layout["building_left"]
+        building_right = layout["building_right"]
+        building_w = layout["building_w"]
+        floor_h = layout["floor_h"]
+
+        y_top = layout["building_top"] + floor_idx * floor_h
+        y_bottom = y_top + floor_h
+
+        painter.setPen(QPen(colors["line_color"], 1, Qt.DashLine))
+        painter.drawLine(
+            int(building_left), int(y_bottom),
+            int(building_right), int(y_bottom)
+        )
+
+        painter.setPen(QPen(colors["text_color"]))
+        painter.drawText(
+            QRectF(0, y_top, building_left - 5, floor_h),
+            Qt.AlignRight | Qt.AlignVCenter,
+            f"{config.floor}F"
+        )
+
+        if config.damper_type == "なし" or config.count <= 0:
+            return
+
+        symbol, color_str = _DAMPER_SYMBOLS.get(
+            config.damper_type, ("?", "#888888")
+        )
+        painter.setPen(QPen(QColor(color_str)))
+        symbol_font = QFont()
+        symbol_font.setPointSize(max(8, min(14, int(floor_h * 0.5))))
+        symbol_font.setBold(True)
+        painter.setFont(symbol_font)
+
+        count = min(config.count, 8)
+        spacing = building_w / (count + 1)
+        y_center = y_top + floor_h / 2
+
+        for j in range(count):
+            x = building_left + spacing * (j + 1)
+            painter.drawText(
+                QRectF(x - 10, y_center - 10, 20, 20),
+                Qt.AlignCenter,
+                symbol
+            )
+
+        if config.count > 8:
+            painter.setFont(font)
+            painter.setPen(QPen(colors["text_color"]))
+            painter.drawText(
+                QRectF(building_right + 3, y_top, 40, floor_h),
+                Qt.AlignLeft | Qt.AlignVCenter,
+                f"×{config.count}"
+            )
+
         painter.setFont(font)
 
-        for i, config in enumerate(reversed(self._configs)):
-            floor_idx = n_floors - 1 - i  # 上から数えたインデックス
-            y_top = building_top + floor_idx * floor_h
-            y_bottom = y_top + floor_h
-
-            # 層の境界線
-            painter.setPen(QPen(line_color, 1, Qt.DashLine))
-            painter.drawLine(
-                int(building_left), int(y_bottom),
-                int(building_right), int(y_bottom)
-            )
-
-            # 層番号ラベル
-            painter.setPen(QPen(text_color))
-            label_rect = Qt.AlignRight | Qt.AlignVCenter
-            from PySide6.QtCore import QRectF
-            painter.drawText(
-                QRectF(0, y_top, building_left - 5, floor_h),
-                label_rect,
-                f"{config.floor}F"
-            )
-
-            # ダンパーシンボル描画
-            if config.damper_type != "なし" and config.count > 0:
-                symbol, color_str = _DAMPER_SYMBOLS.get(
-                    config.damper_type, ("?", "#888888")
-                )
-                painter.setPen(QPen(QColor(color_str)))
-                symbol_font = QFont()
-                symbol_font.setPointSize(max(8, min(14, int(floor_h * 0.5))))
-                symbol_font.setBold(True)
-                painter.setFont(symbol_font)
-
-                # ダンパーを本数分表示
-                count = min(config.count, 8)  # 表示上限
-                spacing = building_w / (count + 1)
-                y_center = y_top + floor_h / 2
-
-                for j in range(count):
-                    x = building_left + spacing * (j + 1)
-                    painter.drawText(
-                        QRectF(x - 10, y_center - 10, 20, 20),
-                        Qt.AlignCenter,
-                        symbol
-                    )
-
-                # 本数が多い場合に数字を追加表示
-                if config.count > 8:
-                    painter.setFont(font)
-                    painter.setPen(QPen(text_color))
-                    painter.drawText(
-                        QRectF(building_right + 3, y_top, 40, floor_h),
-                        Qt.AlignLeft | Qt.AlignVCenter,
-                        f"×{config.count}"
-                    )
-
-                painter.setFont(font)
-
-        # 凡例
-        legend_x = margin
+    def _paint_legend(
+        self,
+        painter: QPainter,
+        w: int,
+        h: int,
+        margin: int,
+        building_bottom: float,
+        text_color: QColor,
+    ) -> None:
         legend_y = building_bottom + 5
-        if legend_y + 15 < h:
-            painter.setPen(QPen(text_color))
-            legend_font = QFont()
-            legend_font.setPointSize(7)
-            painter.setFont(legend_font)
+        if legend_y + 15 >= h:
+            return
 
-            # 使用中のダンパー種類のみ表示
-            used_types = {c.damper_type for c in self._configs if c.damper_type != "なし"}
-            x_offset = legend_x
-            for dtype in used_types:
-                symbol, color_str = _DAMPER_SYMBOLS.get(dtype, ("?", "#888"))
-                painter.setPen(QPen(QColor(color_str)))
-                text = f"{symbol} {dtype}"
-                painter.drawText(int(x_offset), int(legend_y + 12), text)
-                x_offset += len(text) * 8 + 10
-                if x_offset > w - margin:
-                    break
+        painter.setPen(QPen(text_color))
+        legend_font = QFont()
+        legend_font.setPointSize(7)
+        painter.setFont(legend_font)
 
-        painter.end()
+        used_types = {c.damper_type for c in self._configs if c.damper_type != "なし"}
+        x_offset = margin
+        for dtype in used_types:
+            symbol, color_str = _DAMPER_SYMBOLS.get(dtype, ("?", "#888"))
+            painter.setPen(QPen(QColor(color_str)))
+            text = f"{symbol} {dtype}"
+            painter.drawText(int(x_offset), int(legend_y + 12), text)
+            x_offset += len(text) * 8 + 10
+            if x_offset > w - margin:
+                break
 
 
 class DamperPlacementWidget(QWidget):

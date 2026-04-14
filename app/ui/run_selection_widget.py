@@ -273,6 +273,16 @@ class RunSelectionWidget(QWidget):
         g_layout = QVBoxLayout(group)
         g_layout.setSpacing(8)
 
+        g_layout.addLayout(self._build_case_filter_buttons())
+        g_layout.addWidget(self._build_case_list_view())
+        g_layout.addWidget(self._build_case_status_label())
+        g_layout.addWidget(self._build_est_time_banner())
+        g_layout.addWidget(self._build_pre_run_summary_frame())
+        g_layout.addWidget(self._build_run_button())
+
+        layout.addWidget(group)
+
+    def _build_case_filter_buttons(self) -> QHBoxLayout:
         btn_row = QHBoxLayout()
         btn_all = QPushButton("全選択")
         btn_all.setToolTip("すべてのケースを選択します")
@@ -301,21 +311,23 @@ class RunSelectionWidget(QWidget):
         btn_row.addWidget(btn_pending)
         btn_row.addWidget(btn_errors)
         btn_row.addStretch()
-        g_layout.addLayout(btn_row)
+        return btn_row
 
+    def _build_case_list_view(self) -> QListWidget:
         self._list = QListWidget()
         self._list.setMaximumHeight(150)
         self._list.itemChanged.connect(self._update_run_button_label)
         self._list.itemChanged.connect(self._update_case_status_label)
         self._list.itemChanged.connect(self._update_est_time_banner)
-        g_layout.addWidget(self._list)
+        return self._list
 
+    def _build_case_status_label(self) -> QLabel:
         self._case_status_label = QLabel("　")
         self._case_status_label.setTextFormat(Qt.RichText)
         self._case_status_label.setStyleSheet("font-size: 10px; padding: 1px 4px;")
-        g_layout.addWidget(self._case_status_label)
+        return self._case_status_label
 
-        # 推定所要時間バナー
+    def _build_est_time_banner(self) -> QFrame:
         self._est_time_banner = QFrame()
         self._est_time_banner.setFrameShape(QFrame.NoFrame)
         self._est_time_banner.setStyleSheet(
@@ -340,10 +352,9 @@ class RunSelectionWidget(QWidget):
             "color: #283593; font-size: 10px; background: transparent; border: none;"
         )
         _est_time_layout.addWidget(self._est_time_lbl, stretch=1)
+        return self._est_time_banner
 
-        g_layout.addWidget(self._est_time_banner)
-
-        # 実行前ケース種別内訳サマリーカード
+    def _build_pre_run_summary_frame(self) -> QFrame:
         self._pre_run_summary_frame = QFrame()
         self._pre_run_summary_frame.setFrameShape(QFrame.NoFrame)
         self._pre_run_summary_frame.setStyleSheet(
@@ -380,17 +391,16 @@ class RunSelectionWidget(QWidget):
         _pre_run_layout.addWidget(self._pre_run_warn_lbl)
 
         self._pre_run_summary_frame.hide()
-        g_layout.addWidget(self._pre_run_summary_frame)
+        return self._pre_run_summary_frame
 
+    def _build_run_button(self) -> QPushButton:
         self._btn_run = QPushButton("🚀 選択したケースを解析実行")
         self._btn_run.setStyleSheet("font-weight: bold; padding: 6px; font-size: 14px;")
         self._btn_run.setToolTip(
             "チェックリストがすべて ✅ の場合のみ実行できます"
         )
         self._btn_run.clicked.connect(self._on_run_clicked)
-        g_layout.addWidget(self._btn_run)
-
-        layout.addWidget(group)
+        return self._btn_run
 
     def _build_completion_banner(self, layout: QVBoxLayout) -> None:
         self._completion_banner = QFrame()
