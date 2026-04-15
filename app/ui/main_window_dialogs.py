@@ -288,7 +288,14 @@ class _MainWindowDialogsMixin:
     def _open_irdt_mdof(self) -> None:
         """iRDT最適解 - 多質点系ダイアログを開きます。"""
         from .irdt_mdof_dialog import IRDTMdofDialog
-        dlg = IRDTMdofDialog(parent=self)
+        log_cb = None
+        if hasattr(self, "_log") and self._log is not None:
+            log_cb = self._log.append_line
+        dlg = IRDTMdofDialog(
+            parent=self,
+            project=getattr(self, "_project", None),
+            log_callback=log_cb,
+        )
         dlg.exec()
 
     def _open_unified_optimizer(self) -> None:

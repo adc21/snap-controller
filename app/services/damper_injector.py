@@ -67,6 +67,8 @@ class DamperInsertSpec:
     spring_kN_m: float = 5000.0
     damping_kN_s_m: float = 200.0
     stroke_m: float = 0.3
+    # True の場合、ダンパー定義 (DVMS) だけを追加し RD 要素 (配置) は追加しない。
+    def_only: bool = False
 
 
 @dataclass
@@ -262,6 +264,14 @@ class DamperInjector:
         if new_def is None:
             warnings.append(f"定義 '{spec.def_name}' の追加に失敗しました。")
             return False
+
+        # 定義のみモード: RD 配置はスキップ
+        if spec.def_only:
+            logger.debug(
+                "定義のみ追加: DVMS '%s' (m=%.1f, k=%.1f, c=%.1f)",
+                spec.def_name, spec.mass_kN_s2_m, spec.spring_kN_m, spec.damping_kN_s_m,
+            )
+            return True
 
         # ノード検証
         if spec.node_i not in model.nodes and model.nodes:

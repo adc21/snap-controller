@@ -58,15 +58,36 @@ _DEFAULT_T0 = 1.0
 class IRDTMdofDialog(QDialog):
     """
     iRDT 最適解 - 多質点系 (MDOF) ダイアログ。
+
+    Parameters
+    ----------
+    parent : QWidget, optional
+    project : Project, optional
+        プロジェクトを渡すと「s8iから自動入力」と「s8iへダンパー挿入」が有効化される。
+    log_callback : callable, optional
+        SNAP 実行や挿入のログを受け取るコールバック。
     """
 
-    def __init__(self, parent: Optional[QWidget] = None) -> None:
+    def __init__(
+        self,
+        parent: Optional[QWidget] = None,
+        project=None,  # type: ignore[no-untyped-def]
+        log_callback=None,
+    ) -> None:
         super().__init__(parent)
         self.setWindowTitle("iRDT最適解 - 多質点系")
-        self.resize(900, 680)
+        self.resize(980, 720)
 
         self._input_mode = _MODE_STIFFNESS
         self._t0 = _DEFAULT_T0
+        self._project = project
+        self._log_callback = log_callback
+
+        # 自動入力時に取得した層情報/モード情報を保持
+        self._auto_fill_result = None  # type: ignore[assignment]
+        self._selected_mode_no: int = 1
+        # 層名 (自動入力で埋まる。手動モードでは空のまま)
+        self._floor_names: List[str] = []
 
         self._build_ui()
         self._connect_signals()
@@ -76,6 +97,32 @@ class IRDTMdofDialog(QDialog):
     # ---- UI 構築 ------------------------------------------------------
     def _build_ui(self) -> None:
         root = QVBoxLayout(self)
+
+        # --- トップバー: 自動入力 + ダンパー挿入 -----------------------
+        top_bar = QHBoxLayout()
+        self._btn_import = QPushButton("s8i から自動入力...")
+        self._btn_import.setToolTip(
+            "プロジェクトの s8i モデルと固有値解析結果から、各層の質量と"
+            "固有ベクトルを自動入力します。\n"
+            "解析結果が無い場合は SNAP を実行して取得します。"
+        )
+        self._btn_import.clicked.connect(self._on_auto_import)
+        self._btn_import.setEnabled(self._project is not None)
+        top_bar.addWidget(self._btn_import)
+
+        self._lbl_import_status = QLabel("")
+        self._lbl_import_status.setStyleSheet("color: #555;")
+        top_bar.addWidget(self._lbl_import_status, stretch=1)
+
+        self._btn_inject = QPushButton("s8i へダンパーを挿入...")
+        self._btn_inject.setToolTip(
+            "計算した最適値で iRDT ダンパーを s8i に追加します。"
+        )
+        self._btn_inject.clicked.connect(self._on_inject_damper)
+        self._btn_inject.setEnabled(self._project is not None)
+        top_bar.addWidget(self._btn_inject)
+
+        root.addLayout(top_bar)
 
         # ヘッダー: 入力モード選択 + 層数 + (vector時) 固有周期
         header = QGroupBox("設定")
@@ -96,6 +143,28 @@ class IRDTMdofDialog(QDialog):
         self._t0_edit.setAlignment(Qt.AlignRight)
         self._t0_label = QLabel("固有周期 [s]")
         hform.addRow(self._t0_label, self._t0_edit)
+
+        # 対象モード選択 (自動入力後のみ有効)
+        self._target_mode_combo = QComboBox()
+        self._target_mode_combo.setEnabled(False)
+        hform.addRow("制御対象モード", self._target_mode_combo)
+
+        # 質量比による md 一括入力
+        mass_row = QHBoxLayout()
+        self._mu_target_edit = QLineEdit("0.05")
+        self._mu_target_edit.setValidator(QDoubleValidator(0.0, 1.0, 6))
+        self._mu_target_edit.setAlignment(Qt.AlignRight)
+        self._mu_target_edit.setMaximumWidth(100)
+        mass_row.addWidget(self._mu_target_edit)
+        self._btn_distribute_md = QPushButton("この質量比で各層に一様配分")
+        self._btn_distribute_md.setToolTip(
+            "指定した質量比 μ = Σmd / Σm に基づき、各層のダンパー質量 md を"
+            "層質量に比例して配分します。"
+        )
+        self._btn_distribute_md.clicked.connect(self._on_distribute_md_from_mu)
+        mass_row.addWidget(self._btn_distribute_md)
+        mass_row.addStretch(1)
+        hform.addRow("目標質量比 μ [-]", mass_row)
 
         root.addWidget(header)
 
@@ -214,6 +283,17 @@ class IRDTMdofDialog(QDialog):
             self._input_table.setItem(row, col, item)
         elif not item.text().strip():
             item.setText(f"{value:g}")
+
+    def _set_item_text(self, row: int, col: int, text: str) -> None:
+        """入力テーブルセルを常に上書き (右寄せ)。"""
+        item = self._input_table.item(row, col)
+        if item is None:
+            item = QTableWidgetItem(text)
+            item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+            self._input_table.setItem(row, col, item)
+        else:
+            item.setText(text)
+            item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
 
     def _resize_input_rows(self, n: int) -> None:
         self._input_table.setRowCount(n)
@@ -408,3 +488,264 @@ class IRDTMdofDialog(QDialog):
             Path(path_str).write_text(content, encoding="utf-8-sig")
         except OSError as exc:
             QMessageBox.warning(self, "CSV保存失敗", f"書き込みに失敗しました:\n{exc}")
+
+    # ---- s8i 自動入力 -------------------------------------------------
+    def _on_auto_import(self) -> None:
+        """プロジェクトの s8i と固有値解析結果から入力を自動生成します。"""
+        if self._project is None:
+            QMessageBox.warning(self, "プロジェクト未設定",
+                                "プロジェクトが読み込まれていません。")
+            return
+
+        from app.services.irdt_auto_fill import auto_fill_from_project
+
+        # まず解析結果ありで試行、なければ実行を確認
+        try:
+            result = auto_fill_from_project(self._project, run_if_missing=False)
+        except FileNotFoundError:
+            ans = QMessageBox.question(
+                self,
+                "固有値解析が必要です",
+                "プロジェクトに固有値解析結果 (Period.xbn) が見つかりません。\n"
+                "SNAP を実行して固有値解析を取得しますか？\n"
+                "(最初の解析ケースが使用されます)",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.Yes,
+            )
+            if ans != QMessageBox.Yes:
+                return
+            try:
+                result = auto_fill_from_project(
+                    self._project, run_if_missing=True,
+                    log_callback=self._log_callback,
+                )
+            except Exception as exc:
+                QMessageBox.critical(self, "自動入力失敗",
+                                     f"SNAP 実行中にエラー:\n{exc}")
+                return
+        except Exception as exc:
+            QMessageBox.critical(self, "自動入力失敗", f"例外:\n{exc}")
+            return
+
+        self._apply_auto_fill(result)
+
+    def _apply_auto_fill(self, result) -> None:  # type: ignore[no-untyped-def]
+        """`AutoFillResult` をダイアログ入力欄に反映します。"""
+        self._auto_fill_result = result
+        floors = result.floors
+        modes = result.modes
+        if not floors:
+            QMessageBox.warning(self, "自動入力失敗",
+                                "s8i から層情報を取得できませんでした。")
+            return
+
+        # モード選択コンボを更新
+        self._target_mode_combo.blockSignals(True)
+        self._target_mode_combo.clear()
+        for m in modes:
+            label = (f"Mode {m.mode_no}: T={m.period:.4f}s "
+                     f"(ω={m.omega:.3f}, dir={m.dominant_direction})")
+            self._target_mode_combo.addItem(label, m.mode_no)
+        self._target_mode_combo.setEnabled(bool(modes))
+        self._target_mode_combo.blockSignals(False)
+        try:
+            self._target_mode_combo.currentIndexChanged.disconnect(
+                self._on_target_mode_changed
+            )
+        except (TypeError, RuntimeError):
+            pass
+        self._target_mode_combo.currentIndexChanged.connect(
+            self._on_target_mode_changed
+        )
+
+        # 層名を保存 (vertical header に利用)
+        self._floor_names = [f.name for f in floors]
+
+        # vector モードに切替えて周期 + 固有ベクトルを表示
+        self._mode_combo.blockSignals(True)
+        self._mode_combo.setCurrentIndex(1)  # vector
+        self._input_mode = _MODE_VECTOR
+        self._update_table_headers()
+        self._apply_result_columns()
+        self._t0_label.setVisible(True)
+        self._t0_edit.setVisible(True)
+        self._mode_combo.blockSignals(False)
+
+        # 層数調整 (1次モードを既定)
+        n = len(floors)
+        self._n_spin.blockSignals(True)
+        self._n_spin.setValue(n)
+        self._n_spin.blockSignals(False)
+        self._resize_input_rows(n)
+
+        # 1 次モードで自動入力
+        self._selected_mode_no = modes[0].mode_no if modes else 1
+        self._fill_input_from_modes(result, self._selected_mode_no)
+
+        status_parts = [f"層数={len(floors)}"]
+        if modes:
+            status_parts.append(f"モード数={len(modes)}")
+        if result.source_case_name:
+            status_parts.append(f"from '{result.source_case_name}'")
+        self._lbl_import_status.setText("自動入力: " + ", ".join(status_parts))
+
+        if result.warnings:
+            QMessageBox.information(
+                self, "自動入力の注意",
+                "\n".join(result.warnings),
+            )
+        self._recompute()
+
+    def _on_target_mode_changed(self, _idx: int) -> None:
+        mode_no = self._target_mode_combo.currentData()
+        if mode_no is None or self._auto_fill_result is None:
+            return
+        self._selected_mode_no = int(mode_no)
+        self._fill_input_from_modes(self._auto_fill_result, self._selected_mode_no)
+        self._recompute()
+
+    def _fill_input_from_modes(self, result, mode_no: int) -> None:  # type: ignore[no-untyped-def]
+        """指定モードの周期と固有ベクトルを入力テーブル/周期欄に反映します。
+
+        s8i から取得した層質量・モード形状・推奨 md を、既存値を上書きして
+        テーブルに反映する。md は常に `μ_target × mass` で再計算される。
+        """
+        mode = result.get_mode(mode_no)
+        floors = result.floors
+        n = len(floors)
+        try:
+            mu_tgt = float(self._mu_target_edit.text())
+        except ValueError:
+            mu_tgt = 0.05
+        self._input_table.blockSignals(True)
+        try:
+            if mode is not None:
+                self._t0_edit.setText(f"{mode.period:.6g}")
+            for row in range(n):
+                mass_val = floors[row].mass
+                # mass 列は必ず上書き
+                self._set_item_text(row, 0, f"{mass_val:g}")
+                # 固有ベクトル: モードから取得。無ければ 1 で埋める。
+                if mode is not None and row < len(mode.shape):
+                    vec = mode.shape[row]
+                else:
+                    vec = 1.0
+                # 第2列: vector モードなら固有ベクトル(上書き), stiffness モードなら
+                # 剛性 (既存値を残す)
+                if self._input_mode == _MODE_VECTOR:
+                    self._set_item_text(row, 1, f"{vec:g}")
+                else:
+                    self._ensure_item(row, 1, _DEFAULT_K[0])
+                # md 列: μ_target × mass で上書き
+                md_default = max(0.0, mass_val * mu_tgt)
+                self._set_item_text(row, 2, f"{md_default:g}")
+            # 行ラベルを floor 名で更新
+            self._input_table.setVerticalHeaderLabels(self._floor_names or [
+                str(i + 1) for i in range(n)
+            ])
+        finally:
+            self._input_table.blockSignals(False)
+
+    def _on_distribute_md_from_mu(self) -> None:
+        """目標質量比 μ に基づき各層の md を一様配分 (層質量比例) します。"""
+        try:
+            mu_target = float(self._mu_target_edit.text())
+        except ValueError:
+            QMessageBox.warning(self, "入力エラー", "目標質量比 μ は数値を入力してください。")
+            return
+        if mu_target < 0:
+            QMessageBox.warning(self, "入力エラー", "μ は 0 以上にしてください。")
+            return
+
+        ms = self._read_column(0)
+        n = self._input_table.rowCount()
+        self._input_table.blockSignals(True)
+        try:
+            for row in range(n):
+                m_val = ms[row] if row < len(ms) else 0.0
+                md_val = max(0.0, m_val * mu_target)
+                item = self._input_table.item(row, 2)
+                if item is None:
+                    item = QTableWidgetItem()
+                    item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+                    self._input_table.setItem(row, 2, item)
+                item.setText(f"{md_val:g}")
+        finally:
+            self._input_table.blockSignals(False)
+        self._recompute()
+
+    # ---- ダンパー挿入 -------------------------------------------------
+    def _on_inject_damper(self) -> None:
+        """計算結果を元に、ダンパー定義+配置を s8i に追加する提案ダイアログを開く。"""
+        if self._project is None or not getattr(self._project, "s8i_path", ""):
+            QMessageBox.warning(self, "プロジェクト未設定",
+                                "挿入先の s8i ファイルが特定できません。")
+            return
+
+        # 自動入力が済んでいない場合は層情報を s8i から取り直す
+        from app.services.irdt_auto_fill import (
+            extract_floor_info,
+            build_placement_specs,
+        )
+        from app.models.s8i_parser import parse_s8i
+
+        model = getattr(self._project, "s8i_model", None)
+        if model is None:
+            try:
+                model = parse_s8i(self._project.s8i_path)
+            except Exception as exc:
+                QMessageBox.critical(self, "s8i 読込失敗", str(exc))
+                return
+        floors = (self._auto_fill_result.floors
+                  if self._auto_fill_result is not None else extract_floor_info(model))
+        if not floors:
+            QMessageBox.warning(self, "層情報なし",
+                                "s8i から層情報を取得できませんでした。")
+            return
+
+        # 現在の入力から md/cd/kb を読む (計算結果テーブルの cd/kb 列)
+        mds = self._read_column(2)  # 入力テーブルの md
+        # 結果テーブルから cd, kb を取得
+        cds: List[float] = []
+        kbs: List[float] = []
+        # vector モードでは結果テーブル列が [cd, kb], stiffness では [period, vec, cd, kb]
+        cd_col = 0 if self._input_mode == _MODE_VECTOR else 2
+        kb_col = 1 if self._input_mode == _MODE_VECTOR else 3
+        for row in range(self._result_table.rowCount()):
+            def _v(col: int) -> float:
+                item = self._result_table.item(row, col)
+                if item is None:
+                    return float("nan")
+                try:
+                    return float(item.text())
+                except ValueError:
+                    return float("nan")
+            cds.append(_v(cd_col))
+            kbs.append(_v(kb_col))
+
+        if not any(cd > 0 for cd in cds if not math.isnan(cd)):
+            QMessageBox.warning(self, "最適値未計算",
+                                "有効な cd/kb が計算されていません。入力を確認してください。")
+            return
+
+        specs = build_placement_specs(floors, mds, cds, kbs)
+        if not specs:
+            QMessageBox.warning(self, "配置候補なし",
+                                "挿入可能な層がありません (md が 0、または最上層のみ)。")
+            return
+
+        # 代表ケース (先頭)
+        base_case = None
+        cases = getattr(self._project, "cases", []) or []
+        if cases:
+            base_case = cases[0]
+
+        from app.ui.irdt_placement_proposal_dialog import IrdtPlacementProposalDialog
+        dlg = IrdtPlacementProposalDialog(
+            base_s8i_path=self._project.s8i_path,
+            specs=specs,
+            project=self._project,
+            base_case=base_case,
+            parent=self,
+        )
+        dlg.exec()

@@ -63,6 +63,51 @@ class TestDialogInstantiation:
         dlg = IRDTMdofDialog()
         assert dlg is not None
         assert dlg._result_table.rowCount() == 2
+        # プロジェクトなしでは自動入力/挿入ボタンが無効
+        assert dlg._btn_import.isEnabled() is False
+        assert dlg._btn_inject.isEnabled() is False
+
+    def test_irdt_mdof_dialog_with_project(self, qapp, sample_project):
+        """プロジェクトを渡すと自動入力/挿入ボタンが有効化される。"""
+        from app.ui.irdt_mdof_dialog import IRDTMdofDialog
+        dlg = IRDTMdofDialog(project=sample_project)
+        assert dlg._btn_import.isEnabled() is True
+        assert dlg._btn_inject.isEnabled() is True
+        assert dlg._target_mode_combo.isEnabled() is False  # 自動入力前は無効
+
+    def test_irdt_placement_proposal_dialog(self, qapp, tmp_s8i_file):
+        """IrdtPlacementProposalDialog を specs 付きで開けるか確認。"""
+        from app.services.damper_injector import DamperInsertSpec
+        from app.ui.irdt_placement_proposal_dialog import IrdtPlacementProposalDialog
+        specs = [
+            DamperInsertSpec(
+                damper_type="iRDT", def_name="IRDT1", floor_name="F2",
+                node_i=1, node_j=2, quantity=1,
+                mass_kN_s2_m=10.0, spring_kN_m=1000.0,
+                damping_kN_s_m=100.0, stroke_m=0.3,
+            ),
+            DamperInsertSpec(
+                damper_type="iRDT", def_name="IRDT2", floor_name="F3",
+                node_i=2, node_j=3, quantity=2,
+                mass_kN_s2_m=20.0, spring_kN_m=2000.0,
+                damping_kN_s_m=200.0, stroke_m=0.3,
+                def_only=True,
+            ),
+        ]
+        dlg = IrdtPlacementProposalDialog(
+            base_s8i_path=tmp_s8i_file,
+            specs=specs,
+        )
+        assert dlg._table.rowCount() == 2
+        # def_only=False → チェック ON, def_only=True → OFF
+        from PySide6.QtCore import Qt
+        assert dlg._table.item(0, 0).checkState() == Qt.Checked
+        assert dlg._table.item(1, 0).checkState() == Qt.Unchecked
+        # 読み戻すと 2 件 (両方)
+        round_trip = dlg._read_specs_from_table()
+        assert len(round_trip) == 2
+        assert round_trip[0].def_only is False
+        assert round_trip[1].def_only is True
 
     def test_minimizer_dialog(self, qapp):
         from app.ui.minimizer_dialog import MinimizerDialog
