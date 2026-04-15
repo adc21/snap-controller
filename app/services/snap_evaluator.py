@@ -156,94 +156,100 @@ class SnapEvaluator:
             src = Path(self.base_s8i_path)
             tmp_input = tmp_path / src.name
 
-            # サポートファイル (.NAP, .GEM, .wav 等) を tmp にコピー
-            _SUPPORT_EXTS = {".nap", ".gem", ".wav"}
-            for f in src.parent.iterdir():
-                if f.is_file() and f.suffix.lower() in _SUPPORT_EXTS:
-                    shutil.copy2(f, tmp_path / f.name)
+            self._copy_support_files(src.parent, tmp_path)
 
-            # .s8i をパースしてパラメータを変更
             model = parse_s8i(str(src))
-
-            # DYC ケースの run_flag=2（解析済み）を 1（解析する）にリセット
-            for dyc in model.dyc_cases:
-                if dyc.run_flag == 2:
-                    dyc.run_flag = 1
-                    dyc.values[1] = "1"
-
-            # ダンパー定義パラメータの変更
-            if self.damper_def_name:
-                ddef = model.get_damper_def(self.damper_def_name)
-                if ddef is None:
-                    raise ValueError(
-                        f"ダンパー定義 '{self.damper_def_name}' が見つかりません"
-                    )
-
-                if self.param_field_map:
-                    # 明示的なマッピングを使用
-                    for param_key, field_idx in self.param_field_map.items():
-                        if param_key in params:
-                            old_val = ddef.values[field_idx] if field_idx < len(ddef.values) else "N/A"
-                            ddef.values[field_idx] = str(params[param_key])
-                            self.log_callback(
-                                f"    {self.damper_def_name}[{field_idx}]: "
-                                f"{old_val} -> {params[param_key]}"
-                            )
-                else:
-                    # マッピングなし → パラメータキーをフィールド名として検索
-                    for param_key, value in params.items():
-                        # フィールドインデックスが数字キーの場合
-                        try:
-                            idx = int(param_key)
-                            if 0 <= idx < len(ddef.values):
-                                ddef.values[idx] = str(value)
-                        except ValueError:
-                            logger.debug("パラメータキーを整数変換できず: %s", param_key)
-
-            # 基数パラメータの適用（floor_count_* → RD要素のquantity）
+            self._reset_dyc_run_flags(model)
+            self._apply_damper_def_params(model, params)
             self._apply_floor_count_params(model, params)
+            self._apply_rd_overrides(model)
 
-            # RD 配置の変更（固定オーバーライド）
-            if self.rd_overrides:
-                for row_str, changes in self.rd_overrides.items():
-                    try:
-                        row_idx = int(row_str)
-                    except (ValueError, TypeError):
-                        self.log_callback(f"[WARN] rd_overrides の行番号が不正: {row_str}")
-                        continue
-                    model.update_damper_element(
-                        row_idx,
-                        node_i=changes.get("node_i"),
-                        node_j=changes.get("node_j"),
-                        quantity=changes.get("quantity"),
-                    )
-
-            # 変更を書き出し
             model.write(str(tmp_input))
 
-            # SNAP 実行
-            result = snap_exec(
-                snap_exe=self.snap_exe_path,
-                input_file=str(tmp_input),
-                timeout=self.timeout,
-                stdout_callback=lambda line: None,  # 最適化中は標準出力を抑制
-            )
+            self._execute_snap(tmp_input)
 
-            if result.returncode != 0:
-                raise RuntimeError(
-                    f"SNAP が異常終了しました (code={result.returncode})"
-                )
-
-            # 結果フォルダを探す
-            # SNAP は snap_work_dir/{s8i_stem}/D{N}/ に結果を書き出す
             result_dir = self._find_result_dir(tmp_input, tmp_path)
-
-            # 結果パース
             res = Result(str(result_dir))
             return self._extract_response(res)
         finally:
             if not self.keep_temp_files:
                 shutil.rmtree(tmp_dir, ignore_errors=True)
+
+    @staticmethod
+    def _copy_support_files(src_dir: Path, tmp_path: Path) -> None:
+        """サポートファイル (.NAP, .GEM, .wav 等) を tmp にコピー。"""
+        _SUPPORT_EXTS = {".nap", ".gem", ".wav"}
+        for f in src_dir.iterdir():
+            if f.is_file() and f.suffix.lower() in _SUPPORT_EXTS:
+                shutil.copy2(f, tmp_path / f.name)
+
+    @staticmethod
+    def _reset_dyc_run_flags(model) -> None:
+        """DYC ケースの run_flag=2（解析済み）を 1（解析する）にリセット。"""
+        for dyc in model.dyc_cases:
+            if dyc.run_flag == 2:
+                dyc.run_flag = 1
+                dyc.values[1] = "1"
+
+    def _apply_damper_def_params(self, model, params: Dict[str, float]) -> None:
+        """ダンパー定義フィールドへ物理パラメータを反映。"""
+        if not self.damper_def_name:
+            return
+        ddef = model.get_damper_def(self.damper_def_name)
+        if ddef is None:
+            raise ValueError(
+                f"ダンパー定義 '{self.damper_def_name}' が見つかりません"
+            )
+
+        if self.param_field_map:
+            for param_key, field_idx in self.param_field_map.items():
+                if param_key not in params:
+                    continue
+                old_val = ddef.values[field_idx] if field_idx < len(ddef.values) else "N/A"
+                ddef.values[field_idx] = str(params[param_key])
+                self.log_callback(
+                    f"    {self.damper_def_name}[{field_idx}]: "
+                    f"{old_val} -> {params[param_key]}"
+                )
+        else:
+            for param_key, value in params.items():
+                try:
+                    idx = int(param_key)
+                except ValueError:
+                    logger.debug("パラメータキーを整数変換できず: %s", param_key)
+                    continue
+                if 0 <= idx < len(ddef.values):
+                    ddef.values[idx] = str(value)
+
+    def _apply_rd_overrides(self, model) -> None:
+        """RD 配置の固定オーバーライドを反映。"""
+        if not self.rd_overrides:
+            return
+        for row_str, changes in self.rd_overrides.items():
+            try:
+                row_idx = int(row_str)
+            except (ValueError, TypeError):
+                self.log_callback(f"[WARN] rd_overrides の行番号が不正: {row_str}")
+                continue
+            model.update_damper_element(
+                row_idx,
+                node_i=changes.get("node_i"),
+                node_j=changes.get("node_j"),
+                quantity=changes.get("quantity"),
+            )
+
+    def _execute_snap(self, tmp_input: Path) -> None:
+        """SNAP を実行し、異常終了時は例外を送出。"""
+        result = snap_exec(
+            snap_exe=self.snap_exe_path,
+            input_file=str(tmp_input),
+            timeout=self.timeout,
+            stdout_callback=lambda line: None,  # 最適化中は標準出力を抑制
+        )
+        if result.returncode != 0:
+            raise RuntimeError(
+                f"SNAP が異常終了しました (code={result.returncode})"
+            )
 
     def _apply_floor_count_params(self, model, params: Dict[str, float]) -> None:
         """floor_count_* パラメータを RD 要素の quantity に反映する。

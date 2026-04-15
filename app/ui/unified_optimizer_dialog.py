@@ -369,81 +369,88 @@ class UnifiedOptimizerDialog(QDialog):
         labels = get_damper_field_labels(dd.keyword)
         units = get_damper_field_units(dd.keyword)
 
-        # 値に数値を持つフィールドのみ表示 (idx 1〜)
         for field_idx_1based, label_text in sorted(labels.items()):
-            # values は 0-based, labels は 1-based
             val_idx = field_idx_1based  # values[0]=name, values[1]=field1, ...
-            if val_idx >= len(dd.values):
+            current = self._parse_param_field_value(dd, val_idx, label_text)
+            if current is None:
                 continue
-
-            raw_val = dd.values[val_idx]
-            try:
-                current = float(raw_val)
-            except (ValueError, TypeError):
-                continue
-
-            # 種別・番号・コード・フラグ系は最適化対象外
-            _skip_keywords = (
-                "種別", "k-DB", "番号", "型番", "モデル",
-                "考慮", "初期解析", "疲労損傷", "重量種別",
-                "計算", "しない", "する",
-            )
-            if any(kw in label_text for kw in _skip_keywords):
-                continue
-
             unit = units.get(field_idx_1based, "")
-            row = self._param_table.rowCount()
-            self._param_table.insertRow(row)
+            self._insert_param_table_row(field_idx_1based, val_idx, label_text, current, unit)
 
-            # チェックボックス
-            cb = QCheckBox()
-            cb.toggled.connect(self._refresh_axis_combos)
-            self._param_table.setCellWidget(row, 0, cb)
-
-            # フィールド名
-            name_item = QTableWidgetItem(label_text)
-            name_item.setFlags(name_item.flags() & ~Qt.ItemIsEditable)
-            self._param_table.setItem(row, 1, name_item)
-
-            # 現在値
-            val_item = QTableWidgetItem(f"{current:g}")
-            val_item.setFlags(val_item.flags() & ~Qt.ItemIsEditable)
-            self._param_table.setItem(row, 2, val_item)
-
-            # 下限
-            lo = self._suggest_bound(current, lower=True)
-            lo_spin = QDoubleSpinBox()
-            lo_spin.setDecimals(4)
-            lo_spin.setRange(-1e9, 1e9)
-            lo_spin.setValue(lo)
-            self._param_table.setCellWidget(row, 3, lo_spin)
-
-            # 上限
-            hi = self._suggest_bound(current, lower=False)
-            hi_spin = QDoubleSpinBox()
-            hi_spin.setDecimals(4)
-            hi_spin.setRange(-1e9, 1e9)
-            hi_spin.setValue(hi)
-            self._param_table.setCellWidget(row, 4, hi_spin)
-
-            # 単位
-            unit_item = QTableWidgetItem(unit)
-            unit_item.setFlags(unit_item.flags() & ~Qt.ItemIsEditable)
-            self._param_table.setItem(row, 5, unit_item)
-
-            self._field_rows.append({
-                "cb": cb,
-                "field_idx_1based": field_idx_1based,
-                "val_idx_0based": val_idx,
-                "label": label_text,
-                "current": current,
-                "lo_spin": lo_spin,
-                "hi_spin": hi_spin,
-                "unit": unit,
-            })
-
-        # 軸セレクタの選択肢を更新 (ダンパー定義切替時に古い field_* を除去)
         self._refresh_axis_combos()
+
+    # 種別・番号・コード・フラグ系は最適化対象外
+    _PARAM_SKIP_KEYWORDS = (
+        "種別", "k-DB", "番号", "型番", "モデル",
+        "考慮", "初期解析", "疲労損傷", "重量種別",
+        "計算", "しない", "する",
+    )
+
+    @classmethod
+    def _parse_param_field_value(cls, dd, val_idx: int, label_text: str) -> Optional[float]:
+        """フィールドから数値を取得、対象外なら None。"""
+        if val_idx >= len(dd.values):
+            return None
+        try:
+            current = float(dd.values[val_idx])
+        except (ValueError, TypeError):
+            return None
+        if any(kw in label_text for kw in cls._PARAM_SKIP_KEYWORDS):
+            return None
+        return current
+
+    def _insert_param_table_row(
+        self,
+        field_idx_1based: int,
+        val_idx: int,
+        label_text: str,
+        current: float,
+        unit: str,
+    ) -> None:
+        """パラメータテーブルに1行を挿入し、_field_rows に登録。"""
+        row = self._param_table.rowCount()
+        self._param_table.insertRow(row)
+
+        cb = QCheckBox()
+        cb.toggled.connect(self._refresh_axis_combos)
+        self._param_table.setCellWidget(row, 0, cb)
+
+        self._set_readonly_item(row, 1, label_text)
+        self._set_readonly_item(row, 2, f"{current:g}")
+
+        lo_spin = self._make_bound_spin(self._suggest_bound(current, lower=True))
+        self._param_table.setCellWidget(row, 3, lo_spin)
+
+        hi_spin = self._make_bound_spin(self._suggest_bound(current, lower=False))
+        self._param_table.setCellWidget(row, 4, hi_spin)
+
+        self._set_readonly_item(row, 5, unit)
+
+        self._field_rows.append({
+            "cb": cb,
+            "field_idx_1based": field_idx_1based,
+            "val_idx_0based": val_idx,
+            "label": label_text,
+            "current": current,
+            "lo_spin": lo_spin,
+            "hi_spin": hi_spin,
+            "unit": unit,
+        })
+
+    def _set_readonly_item(self, row: int, col: int, text: str) -> None:
+        """読み取り専用のセルアイテムを設定。"""
+        item = QTableWidgetItem(text)
+        item.setFlags(item.flags() & ~Qt.ItemIsEditable)
+        self._param_table.setItem(row, col, item)
+
+    @staticmethod
+    def _make_bound_spin(value: float) -> QDoubleSpinBox:
+        """下限/上限スピンボックスを生成。"""
+        spin = QDoubleSpinBox()
+        spin.setDecimals(4)
+        spin.setRange(-1e9, 1e9)
+        spin.setValue(value)
+        return spin
 
     def _build_floor_table(self, layout: QVBoxLayout) -> None:
         """ダンパー基数テーブル。"""
