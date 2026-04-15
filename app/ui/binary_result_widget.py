@@ -873,13 +873,7 @@ class BinaryResultWidget(QWidget):
         """MDFloor.xbn を使って固有モード形状（各階の変形）を図化する。"""
         canvas = self._mdfloor_canvas
 
-        # MDFloor データを持つケースを収集
-        entries_with_md: List[tuple] = []
-        for e in self._active_entries:
-            bc = e.loader.get("MDFloor")
-            if bc and bc.xbn and bc.xbn.records is not None:
-                entries_with_md.append((e, bc))
-
+        entries_with_md = self._collect_mdfloor_entries()
         if not entries_with_md:
             canvas.show_message(
                 "MDFloor.xbn が見つかりません\n"
@@ -888,19 +882,33 @@ class BinaryResultWidget(QWidget):
             )
             return
 
-        first_e, first_bc = entries_with_md[0]
-        xbn = first_bc.xbn
+        xbn = entries_with_md[0][1].xbn
         field_labels = xbn.field_labels()
-        n_fields = xbn.values_per_record
-        n_records = xbn.num_records
+        self._update_mdfloor_combos(entries_with_md, field_labels, xbn.values_per_record)
 
-        # ケースコンボを更新（スキップ: 信号ループ回避）
+        field_idx = self._mdfloor_field_combo.currentData() or 0
+        selected_case_name = self._mdfloor_case_combo.currentData()
+        target_entries = [
+            (e, bc) for e, bc in entries_with_md if e.name == selected_case_name
+        ] or entries_with_md[:1]
+
+        self._plot_mode_shapes(canvas, target_entries, field_idx, field_labels, xbn.num_records)
+
+    def _collect_mdfloor_entries(self) -> List[tuple]:
+        entries: List[tuple] = []
+        for e in self._active_entries:
+            bc = e.loader.get("MDFloor")
+            if bc and bc.xbn and bc.xbn.records is not None:
+                entries.append((e, bc))
+        return entries
+
+    def _update_mdfloor_combos(self, entries_with_md, field_labels, n_fields: int) -> None:
+        # ケースコンボ
         self._mdfloor_case_combo.blockSignals(True)
         prev_case = self._mdfloor_case_combo.currentData()
         self._mdfloor_case_combo.clear()
-        for e, bc in entries_with_md:
+        for e, _ in entries_with_md:
             self._mdfloor_case_combo.addItem(e.name, e.name)
-        # 以前の選択を復元
         idx_c = next(
             (i for i in range(self._mdfloor_case_combo.count())
              if self._mdfloor_case_combo.itemData(i) == prev_case), 0
@@ -908,7 +916,7 @@ class BinaryResultWidget(QWidget):
         self._mdfloor_case_combo.setCurrentIndex(idx_c)
         self._mdfloor_case_combo.blockSignals(False)
 
-        # フィールドコンボを更新
+        # フィールドコンボ
         self._mdfloor_field_combo.blockSignals(True)
         prev_field = self._mdfloor_field_combo.currentData()
         if self._mdfloor_field_combo.count() != n_fields:
@@ -920,35 +928,23 @@ class BinaryResultWidget(QWidget):
             self._mdfloor_field_combo.setCurrentIndex(prev_field)
         self._mdfloor_field_combo.blockSignals(False)
 
-        field_idx = self._mdfloor_field_combo.currentData() or 0
-        selected_case_name = self._mdfloor_case_combo.currentData()
-
-        # 描画: 選択ケースの全フィールドをモード形状として重ね描き
+    def _plot_mode_shapes(self, canvas, target_entries, field_idx: int,
+                          field_labels, n_records_default: int) -> None:
         ax = canvas.ax
         ax.clear()
         colors = plt.rcParams["axes.prop_cycle"].by_key()["color"]
-
-        # 対象ケースを特定
-        target_entries = [
-            (e, bc) for e, bc in entries_with_md if e.name == selected_case_name
-        ] or entries_with_md[:1]
 
         for ci, (e, bc) in enumerate(target_entries):
             xbn_data = bc.xbn
             if xbn_data.records is None or field_idx >= xbn_data.values_per_record:
                 continue
             vals = xbn_data.records[:, field_idx].astype(float)
-            n = len(vals)
-            floors = list(range(n))
-            # STP名が使えるなら使う
-            stp_names = bc.stp.names if bc.stp else []
-
+            floors = list(range(len(vals)))
             c = colors[ci % len(colors)]
             ax.plot(vals, floors, "o-", color=c, linewidth=1.8,
                     markersize=5, label=e.name)
 
-        # Y軸の目盛りをレコード名で設定
-        n_recs = target_entries[0][1].xbn.num_records if target_entries else n_records
+        n_recs = target_entries[0][1].xbn.num_records if target_entries else n_records_default
         stp_names_first = (
             target_entries[0][1].stp.names if target_entries and target_entries[0][1].stp else []
         )
@@ -965,10 +961,13 @@ class BinaryResultWidget(QWidget):
         ax.set_ylabel("階 (記録番号)")
         ax.set_title(f"モード形状 — {field_lbl}")
         ax.grid(True, axis="x", linestyle=":", alpha=0.5)
-        ax.invert_yaxis()  # 最上階を上に表示
+        ax.invert_yaxis()
         if len(target_entries) > 1:
             ax.legend(fontsize=8)
-        canvas.fig.tight_layout()
+        try:
+            canvas.fig.tight_layout()
+        except (MemoryError, ValueError):
+            logger.debug("tight_layout失敗 (mode shapes)")
         canvas.draw()
 
     # ------------------------------------------------------------------

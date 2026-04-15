@@ -702,10 +702,26 @@ class IRDTMdofDialog(QDialog):
             )
 
     def _do_inject_damper(self) -> None:
+        if not self._ensure_project_s8i():
+            return
+
+        floors_info = self._resolve_floors_for_injection()
+        if floors_info is None:
+            return
+        floors, base_floor = floors_info
+
+        damper_values = self._collect_damper_values_for_injection()
+        if damper_values is None:
+            return
+        mds, cds, kbs = damper_values
+
+        self._open_placement_proposal(floors, base_floor, mds, cds, kbs)
+
+    def _ensure_project_s8i(self) -> bool:
         if self._project is None:
             QMessageBox.warning(self, "プロジェクト未設定",
                                 "このダイアログはプロジェクト読み込み中のみ使用できます。")
-            return
+            return False
         s8i_path = getattr(self._project, "s8i_path", "") or ""
         if not s8i_path:
             QMessageBox.warning(
@@ -713,29 +729,25 @@ class IRDTMdofDialog(QDialog):
                 "プロジェクトに s8i ファイルが読み込まれていません。\n"
                 "メインウィンドウで .s8i モデルを読み込んでから再度お試しください。",
             )
-            return
+            return False
+        return True
 
-        # 自動入力が済んでいない場合は層情報を s8i から取り直す
-        from app.services.irdt_auto_fill import (
-            extract_floor_info,
-            build_placement_specs,
-        )
+    def _resolve_floors_for_injection(self):
+        from app.services.irdt_auto_fill import extract_floor_info
         from app.models.s8i_parser import parse_s8i
 
         model = getattr(self._project, "s8i_model", None)
         if model is None:
             try:
-                model = parse_s8i(s8i_path)
+                model = parse_s8i(self._project.s8i_path)
             except Exception as exc:
                 QMessageBox.critical(self, "s8i 読込失敗", str(exc))
-                return
-        # 最下層は「入力」からは除外するが「配置」では基礎節点を使うため
-        # 別枠で保持しておく。
+                return None
+
         if self._auto_fill_result is not None:
             floors = self._auto_fill_result.floors
             base_floor = self._auto_fill_result.base_floor
         else:
-            # 自動入力を通っていない場合は s8i から取り直す
             floors_all = extract_floor_info(model, skip_base=False)
             if len(floors_all) >= 2:
                 floors = floors_all[1:]
@@ -746,27 +758,28 @@ class IRDTMdofDialog(QDialog):
         if not floors:
             QMessageBox.warning(self, "層情報なし",
                                 "s8i から層情報を取得できませんでした。")
-            return
+            return None
+        return floors, base_floor
 
-        # 現在の入力から md/cd/kb を読む (計算結果テーブルの cd/kb 列)
-        mds = self._read_column(2)  # 入力テーブルの md
-        # 結果テーブルから cd, kb を取得
-        cds: List[float] = []
-        kbs: List[float] = []
-        # vector モードでは結果テーブル列が [cd, kb], stiffness では [period, vec, cd, kb]
+    def _collect_damper_values_for_injection(self):
+        mds = self._read_column(2)
         cd_col = 0 if self._input_mode == _MODE_VECTOR else 2
         kb_col = 1 if self._input_mode == _MODE_VECTOR else 3
+
+        def _cell(row: int, col: int) -> float:
+            item = self._result_table.item(row, col)
+            if item is None:
+                return float("nan")
+            try:
+                return float(item.text())
+            except ValueError:
+                return float("nan")
+
+        cds: List[float] = []
+        kbs: List[float] = []
         for row in range(self._result_table.rowCount()):
-            def _v(col: int) -> float:
-                item = self._result_table.item(row, col)
-                if item is None:
-                    return float("nan")
-                try:
-                    return float(item.text())
-                except ValueError:
-                    return float("nan")
-            cds.append(_v(cd_col))
-            kbs.append(_v(kb_col))
+            cds.append(_cell(row, cd_col))
+            kbs.append(_cell(row, kb_col))
 
         if not any(cd > 0 for cd in cds if not math.isnan(cd)):
             QMessageBox.warning(
@@ -775,7 +788,12 @@ class IRDTMdofDialog(QDialog):
                 "「s8i から自動入力...」で層質量/固有ベクトルを取り込むか、\n"
                 "入力テーブルの m, md, k (またはベクトル) を確認してください。",
             )
-            return
+            return None
+        return mds, cds, kbs
+
+    def _open_placement_proposal(self, floors, base_floor, mds, cds, kbs) -> None:
+        from app.services.irdt_auto_fill import build_placement_specs
+        from app.ui.irdt_placement_proposal_dialog import IrdtPlacementProposalDialog
 
         specs = build_placement_specs(floors, mds, cds, kbs, base_floor=base_floor)
         if not specs:
@@ -787,13 +805,9 @@ class IRDTMdofDialog(QDialog):
             )
             return
 
-        # 代表ケース (先頭)
-        base_case = None
         cases = getattr(self._project, "cases", []) or []
-        if cases:
-            base_case = cases[0]
+        base_case = cases[0] if cases else None
 
-        from app.ui.irdt_placement_proposal_dialog import IrdtPlacementProposalDialog
         dlg = IrdtPlacementProposalDialog(
             base_s8i_path=self._project.s8i_path,
             specs=specs,
