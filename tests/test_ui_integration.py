@@ -1272,7 +1272,7 @@ class TestDialogInteractions:
         dlg = IRDTMdofDialog()
         content = dlg._build_export_rows(separator=",")
         lines = content.split("\n")
-        assert lines[0].startswith("階,周期")
+        assert lines[0].startswith("階,固有周期")
         assert "μ," in content
         assert "γ," in content
         assert "h," in content
@@ -1287,7 +1287,7 @@ class TestDialogInteractions:
         dlg = IRDTMdofDialog()
         dlg._on_copy_clipboard()
         text = QApplication.clipboard().text()
-        assert "階\t周期" in text  # タブ区切りのヘッダー
+        assert "階\t固有周期" in text  # タブ区切りのヘッダー
 
 
 # ===================================================================

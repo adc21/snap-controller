@@ -119,11 +119,9 @@ class IRDTMdofDialog(QDialog):
         sform.addRow("減衰定数 h [-]", self._lbl_h)
         root.addWidget(summary)
 
-        # 結果テーブル
+        # 結果テーブル (列構成は入力モードに応じて変化)
         self._result_table = QTableWidget(0, 4)
-        self._result_table.setHorizontalHeaderLabels(
-            ["周期 [s]", "固有ベクトル [-]", "cd [kNs/m]", "kb [kN/m]"]
-        )
+        self._apply_result_columns()
         self._result_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self._result_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         self._result_table.verticalHeader().setDefaultSectionSize(24)
@@ -156,6 +154,7 @@ class IRDTMdofDialog(QDialog):
     def _on_mode_changed(self, _idx: int) -> None:
         self._input_mode = self._mode_combo.currentData()
         self._update_table_headers()
+        self._apply_result_columns()
         self._t0_label.setVisible(self._input_mode == _MODE_VECTOR)
         self._t0_edit.setVisible(self._input_mode == _MODE_VECTOR)
         self._populate_defaults(preserve_rows=False)
@@ -288,6 +287,31 @@ class IRDTMdofDialog(QDialog):
 
         self._fill_result_table(periods, mode_vectors, res.cd, res.kb, n)
 
+    def _apply_result_columns(self) -> None:
+        """結果テーブルの列構成を入力モードに応じて切り替えます。
+
+        - stiffness: 固有周期 / １次モード固有ベクトル / cd / kb (4 列)
+        - vector   : cd / kb (2 列, 固有周期と固有ベクトルはユーザー入力済のため省略)
+        """
+        if self._input_mode == _MODE_STIFFNESS:
+            self._result_table.setColumnCount(4)
+            self._result_table.setHorizontalHeaderLabels(
+                [
+                    "固有周期 [s]",
+                    "１次モード固有ベクトル [-]",
+                    "ダンパー最適減衰係数 cd [kNs/m]",
+                    "ダンパー最適支持部材剛性 kb [kN/m]",
+                ]
+            )
+        else:
+            self._result_table.setColumnCount(2)
+            self._result_table.setHorizontalHeaderLabels(
+                [
+                    "ダンパー最適減衰係数 cd [kNs/m]",
+                    "ダンパー最適支持部材剛性 kb [kN/m]",
+                ]
+            )
+
     def _fill_result_table(
         self,
         periods: Sequence[float],
@@ -296,19 +320,35 @@ class IRDTMdofDialog(QDialog):
         kbs: Sequence[float],
         n_layers: int,
     ) -> None:
-        # 層ごとに周期・ベクトルは1次モードを表示、cd/kb は各層の値
+        """
+        adc-tools Results.tsx と同じレイアウト:
+          - stiffness モード: n 行, 各行 i = 「i 次モードの周期」「1 次モード固有ベクトルの i 成分」
+            「i 層の cd」「i 層の kb」。
+          - vector モード   : n 行, 各行 i = 「i 層の cd」「i 層の kb」のみ。
+        """
         self._result_table.setRowCount(n_layers)
         self._result_table.setVerticalHeaderLabels([str(i + 1) for i in range(n_layers)])
-        first_period = periods[0] if len(periods) > 0 else 0.0
-        first_vec = mode_vectors[0] if len(mode_vectors) > 0 else [0.0] * n_layers
-        for row in range(n_layers):
-            vec_val = first_vec[row] if row < len(first_vec) else 0.0
-            cd_val = cds[row] if row < len(cds) else float("nan")
-            kb_val = kbs[row] if row < len(kbs) else float("nan")
-            self._set_result_item(row, 0, first_period, 6)
-            self._set_result_item(row, 1, vec_val, 6)
-            self._set_result_item(row, 2, cd_val, 2)
-            self._set_result_item(row, 3, kb_val, 2)
+
+        if self._input_mode == _MODE_STIFFNESS:
+            # 1 次モードの固有ベクトル成分を各層 (行) に割り当てる
+            first_vec = mode_vectors[0] if len(mode_vectors) > 0 else [0.0] * n_layers
+            for row in range(n_layers):
+                # i 次モードの周期 (i = row)
+                period_val = periods[row] if row < len(periods) else float("nan")
+                vec_val = first_vec[row] if row < len(first_vec) else 0.0
+                cd_val = cds[row] if row < len(cds) else float("nan")
+                kb_val = kbs[row] if row < len(kbs) else float("nan")
+                self._set_result_item(row, 0, period_val, 4)
+                self._set_result_item(row, 1, vec_val, 4)
+                self._set_result_item(row, 2, cd_val, 2)
+                self._set_result_item(row, 3, kb_val, 2)
+        else:
+            # vector モード: cd / kb のみ
+            for row in range(n_layers):
+                cd_val = cds[row] if row < len(cds) else float("nan")
+                kb_val = kbs[row] if row < len(kbs) else float("nan")
+                self._set_result_item(row, 0, cd_val, 2)
+                self._set_result_item(row, 1, kb_val, 2)
 
     def _set_result_item(self, row: int, col: int, value: float, decimals: int) -> None:
         text = self._fmt(value, decimals)
@@ -331,7 +371,10 @@ class IRDTMdofDialog(QDialog):
     # ---- 出力 ---------------------------------------------------------
     def _build_export_rows(self, separator: str = "\t") -> str:
         """結果テーブルを TSV/CSV 文字列に整形します。"""
-        headers = ["階", "周期 [s]", "固有ベクトル [-]", "cd [kNs/m]", "kb [kN/m]"]
+        headers = ["階"]
+        for col in range(self._result_table.columnCount()):
+            hdr = self._result_table.horizontalHeaderItem(col)
+            headers.append(hdr.text() if hdr else f"col{col + 1}")
         lines = [separator.join(headers)]
         for row in range(self._result_table.rowCount()):
             cells = [str(row + 1)]
