@@ -363,6 +363,62 @@ def minimize_linear_search(
 # ---------------------------------------------------------------------------
 
 
+def _ga_init_population(pop_size: int, maxes: List[int]) -> List[List[int]]:
+    """GA初期集団を一様ランダムで生成。"""
+    return [[random.randint(0, m) for m in maxes] for _ in range(pop_size)]
+
+
+def _ga_tournament_select(fitnesses: List[float], pop_size: int, k: int = 3) -> int:
+    """トーナメント選択でインデックスを返す。"""
+    cand = random.sample(range(pop_size), min(k, pop_size))
+    return min(cand, key=lambda i: fitnesses[i])
+
+
+def _ga_blx_crossover(
+    p1: List[int], p2: List[int], maxes: List[int], alpha: float = 0.5
+) -> List[int]:
+    """BLX-α交叉 → 整数丸め。"""
+    child: List[int] = []
+    for i in range(len(p1)):
+        lo_val = min(p1[i], p2[i])
+        hi_val = max(p1[i], p2[i])
+        rng = hi_val - lo_val
+        c = random.uniform(lo_val - alpha * rng, hi_val + alpha * rng)
+        child.append(max(0, min(maxes[i], round(c))))
+    return child
+
+
+def _ga_mutate(
+    child: List[int], maxes: List[int], gen: int, generations: int
+) -> None:
+    """世代進行に応じて減衰する突然変異率で in-place 変異。"""
+    mut_rate = max(0.05, 0.3 * (1 - gen / max(1, generations)))
+    for i in range(len(child)):
+        if random.random() < mut_rate:
+            child[i] = random.randint(0, maxes[i])
+
+
+def _ga_next_generation(
+    pop: List[List[int]],
+    fitnesses: List[float],
+    maxes: List[int],
+    pop_size: int,
+    gen: int,
+    generations: int,
+) -> List[List[int]]:
+    """エリート保存 + トーナメント選択 + BLX-α + 突然変異で次世代を生成。"""
+    sorted_idx = sorted(range(len(pop)), key=lambda i: fitnesses[i])
+    elite_count = max(2, pop_size // 10)
+    new_pop = [list(pop[i]) for i in sorted_idx[:elite_count]]
+    while len(new_pop) < pop_size:
+        p1 = pop[_ga_tournament_select(fitnesses, pop_size)]
+        p2 = pop[_ga_tournament_select(fitnesses, pop_size)]
+        child = _ga_blx_crossover(p1, p2, maxes)
+        _ga_mutate(child, maxes, gen, generations)
+        new_pop.append(child)
+    return new_pop
+
+
 def minimize_ga(
     floor_keys: List[str],
     max_quantities: Dict[str, int],
@@ -383,10 +439,10 @@ def minimize_ga(
     best_obj = float("inf")
     best_result: Optional[EvaluationResult] = None
 
-    def to_dict(arr):
+    def to_dict(arr: List[int]) -> Dict[str, int]:
         return {floor_keys[i]: int(arr[i]) for i in range(n)}
 
-    def objective(arr):
+    def objective(arr: List[int]) -> Tuple[float, EvaluationResult]:
         nonlocal evaluations, best_solution, best_obj, best_result
         q = to_dict(arr)
         result = evaluate_fn(q)
@@ -400,18 +456,10 @@ def minimize_ga(
             best_result = result
         return obj, result
 
-    # 初期集団
-    pop = []
-    for _ in range(population_size):
-        ind = [random.randint(0, m) for m in maxes]
-        pop.append(ind)
+    pop = _ga_init_population(population_size, maxes)
 
     for gen in range(generations):
-        # 評価
-        fitnesses = []
-        for ind in pop:
-            obj, result = objective(ind)
-            fitnesses.append(obj)
+        fitnesses = [objective(ind)[0] for ind in pop]
 
         step = _make_step(gen, best_solution or to_dict(pop[0]),
                           best_result or EvaluationResult(),
@@ -420,37 +468,7 @@ def minimize_ga(
         if progress_cb:
             progress_cb(step)
 
-        # エリート
-        sorted_idx = sorted(range(len(pop)), key=lambda i: fitnesses[i])
-        elite_count = max(2, population_size // 10)
-        new_pop = [list(pop[i]) for i in sorted_idx[:elite_count]]
-
-        # 交叉 + 突然変異（トーナメント選択）
-        def tournament(k=3):
-            candidates = random.sample(range(population_size), min(k, population_size))
-            return min(candidates, key=lambda i: fitnesses[i])
-
-        while len(new_pop) < population_size:
-            p1 = pop[tournament()]
-            p2 = pop[tournament()]
-            child = []
-            for i in range(n):
-                # BLX-α交叉 → 整数丸め
-                lo_val = min(p1[i], p2[i])
-                hi_val = max(p1[i], p2[i])
-                alpha = 0.5
-                rng = hi_val - lo_val
-                c = random.uniform(lo_val - alpha * rng, hi_val + alpha * rng)
-                c = max(0, min(maxes[i], round(c)))
-                child.append(c)
-            # 突然変異
-            mut_rate = max(0.05, 0.3 * (1 - gen / max(1, generations)))
-            for i in range(n):
-                if random.random() < mut_rate:
-                    child[i] = random.randint(0, maxes[i])
-            new_pop.append(child)
-
-        pop = new_pop
+        pop = _ga_next_generation(pop, fitnesses, maxes, population_size, gen, generations)
 
     if best_solution is None:
         best_solution = {k: max_quantities.get(k, 0) for k in floor_keys}
@@ -952,6 +970,45 @@ def minimize_nelder_mead(
 # ---------------------------------------------------------------------------
 
 
+def _bayesian_propose_next(
+    X_observed: List[List[int]],
+    y_observed: List[float],
+    maxes: List[int],
+    n: int,
+) -> List[int]:
+    """GP + EI獲得関数で次候補を提案。sklearn未導入/失敗時はランダム。"""
+    from scipy.stats import norm
+
+    X = np.array(X_observed, dtype=float)
+    y = np.array(y_observed)
+    try:
+        from sklearn.gaussian_process import GaussianProcessRegressor
+        from sklearn.gaussian_process.kernels import Matern
+        gp = GaussianProcessRegressor(kernel=Matern(nu=2.5), n_restarts_optimizer=2)
+        gp.fit(X, y)
+
+        n_candidates = min(500, max(100, 10 ** n))
+        candidates = np.array(
+            [[random.randint(0, m) for m in maxes] for _ in range(n_candidates)],
+            dtype=float,
+        )
+        mu, sigma = gp.predict(candidates, return_std=True)
+        sigma = np.maximum(sigma, 1e-10)
+        best_y = min(y_observed)
+        z_val = (best_y - mu) / sigma
+        ei = (best_y - mu) * norm.cdf(z_val) + sigma * norm.pdf(z_val)
+        best_idx = int(np.argmax(ei))
+        return candidates[best_idx].astype(int).tolist()
+    except ImportError:
+        logger.warning(
+            "sklearn がインストールされていません。ランダムサンプリングにフォールバックします。"
+            " インストール: pip install scikit-learn"
+        )
+    except Exception as e:
+        logger.debug("GP予測エラー（ランダムにフォールバック）: %s", e)
+    return [random.randint(0, m) for m in maxes]
+
+
 def minimize_bayesian(
     floor_keys: List[str],
     max_quantities: Dict[str, int],
@@ -962,8 +1019,6 @@ def minimize_bayesian(
     penalty_weight: Optional[float] = None,
 ) -> MinimizationResult:
     """ガウス過程回帰 + EI獲得関数。"""
-    from scipy.stats import norm
-
     if penalty_weight is None:
         penalty_weight = _auto_penalty_weight(max_quantities)
     n = len(floor_keys)
@@ -1004,39 +1059,8 @@ def minimize_bayesian(
         x = [random.randint(0, m) for m in maxes]
         eval_point(x)
 
-    # ベイズ反復
-    for it in range(max_iterations - n_initial):
-        X = np.array(X_observed, dtype=float)
-        y = np.array(y_observed)
-
-        # 簡易GP: RBFカーネル + 予測
-        try:
-            from sklearn.gaussian_process import GaussianProcessRegressor
-            from sklearn.gaussian_process.kernels import Matern
-            gp = GaussianProcessRegressor(kernel=Matern(nu=2.5), n_restarts_optimizer=2)
-            gp.fit(X, y)
-
-            # EI獲得関数をランダム候補で評価
-            n_candidates = min(500, max(100, 10 ** n))
-            candidates = np.array([[random.randint(0, m) for m in maxes]
-                                   for _ in range(n_candidates)], dtype=float)
-            mu, sigma = gp.predict(candidates, return_std=True)
-            sigma = np.maximum(sigma, 1e-10)
-            best_y = min(y_observed)
-            z_val = (best_y - mu) / sigma
-            ei = (best_y - mu) * norm.cdf(z_val) + sigma * norm.pdf(z_val)
-            best_idx = np.argmax(ei)
-            next_x = candidates[best_idx].astype(int).tolist()
-        except ImportError:
-            logger.warning(
-                "sklearn がインストールされていません。ランダムサンプリングにフォールバックします。"
-                " インストール: pip install scikit-learn"
-            )
-            next_x = [random.randint(0, m) for m in maxes]
-        except Exception as e:
-            logger.debug("GP予測エラー（ランダムにフォールバック）: %s", e)
-            next_x = [random.randint(0, m) for m in maxes]
-
+    for _ in range(max_iterations - n_initial):
+        next_x = _bayesian_propose_next(X_observed, y_observed, maxes, n)
         eval_point(next_x)
 
     if best_solution is None:
