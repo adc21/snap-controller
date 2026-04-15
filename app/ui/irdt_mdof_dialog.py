@@ -121,9 +121,10 @@ class IRDTMdofDialog(QDialog):
         self._lbl_import_status.setStyleSheet("color: #555;")
         top_bar.addWidget(self._lbl_import_status, stretch=1)
 
-        self._btn_inject = QPushButton("s8i へダンパーを挿入...")
+        self._btn_inject = QPushButton("iRDT ダンパーで新ケースを作成...")
         self._btn_inject.setToolTip(
-            "計算した最適値で iRDT ダンパーを s8i に追加します。"
+            "計算した最適値で iRDT ダンパーを配置した新しい解析ケースを\n"
+            "プロジェクトに追加します (内部的に iRDT 入りの .s8i を生成)。"
         )
         self._btn_inject.clicked.connect(self._on_inject_damper)
         self._btn_inject.setEnabled(self._project is not None)
