@@ -744,96 +744,94 @@ class DamperPlacementWidget(QWidget):
         if not lines:
             return
 
-        # ヘッダー行の自動スキップ（先頭セルが数値でない場合）
-        skip = 0
-        first_cells = lines[0].split("\t")
-        if first_cells and not first_cells[0].strip().lstrip("-").isdigit():
-            # 先頭セルが「ダンパー種類」「種類」「type」等の場合はスキップ
-            try:
-                int(first_cells[0].strip())
-            except ValueError:
-                # 数値でない → ヘッダー行と見なしてスキップ（ただし本数列が数値でなければスキップ）
-                if len(first_cells) >= 2:
-                    try:
-                        int(first_cells[1].strip())
-                    except ValueError:
-                        skip = 1
-
-        data_lines = lines[skip:]
+        data_lines = lines[self._detect_header_skip(lines):]
         if not data_lines:
             return
 
-        # 開始行の決定（選択中の最上行 or 0）
-        selected = self._table.selectedItems()
-        start_row = (
-            min(it.row() for it in selected) if selected else 0
-        )
+        start_row = self._paste_start_row()
 
-        changed_count = 0
         self._table.blockSignals(True)
         for i, line in enumerate(data_lines):
             row = start_row + i
             if row >= self._table.rowCount():
                 break
-            cells = line.split("\t")
-
-            # ダンパー種類（列0）
-            if len(cells) >= 1:
-                type_val = cells[0].strip()
-                type_combo = self._table.cellWidget(row, _COL_TYPE)
-                if type_combo and type_val:
-                    # 完全一致 → 部分一致の順で検索
-                    idx = type_combo.findText(type_val)
-                    if idx < 0:
-                        for j in range(type_combo.count()):
-                            if type_val in type_combo.itemText(j):
-                                idx = j
-                                break
-                    if idx >= 0:
-                        type_combo.setCurrentIndex(idx)
-                        changed_count += 1
-
-            # 本数（列1）
-            if len(cells) >= 2:
-                count_str = cells[1].strip()
-                count_spin = self._table.cellWidget(row, _COL_COUNT)
-                if count_spin and count_str:
-                    try:
-                        count_spin.setValue(int(float(count_str)))
-                        changed_count += 1
-                    except ValueError:
-                        logger.debug("貼り付け値の数値変換失敗: %s", count_str)
-
-            # 方向（列2）
-            if len(cells) >= 3:
-                dir_val = cells[2].strip()
-                dir_combo = self._table.cellWidget(row, _COL_DIRECTION)
-                if dir_combo and dir_val:
-                    idx = dir_combo.findText(dir_val)
-                    if idx < 0:
-                        for j in range(dir_combo.count()):
-                            if dir_val in dir_combo.itemText(j):
-                                idx = j
-                                break
-                    if idx >= 0:
-                        dir_combo.setCurrentIndex(idx)
-
-            # 備考（列3）
-            if len(cells) >= 4:
-                notes_val = cells[3].strip()
-                notes_item = self._table.item(row, _COL_NOTES)
-                if notes_item is not None:
-                    notes_item.setText(notes_val)
-                else:
-                    self._table.setItem(row, _COL_NOTES, QTableWidgetItem(notes_val))
-
+            self._apply_paste_row(row, line.split("\t"))
         self._table.blockSignals(False)
+
         self._read_table()
         self._update_visual()
         self.configChanged.emit()
 
-        # 貼り付け結果のフィードバック
         actual_rows = min(len(data_lines), self._table.rowCount() - start_row)
         self._placement_summary_label.setText(
             f"✅ {actual_rows} 行を貼り付けました（行 {start_row + 1}〜{start_row + actual_rows}）"
         )
+
+    @staticmethod
+    def _detect_header_skip(lines: List[str]) -> int:
+        """先頭行がヘッダーかを判定し、スキップすべき行数(0/1)を返す。"""
+        first_cells = lines[0].split("\t")
+        if not first_cells or first_cells[0].strip().lstrip("-").isdigit():
+            return 0
+        try:
+            int(first_cells[0].strip())
+            return 0
+        except ValueError:
+            if len(first_cells) >= 2:
+                try:
+                    int(first_cells[1].strip())
+                except ValueError:
+                    return 1
+        return 0
+
+    def _paste_start_row(self) -> int:
+        """貼り付け開始行を決定する（選択中の最上行 or 0）。"""
+        selected = self._table.selectedItems()
+        return min(it.row() for it in selected) if selected else 0
+
+    def _apply_paste_row(self, row: int, cells: List[str]) -> None:
+        """1行分のセルをテーブルに反映する。"""
+        if len(cells) >= 1:
+            self._set_combo_cell(row, _COL_TYPE, cells[0].strip())
+        if len(cells) >= 2:
+            self._set_count_cell(row, cells[1].strip())
+        if len(cells) >= 3:
+            self._set_combo_cell(row, _COL_DIRECTION, cells[2].strip())
+        if len(cells) >= 4:
+            self._set_notes_cell(row, cells[3].strip())
+
+    def _set_combo_cell(self, row: int, col: int, value: str) -> None:
+        """ComboBoxセルに値を設定（完全一致→部分一致の順で検索）。"""
+        if not value:
+            return
+        combo = self._table.cellWidget(row, col)
+        if not combo:
+            return
+        idx = combo.findText(value)
+        if idx < 0:
+            for j in range(combo.count()):
+                if value in combo.itemText(j):
+                    idx = j
+                    break
+        if idx >= 0:
+            combo.setCurrentIndex(idx)
+
+    def _set_count_cell(self, row: int, value: str) -> None:
+        """本数SpinBoxセルに値を設定。"""
+        if not value:
+            return
+        spin = self._table.cellWidget(row, _COL_COUNT)
+        if not spin:
+            return
+        try:
+            spin.setValue(int(float(value)))
+        except ValueError:
+            logger.debug("貼り付け値の数値変換失敗: %s", value)
+
+    def _set_notes_cell(self, row: int, value: str) -> None:
+        """備考セルに値を設定。"""
+        item = self._table.item(row, _COL_NOTES)
+        if item is not None:
+            item.setText(value)
+        else:
+            self._table.setItem(row, _COL_NOTES, QTableWidgetItem(value))

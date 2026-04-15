@@ -273,18 +273,23 @@ class ResultChartWidget(QWidget):
         self._title_label = QLabel("<b>結果グラフ</b>")
         title_row.addWidget(self._title_label)
 
-        # ケース選択 + 前後ナビゲーションボタン
+        self._build_case_nav(title_row)
+        title_row.addStretch()
+        self._build_criteria_checkbox(title_row)
+        self._build_response_item_nav(title_row)
+        self._build_chart_action_buttons(title_row)
+        return title_row
+
+    def _build_case_nav(self, title_row: QHBoxLayout) -> None:
+        """ケース選択コンボボックスと前後ナビゲーションボタンを追加。"""
         title_row.addWidget(QLabel("ケース:"))
 
-        self._btn_prev_case = QPushButton("◄")
-        self._btn_prev_case.setFixedSize(28, 24)
-        self._btn_prev_case.setToolTip(
+        self._btn_prev_case = self._make_nav_button(
+            "◄",
             "前のケースに切り替えます\n"
-            "ドロップダウンを開かずにケースを順番に確認できます"
+            "ドロップダウンを開かずにケースを順番に確認できます",
+            self._prev_case,
         )
-        self._btn_prev_case.setStyleSheet("font-size: 11px; padding: 1px 4px;")
-        self._btn_prev_case.setEnabled(False)
-        self._btn_prev_case.clicked.connect(self._prev_case)
         title_row.addWidget(self._btn_prev_case)
 
         self._case_combo = QComboBox()
@@ -293,15 +298,12 @@ class ResultChartWidget(QWidget):
         self._case_combo.currentIndexChanged.connect(self._on_case_combo_changed)
         title_row.addWidget(self._case_combo)
 
-        self._btn_next_case = QPushButton("►")
-        self._btn_next_case.setFixedSize(28, 24)
-        self._btn_next_case.setToolTip(
+        self._btn_next_case = self._make_nav_button(
+            "►",
             "次のケースに切り替えます\n"
-            "ドロップダウンを開かずにケースを順番に確認できます"
+            "ドロップダウンを開かずにケースを順番に確認できます",
+            self._next_case,
         )
-        self._btn_next_case.setStyleSheet("font-size: 11px; padding: 1px 4px;")
-        self._btn_next_case.setEnabled(False)
-        self._btn_next_case.clicked.connect(self._next_case)
         title_row.addWidget(self._btn_next_case)
 
         self._case_counter_lbl = QLabel("")
@@ -311,27 +313,25 @@ class ResultChartWidget(QWidget):
         self._case_counter_lbl.setToolTip("現在のケース番号 / 解析済みケース総数")
         title_row.addWidget(self._case_counter_lbl)
 
-        title_row.addStretch()
-
-        # 基準線表示チェックボックス
+    def _build_criteria_checkbox(self, title_row: QHBoxLayout) -> None:
+        """基準線表示チェックボックスを追加。"""
         self._criteria_cb = QCheckBox("基準線")
         self._criteria_cb.setChecked(True)
         self._criteria_cb.setToolTip("目標性能基準の上限値をグラフに表示")
         self._criteria_cb.stateChanged.connect(self._on_criteria_toggle)
         title_row.addWidget(self._criteria_cb)
 
-        # 応答値選択コンボボックス（◄ / ► ボタン付き）
+    def _build_response_item_nav(self, title_row: QHBoxLayout) -> None:
+        """応答値選択コンボボックスと前後ボタンを追加。"""
         title_row.addWidget(QLabel("表示項目:"))
 
-        self._btn_prev_item = QPushButton("◄")
-        self._btn_prev_item.setFixedWidth(28)
-        self._btn_prev_item.setFixedHeight(24)
-        self._btn_prev_item.setToolTip(
+        self._btn_prev_item = self._make_nav_button(
+            "◄",
             "前の応答指標を表示します\n"
-            "（最大応答相対変位 → 最大転倒モーメント → … の順で循環）"
+            "（最大応答相対変位 → 最大転倒モーメント → … の順で循環）",
+            self._prev_response_item,
+            enabled=True,
         )
-        self._btn_prev_item.setStyleSheet("font-size: 11px; padding: 1px 4px;")
-        self._btn_prev_item.clicked.connect(self._prev_response_item)
         title_row.addWidget(self._btn_prev_item)
 
         self._combo = QComboBox()
@@ -340,26 +340,26 @@ class ResultChartWidget(QWidget):
         self._combo.currentIndexChanged.connect(self._update_chart)
         title_row.addWidget(self._combo)
 
-        self._btn_next_item = QPushButton("►")
-        self._btn_next_item.setFixedWidth(28)
-        self._btn_next_item.setFixedHeight(24)
-        self._btn_next_item.setToolTip(
+        self._btn_next_item = self._make_nav_button(
+            "►",
             "次の応答指標を表示します\n"
-            "（最大応答相対変位 → 最大応答相対速度 → … の順で循環）"
+            "（最大応答相対変位 → 最大応答相対速度 → … の順で循環）",
+            self._next_response_item,
+            enabled=True,
         )
-        self._btn_next_item.setStyleSheet("font-size: 11px; padding: 1px 4px;")
-        self._btn_next_item.clicked.connect(self._next_response_item)
         title_row.addWidget(self._btn_next_item)
 
-        # グラフ画像クリップボードコピーボタン
+    def _build_chart_action_buttons(self, title_row: QHBoxLayout) -> None:
+        """グラフ操作ボタン（コピー・拡大）を追加。"""
         btn_copy_chart = QPushButton("📋 コピー")
-        btn_copy_chart.setToolTip("現在のグラフをクリップボードに画像コピーします（Word・メールへ貼り付け可）")
+        btn_copy_chart.setToolTip(
+            "現在のグラフをクリップボードに画像コピーします（Word・メールへ貼り付け可）"
+        )
         btn_copy_chart.setFixedHeight(24)
         btn_copy_chart.setStyleSheet("font-size: 11px; padding: 1px 8px;")
         btn_copy_chart.clicked.connect(self._copy_chart_to_clipboard)
         title_row.addWidget(btn_copy_chart)
 
-        # グラフ拡大ポップアウトボタン
         self._btn_popout = QPushButton("⛶ 拡大")
         self._btn_popout.setToolTip(
             "現在のグラフを大きなウィンドウで拡大表示します\n"
@@ -372,7 +372,18 @@ class ResultChartWidget(QWidget):
         self._btn_popout.clicked.connect(self._popout_chart)
         title_row.addWidget(self._btn_popout)
 
-        return title_row
+    @staticmethod
+    def _make_nav_button(
+        text: str, tooltip: str, callback, enabled: bool = False
+    ) -> QPushButton:
+        """共通スタイルの小型ナビゲーションボタンを生成。"""
+        btn = QPushButton(text)
+        btn.setFixedSize(28, 24)
+        btn.setToolTip(tooltip)
+        btn.setStyleSheet("font-size: 11px; padding: 1px 4px;")
+        btn.setEnabled(enabled)
+        btn.clicked.connect(callback)
+        return btn
 
     def _build_dyc_panel(self) -> QFrame:
         self._dyc_panel = QFrame()
