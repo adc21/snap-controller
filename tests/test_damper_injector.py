@@ -68,11 +68,12 @@ class TestDamperInsertSpec:
 
 
 # ---------------------------------------------------------------------------
-# DamperInjector — _build_dvms_overrides
+# DamperInjector — _build_dvod_overrides
 # ---------------------------------------------------------------------------
 
 class TestDamperInjectorOverrides:
-    def test_overrides_keys(self):
+    def test_overrides_dvod_values(self):
+        """DVOD overrides: 減衰モデル=3, 質量=md, C0=cd, 取付け剛性=kb。"""
         injector = DamperInjector()
         spec = DamperInsertSpec(
             mass_kN_s2_m=150.0,
@@ -80,11 +81,42 @@ class TestDamperInjectorOverrides:
             damping_kN_s_m=300.0,
             stroke_m=0.25,
         )
-        overrides = injector._build_dvms_overrides(spec)
-        assert overrides["3"] == "150.0"
-        assert overrides["4"] == "8000.0"
-        assert overrides["5"] == "300.0"
-        assert overrides["6"] == "0.25"
+        ov = injector._build_dvod_overrides(spec)
+        # 減衰モデル = 3 (ダッシュポットと質量)
+        assert ov["5"] == "3"
+        # 質量 md
+        assert float(ov["6"]) == pytest.approx(150.0)
+        # ダッシュポット特性-種別 = 0 (線形弾性型 EL1)
+        assert ov["7"] == "0"
+        # C0 = 減衰係数 cd
+        assert float(ov["8"]) == pytest.approx(300.0)
+        # 装置剛性 = 0
+        assert ov["14"] == "0"
+        # 取付け剛性 = 支持部材剛性 kb
+        assert float(ov["15"]) == pytest.approx(8000.0)
+        # 温度変動係数 τ (下限/上限) = 1.0
+        assert float(ov["20"]) == pytest.approx(1.0)
+        assert float(ov["22"]) == pytest.approx(1.0)
+
+    def test_overrides_keyword_is_dvod(self):
+        """inject() が DVOD キーワードで add_damper_def_new を呼ぶ。"""
+        injector = DamperInjector()
+        mock_model = MagicMock()
+        mock_model.nodes = {1: MagicMock(), 2: MagicMock()}
+        mock_model.damper_defs = []
+        mock_model.damper_elements = []
+        mock_model.get_damper_def.return_value = None
+        mock_model.add_damper_def_new.return_value = MagicMock()
+
+        with patch("app.services.damper_injector.parse_s8i", return_value=mock_model):
+            injector.inject(
+                base_s8i_path="model.s8i",
+                specs=[DamperInsertSpec(def_name="IRDT1", node_i=1, node_j=2)],
+                output_s8i_path="/tmp/out.s8i",
+            )
+        call = mock_model.add_damper_def_new.call_args
+        assert call.kwargs.get("keyword") == "DVOD"
+        assert call.kwargs.get("num_fields") == 22
 
 
 # ---------------------------------------------------------------------------

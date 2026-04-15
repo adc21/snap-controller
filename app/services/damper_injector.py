@@ -3,7 +3,16 @@ app/services/damper_injector.py
 SNAPモデル（.s8i）へのiRDT/iODダンパー自動挿入サービス。
 
 指定した層にiRDT（慣性質量減衰型制振装置）またはiOD（大質量型オイルダンパー）の
-ダンパー定義（DVMS要素）を自動的に挿入し、新しいSNAPケースとして保存します。
+ダンパー定義（DVOD: 粘性/オイルダンパー）を自動的に挿入し、
+対応するRD要素（制振ブレース）と共に新しいSNAPケースとして保存します。
+
+iRDT は SNAP 上では DVOD として登録し、
+  - 減衰モデル = 3 (ダッシュポットと質量)
+  - 質量        = 慣性質量 md (t = kN·s²/m)
+  - ダッシュポット特性 種別 = 0 (線形弾性型 EL1)
+  - C0          = 減衰係数 cd (kN·s/m)
+  - 取付け剛性   = 支持部材剛性 kb (kN/m)
+の形で表現します（DVOD の仕様は hhD8A3.pdf を参照）。
 """
 
 from __future__ import annotations
@@ -67,7 +76,7 @@ class DamperInsertSpec:
     spring_kN_m: float = 5000.0
     damping_kN_s_m: float = 200.0
     stroke_m: float = 0.3
-    # True の場合、ダンパー定義 (DVMS) だけを追加し RD 要素 (配置) は追加しない。
+    # True の場合、ダンパー定義 (DVOD) だけを追加し RD 要素 (配置) は追加しない。
     def_only: bool = False
 
 
@@ -110,8 +119,10 @@ class DamperInjector:
     """
     .s8i ファイルへの iRDT/iOD ダンパー自動挿入サービス。
 
-    DVMS キーワードを用いてダンパー定義を追加し、
-    RD 要素（免制振装置配置）を指定ノード間に挿入します。
+    DVOD キーワード (粘性/オイルダンパー) を用いてダンパー定義を追加し、
+    RD 要素 (制振ブレース) を指定ノード間に挿入します。iRDT の場合は
+    DVOD の減衰モデルを 3 (ダッシュポットと質量) に設定し、
+    慣性質量・C0・取付け剛性を書き込みます。
 
     使用例
     ------
@@ -134,17 +145,48 @@ class DamperInjector:
     >>> print(result.success, result.message)
     """
 
-    # DVMS フィールドインデックス (values[0]=名前, values[N]=Nフィールド目)
+    # DVOD フィールドインデックス (values[0]=名前, values[N]=Nフィールド目)
     # add_damper_def_new の overrides: "N" → values[N]
-    _FIELD_TYPE = "1"      # タイプ (0=標準)
-    _FIELD_DIR = "2"       # 方向 (0=デフォルト)
-    _FIELD_MASS = "3"      # 慣性質量 (kN·s²/m)
-    _FIELD_SPRING = "4"    # 支持バネ剛性 (kN/m)
-    _FIELD_DAMPING = "5"   # 減衰係数 (kN·s/m)
-    _FIELD_STROKE = "6"    # ストローク (m)
-    _DVMS_NUM_FIELDS = 20  # DVMS 定義のフィールド数（名前除く）
+    # (参考: hhD8A3.pdf "DVOD 粘性/オイルダンパー" の項目順序)
+    #   order  2: k-DB 種別      → values[1]
+    #   order  3: 会社           → values[2]
+    #   order  4: 製品           → values[3]
+    #   order  5: 型番           → values[4]
+    #   order  6: 減衰モデル     → values[5]   (3 = ダッシュポットと質量)
+    #   order  7: 質量 (t)       → values[6]
+    #   order  8: ダッシュポット特性種別 → values[7] (0 = 線形弾性型 EL1)
+    #   order  9: C0             → values[8]   (減衰係数 kN·s/m)
+    #   order 10: Fc             → values[9]
+    #   order 11: Fy             → values[10]
+    #   order 12: Ve             → values[11]
+    #   order 13: α             → values[12]
+    #   order 14: β             → values[13]
+    #   order 15: 剛性 (装置剛性)→ values[14]
+    #   order 16: 取付け剛性     → values[15]  (支持部材剛性 kb)
+    #   order 17: 装置高さ       → values[16]
+    #   order 18: 重量種別       → values[17]
+    #   order 19: 重量           → values[18]
+    #   order 20: 下限温度       → values[19]
+    #   order 21: 下限 τ        → values[20]  (1.0)
+    #   order 22: 上限温度       → values[21]
+    #   order 23: 上限 τ        → values[22]  (1.0)
+    _FIELD_KDB_TYPE = "1"
+    _FIELD_KDB_COMPANY = "2"
+    _FIELD_KDB_PRODUCT = "3"
+    _FIELD_KDB_MODEL = "4"
+    _FIELD_DAMP_MODEL = "5"         # 減衰モデル (3=ダッシュポットと質量)
+    _FIELD_MASS = "6"               # 質量 (t = kN·s²/m)
+    _FIELD_DASHPOT_TYPE = "7"       # ダッシュポット特性-種別 (0=EL1)
+    _FIELD_C0 = "8"                 # C0 (kN·s/m)
+    _FIELD_DEVICE_STIFF = "14"      # 装置剛性
+    _FIELD_MOUNT_STIFF = "15"       # 取付け剛性 (= 支持部材剛性 kb)
+    _FIELD_TAU_LOW = "20"           # 変動係数 下限 τ
+    _FIELD_TAU_HIGH = "22"          # 変動係数 上限 τ
+    _DVOD_NUM_FIELDS = 22           # DVOD 定義のフィールド数（名前除く）
+    _DVOD_DAMP_MODEL_DASHPOT_MASS = "3"
+    _DVOD_DASHPOT_LINEAR_EL1 = "0"
 
-    # RD 種別コード: 1 = 粘性/オイル系（iRDT/iOD に適用）
+    # RD 種別コード: 1 = 粘性/オイルダンパー（DVOD に対応）
     _RD_DAMPER_TYPE_CODE = "1"
 
     def inject(
@@ -253,12 +295,12 @@ class DamperInjector:
                 f"定義名 '{spec.def_name}' が既に存在します。上書きします。"
             )
 
-        # DVMS 定義を追加（上書き or 新規）
-        overrides = self._build_dvms_overrides(spec)
+        # DVOD 定義を追加（上書き or 新規）
+        overrides = self._build_dvod_overrides(spec)
         new_def = model.add_damper_def_new(
-            keyword="DVMS",
+            keyword="DVOD",
             new_name=spec.def_name,
-            num_fields=self._DVMS_NUM_FIELDS,
+            num_fields=self._DVOD_NUM_FIELDS,
             overrides=overrides,
         )
         if new_def is None:
@@ -268,8 +310,8 @@ class DamperInjector:
         # 定義のみモード: RD 配置はスキップ
         if spec.def_only:
             logger.debug(
-                "定義のみ追加: DVMS '%s' (m=%.1f, k=%.1f, c=%.1f)",
-                spec.def_name, spec.mass_kN_s2_m, spec.spring_kN_m, spec.damping_kN_s_m,
+                "定義のみ追加: DVOD '%s' (md=%.1f, cd=%.1f, kb=%.1f)",
+                spec.def_name, spec.mass_kN_s2_m, spec.damping_kN_s_m, spec.spring_kN_m,
             )
             return True
 
@@ -313,11 +355,11 @@ class DamperInjector:
         )
         model.damper_elements.append(new_elem)
         logger.debug(
-            "追加: DVMS '%s' (m=%.1f, k=%.1f, c=%.1f) → RD %s(%d→%d)×%d",
+            "追加: DVOD '%s' (md=%.1f, cd=%.1f, kb=%.1f) → RD %s(%d→%d)×%d",
             spec.def_name,
             spec.mass_kN_s2_m,
-            spec.spring_kN_m,
             spec.damping_kN_s_m,
+            spec.spring_kN_m,
             rd_name,
             spec.node_i,
             spec.node_j,
@@ -325,19 +367,41 @@ class DamperInjector:
         )
         return True
 
-    def _build_dvms_overrides(self, spec: DamperInsertSpec) -> Dict[str, str]:
-        """DVMS 定義の add_damper_def_new 用 overrides を構築。
+    def _build_dvod_overrides(self, spec: DamperInsertSpec) -> Dict[str, str]:
+        """DVOD 定義の add_damper_def_new 用 overrides を構築。
 
         add_damper_def_new の overrides キーは 1-indexed の values インデックス。
-        values[0] = 定義名（自動設定）, values[1] から SNAP フィールド。
+        values[0] = 定義名（自動設定）, values[1] 以降が SNAP フィールド。
+        iRDT は DVOD の減衰モデル 3 (ダッシュポットと質量) で表現する。
+
+        Parameters
+        ----------
+        spec : DamperInsertSpec
+            - mass_kN_s2_m : 慣性質量 md (t = kN·s²/m)
+            - damping_kN_s_m : 減衰係数 cd (C0, kN·s/m)
+            - spring_kN_m  : 支持部材剛性 kb → DVOD の 取付け剛性
         """
         return {
-            self._FIELD_TYPE:    "0",
-            self._FIELD_DIR:     "0",
-            self._FIELD_MASS:    str(spec.mass_kN_s2_m),
-            self._FIELD_SPRING:  str(spec.spring_kN_m),
-            self._FIELD_DAMPING: str(spec.damping_kN_s_m),
-            self._FIELD_STROKE:  str(spec.stroke_m),
+            # k-DB は「使用しない」
+            self._FIELD_KDB_TYPE:       "0",
+            self._FIELD_KDB_COMPANY:    "0",
+            self._FIELD_KDB_PRODUCT:    "0",
+            self._FIELD_KDB_MODEL:      "",
+            # 装置特性: 減衰モデル = 3 (ダッシュポットと質量)
+            self._FIELD_DAMP_MODEL:     self._DVOD_DAMP_MODEL_DASHPOT_MASS,
+            # 慣性質量 md
+            self._FIELD_MASS:           f"{spec.mass_kN_s2_m}",
+            # ダッシュポット特性: 線形弾性型 (EL1)
+            self._FIELD_DASHPOT_TYPE:   self._DVOD_DASHPOT_LINEAR_EL1,
+            # C0 (減衰係数)
+            self._FIELD_C0:             f"{spec.damping_kN_s_m}",
+            # 装置剛性は 0 (iRDT には装置自体の剛性は無い)
+            self._FIELD_DEVICE_STIFF:   "0",
+            # 取付け剛性 = 支持部材剛性 kb
+            self._FIELD_MOUNT_STIFF:    f"{spec.spring_kN_m}",
+            # 温度変動係数 τ は 1.0 固定
+            self._FIELD_TAU_LOW:        "1.0",
+            self._FIELD_TAU_HIGH:       "1.0",
         }
 
     def _create_new_case(

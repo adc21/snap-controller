@@ -100,7 +100,7 @@ class IrdtPlacementProposalDialog(QDialog):
         info = QLabel(
             "以下の内容で iRDT ダンパーを配置した新しい解析ケースをプロジェクトに追加します。\n"
             "表の値は編集可能です。\n"
-            "「配置」チェックを外した行は、ダンパー定義 (DVMS) のみ追加され、"
+            "「配置」チェックを外した行は、ダンパー定義 (DVOD) のみ追加され、"
             "RD 要素 (配置) は作成されません。"
         )
         info.setWordWrap(True)
