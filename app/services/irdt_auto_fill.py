@@ -57,6 +57,9 @@ class AutoFillResult:
     source_case_name: str = ""
     source_result_dir: str = ""
     warnings: List[str] = field(default_factory=list)
+    # 除外された最下層 (基礎/支点)。ダンパー配置時に 1 階との間にダンパーを
+    # 挟むために使用する。skip_base=False の場合は None。
+    base_floor: Optional[FloorInfo] = None
 
     @property
     def n_floors(self) -> int:
@@ -85,12 +88,23 @@ class AutoFillResult:
 # ----------------------------------------------------------------------
 
 
-def extract_floor_info(model: S8iModel) -> List[FloorInfo]:
+def extract_floor_info(
+    model: S8iModel,
+    skip_base: bool = True,
+) -> List[FloorInfo]:
     """
     S8iModel から層ごとの質量と節点 ID を抽出します。
 
     実装は `S8iModel.get_floor_nodes()` を利用し、各層の質量は所属節点の
     `Node.mass` を合算します。
+
+    Parameters
+    ----------
+    model : S8iModel
+    skip_base : bool, default True
+        True の場合、最下層 (Z 座標最小の層) を除外します。
+        SNAP では最下層は通常「基礎節点 (支点)」を表し、層質量・
+        モード振幅が 0 のため、iRDT 配置計算では無視するのが一般的です。
     """
     floor_nodes = model.get_floor_nodes()
     floors: List[FloorInfo] = []
@@ -102,6 +116,9 @@ def extract_floor_info(model: S8iModel) -> List[FloorInfo]:
         floors.append(FloorInfo(name=name, mass=total, node_ids=list(node_ids), z=z))
     # Z 座標昇順に並べる
     floors.sort(key=lambda f: f.z)
+    # 最下層 (基礎/支点) を除外
+    if skip_base and len(floors) >= 2:
+        floors = floors[1:]
     return floors
 
 
@@ -231,6 +248,7 @@ def auto_fill_from_project(
     case: Optional[AnalysisCase] = None,
     run_if_missing: bool = False,
     log_callback=None,
+    skip_base: bool = True,
 ) -> AutoFillResult:
     """
     プロジェクト情報から iRDT MDOF 入力用データを自動生成します。
@@ -246,6 +264,9 @@ def auto_fill_from_project(
         True かつ解析結果が見つからない場合、SNAP を実行して固有値解析を行う。
     log_callback : callable, optional
         進捗メッセージの受信用。
+    skip_base : bool, default True
+        True の場合、最下層 (基礎/支点) を入力候補から除外する。モード形状も
+        同じ長さだけ先頭を除去して整合させる。
 
     Returns
     -------
@@ -266,10 +287,15 @@ def auto_fill_from_project(
     if model is None:
         model = parse_s8i(s8i_path)
 
-    floors = extract_floor_info(model)
+    # 一旦全層を取得 (モード形状と zip するため)
+    floors_all = extract_floor_info(model, skip_base=False)
     warnings: List[str] = []
-    if not floors:
+    if not floors_all:
         warnings.append("s8i モデルから層情報を取得できませんでした。")
+    # 最下層を除外するかどうか
+    n_skipped = 1 if (skip_base and len(floors_all) >= 2) else 0
+    floors = floors_all[n_skipped:]
+    base_floor = floors_all[0] if n_skipped else None
 
     # ケース選択
     target_case = case
@@ -302,7 +328,16 @@ def auto_fill_from_project(
             )
 
     if result_dir is not None:
-        modes = _extract_modes_from_result(result_dir, n_floors=len(floors))
+        # モード形状は「全層数」で取り、skip_base 相当分だけ先頭を落として
+        # floors と対応づける。MDFloor.xbn が基礎節点を含むかどうかに関わらず
+        # 行数ベースで安全に整合させるための処理。
+        modes = _extract_modes_from_result(
+            result_dir, n_floors=len(floors_all)
+        )
+        if n_skipped:
+            for m in modes:
+                if len(m.shape) > n_skipped:
+                    m.shape = m.shape[n_skipped:]
         if not modes:
             warnings.append(f"{result_dir} からモード情報を取得できませんでした。")
 
@@ -312,6 +347,7 @@ def auto_fill_from_project(
         source_case_name=source_name,
         source_result_dir=str(result_dir) if result_dir else "",
         warnings=warnings,
+        base_floor=base_floor,
     )
 
 
@@ -369,17 +405,35 @@ def build_placement_specs(
     quantity: int = 1,
     stroke_m: float = 0.3,
     def_only: bool = False,
+    base_floor: Optional[FloorInfo] = None,
 ) -> List:
     """
     層ごとの (md, cd, kb) から DamperInsertSpec のリストを生成します。
 
-    - 層 i (i=0..n-1) に対してダンパーを配置し、各層で一意な定義名 `{base}{i+1}` を使う。
-    - node_i, node_j は `pick_interfloor_nodes` で選定。
+    Parameters
+    ----------
+    floors : list of FloorInfo
+        配置対象となる「上側の階」リスト。通常は `extract_floor_info(skip_base=True)`
+        で得られる最下層を除いたリスト。
+    mds, cds, kbs : list of float
+        各層 (floors と 1:1 対応) のダンパー質量・減衰係数・支持剛性。
+    base_floor : FloorInfo, optional
+        最下層 (基礎・支点) の FloorInfo。指定すると、`floors[0]` との間に
+        ダンパーを配置できる (例: 1 階と基礎の間に iRDT を入れる)。
+        `extract_floor_info(skip_base=False)` の先頭要素を渡すのが想定。
+
+    Notes
+    -----
+    - 入力行 i のダンパーを floors[i] の「下側」に配置する (挟む下階・上階の組):
+        * 下階 = (i==0 かつ base_floor が与えられていれば) base_floor else floors[i-1]
+        * 上階 = floors[i]
+    - 最下層 (i=0) かつ base_floor が与えられていない場合、そのダンパーは
+      配置先が無いためスキップ (旧動作と同じ)。
     - md が 0 または NaN の層はスキップ。
     """
     from app.services.damper_injector import DamperInsertSpec
 
-    specs = []
+    specs: List = []
     n = min(len(floors), len(mds), len(cds), len(kbs))
     for i in range(n):
         md = mds[i]
@@ -387,16 +441,23 @@ def build_placement_specs(
         kb = kbs[i]
         if (not md) or math.isnan(md) or math.isnan(cd) or math.isnan(kb) or md <= 0:
             continue
-        # iRDT は層 i-1 と層 i の間に配置するのが自然 (基部=0 と 1階の間に配置)
-        # ここでは簡易的に「層 i と層 i+1 の間」の iRDT を層 i の md で設計。
-        # 配置対象が最上層の場合はスキップ。
-        if i + 1 >= len(floors):
+
+        # 下階: i=0 なら base_floor、そうでなければ floors[i-1]
+        if i == 0:
+            lower = base_floor  # may be None
+        else:
+            lower = floors[i - 1]
+        if lower is None:
+            # 配置先の下階が無いためスキップ (base_floor が指定されていない場合)
             continue
-        ni, nj = pick_interfloor_nodes(floors, i)
+        upper = floors[i]
+        ni = lower.node_ids[0] if lower.node_ids else 0
+        nj = upper.node_ids[0] if upper.node_ids else 0
+
         spec = DamperInsertSpec(
             damper_type="iRDT",
             def_name=f"{base_def_name}{i + 1}",
-            floor_name=floors[i + 1].name,   # 配置先の階 (上側)
+            floor_name=upper.name,   # 配置先の階 (上側)
             node_i=ni,
             node_j=nj,
             quantity=quantity,

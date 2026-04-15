@@ -677,9 +677,29 @@ class IRDTMdofDialog(QDialog):
     # ---- ダンパー挿入 -------------------------------------------------
     def _on_inject_damper(self) -> None:
         """計算結果を元に、ダンパー定義+配置を s8i に追加する提案ダイアログを開く。"""
-        if self._project is None or not getattr(self._project, "s8i_path", ""):
+        try:
+            self._do_inject_damper()
+        except Exception as exc:
+            import logging, traceback
+            logging.getLogger(__name__).exception("inject dialog failed")
+            QMessageBox.critical(
+                self, "ダンパー挿入エラー",
+                f"ダイアログ表示中に例外が発生しました:\n{exc}\n\n"
+                f"{traceback.format_exc(limit=4)}",
+            )
+
+    def _do_inject_damper(self) -> None:
+        if self._project is None:
             QMessageBox.warning(self, "プロジェクト未設定",
-                                "挿入先の s8i ファイルが特定できません。")
+                                "このダイアログはプロジェクト読み込み中のみ使用できます。")
+            return
+        s8i_path = getattr(self._project, "s8i_path", "") or ""
+        if not s8i_path:
+            QMessageBox.warning(
+                self, "s8i ファイル未設定",
+                "プロジェクトに s8i ファイルが読み込まれていません。\n"
+                "メインウィンドウで .s8i モデルを読み込んでから再度お試しください。",
+            )
             return
 
         # 自動入力が済んでいない場合は層情報を s8i から取り直す
@@ -692,12 +712,24 @@ class IRDTMdofDialog(QDialog):
         model = getattr(self._project, "s8i_model", None)
         if model is None:
             try:
-                model = parse_s8i(self._project.s8i_path)
+                model = parse_s8i(s8i_path)
             except Exception as exc:
                 QMessageBox.critical(self, "s8i 読込失敗", str(exc))
                 return
-        floors = (self._auto_fill_result.floors
-                  if self._auto_fill_result is not None else extract_floor_info(model))
+        # 最下層は「入力」からは除外するが「配置」では基礎節点を使うため
+        # 別枠で保持しておく。
+        if self._auto_fill_result is not None:
+            floors = self._auto_fill_result.floors
+            base_floor = self._auto_fill_result.base_floor
+        else:
+            # 自動入力を通っていない場合は s8i から取り直す
+            floors_all = extract_floor_info(model, skip_base=False)
+            if len(floors_all) >= 2:
+                floors = floors_all[1:]
+                base_floor = floors_all[0]
+            else:
+                floors = floors_all
+                base_floor = None
         if not floors:
             QMessageBox.warning(self, "層情報なし",
                                 "s8i から層情報を取得できませんでした。")
@@ -724,14 +756,22 @@ class IRDTMdofDialog(QDialog):
             kbs.append(_v(kb_col))
 
         if not any(cd > 0 for cd in cds if not math.isnan(cd)):
-            QMessageBox.warning(self, "最適値未計算",
-                                "有効な cd/kb が計算されていません。入力を確認してください。")
+            QMessageBox.warning(
+                self, "最適値未計算",
+                "有効な cd/kb が計算されていません。\n"
+                "「s8i から自動入力...」で層質量/固有ベクトルを取り込むか、\n"
+                "入力テーブルの m, md, k (またはベクトル) を確認してください。",
+            )
             return
 
-        specs = build_placement_specs(floors, mds, cds, kbs)
+        specs = build_placement_specs(floors, mds, cds, kbs, base_floor=base_floor)
         if not specs:
-            QMessageBox.warning(self, "配置候補なし",
-                                "挿入可能な層がありません (md が 0、または最上層のみ)。")
+            QMessageBox.warning(
+                self, "配置候補なし",
+                "挿入可能な層がありません。\n"
+                f" 入力層数={len(mds)}, s8i 層数={len(floors)}。\n"
+                "md > 0 の層があり、かつ最上層より下に配置候補があるか確認してください。",
+            )
             return
 
         # 代表ケース (先頭)
