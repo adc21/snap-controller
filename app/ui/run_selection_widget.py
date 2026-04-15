@@ -403,9 +403,25 @@ class RunSelectionWidget(QWidget):
         return self._btn_run
 
     def _build_completion_banner(self, layout: QVBoxLayout) -> None:
-        self._completion_banner = QFrame()
-        self._completion_banner.setFrameShape(QFrame.StyledPanel)
-        self._completion_banner.setStyleSheet(
+        self._completion_banner = self._make_completion_frame()
+        banner_layout = QHBoxLayout(self._completion_banner)
+        banner_layout.setContentsMargins(12, 8, 12, 8)
+        banner_layout.setSpacing(10)
+
+        banner_layout.addWidget(self._make_banner_icon())
+        banner_layout.addLayout(self._build_banner_text_col(), stretch=1)
+        banner_layout.addWidget(self._build_view_results_button())
+        banner_layout.addWidget(self._build_countdown_widget())
+        banner_layout.addWidget(self._build_close_banner_button())
+
+        self._completion_banner.hide()
+        layout.addWidget(self._completion_banner)
+
+    @staticmethod
+    def _make_completion_frame() -> QFrame:
+        frame = QFrame()
+        frame.setFrameShape(QFrame.StyledPanel)
+        frame.setStyleSheet(
             "QFrame {"
             "  background-color: #1b5e20;"
             "  border: 2px solid #4caf50;"
@@ -413,25 +429,24 @@ class RunSelectionWidget(QWidget):
             "  padding: 4px;"
             "}"
         )
-        banner_layout = QHBoxLayout(self._completion_banner)
-        banner_layout.setContentsMargins(12, 8, 12, 8)
-        banner_layout.setSpacing(10)
+        return frame
 
-        banner_icon = QLabel()
-        banner_icon.setPixmap(
-            qta.icon("fa5s.check-circle", color="#ffffff").pixmap(24, 24)
-        )
-        banner_layout.addWidget(banner_icon)
+    @staticmethod
+    def _make_banner_icon() -> QLabel:
+        icon = QLabel()
+        icon.setPixmap(qta.icon("fa5s.check-circle", color="#ffffff").pixmap(24, 24))
+        return icon
 
-        _banner_text_col = QVBoxLayout()
-        _banner_text_col.setSpacing(2)
-        _banner_text_col.setContentsMargins(0, 0, 0, 0)
+    def _build_banner_text_col(self) -> QVBoxLayout:
+        col = QVBoxLayout()
+        col.setSpacing(2)
+        col.setContentsMargins(0, 0, 0, 0)
 
         self._banner_text = QLabel("解析が完了しました")
         self._banner_text.setStyleSheet(
             "color: #ffffff; font-size: 13px; font-weight: bold; background: transparent; border: none;"
         )
-        _banner_text_col.addWidget(self._banner_text)
+        col.addWidget(self._banner_text)
 
         self._banner_best_lbl = QLabel("")
         self._banner_best_lbl.setStyleSheet(
@@ -439,10 +454,10 @@ class RunSelectionWidget(QWidget):
         )
         self._banner_best_lbl.setTextFormat(Qt.RichText)
         self._banner_best_lbl.hide()
-        _banner_text_col.addWidget(self._banner_best_lbl)
+        col.addWidget(self._banner_best_lbl)
+        return col
 
-        banner_layout.addLayout(_banner_text_col, stretch=1)
-
+    def _build_view_results_button(self) -> QPushButton:
         self._btn_view_results = QPushButton("📊 結果を確認する  (STEP4) →")
         self._btn_view_results.setStyleSheet(
             "QPushButton {"
@@ -459,19 +474,19 @@ class RunSelectionWidget(QWidget):
             "}"
         )
         self._btn_view_results.clicked.connect(self._on_view_results_clicked)
-        banner_layout.addWidget(self._btn_view_results)
+        return self._btn_view_results
 
-        # 自動遷移カウントダウンUI
-        _countdown_col = QVBoxLayout()
-        _countdown_col.setSpacing(2)
-        _countdown_col.setContentsMargins(0, 0, 0, 0)
+    def _build_countdown_widget(self) -> QWidget:
+        col = QVBoxLayout()
+        col.setSpacing(2)
+        col.setContentsMargins(0, 0, 0, 0)
 
         self._countdown_label = QLabel(f"{_AUTO_TRANSITION_SEC}秒後に自動移動")
         self._countdown_label.setStyleSheet(
             "color: #a5d6a7; font-size: 10px; background: transparent; border: none;"
         )
         self._countdown_label.setAlignment(Qt.AlignCenter)
-        _countdown_col.addWidget(self._countdown_label)
+        col.addWidget(self._countdown_label)
 
         self._countdown_bar = QProgressBar()
         self._countdown_bar.setRange(0, _AUTO_TRANSITION_SEC)
@@ -482,7 +497,7 @@ class RunSelectionWidget(QWidget):
             "QProgressBar { border: none; border-radius: 2px; background-color: rgba(0,0,0,40); }"
             "QProgressBar::chunk { background-color: #a5d6a7; border-radius: 2px; }"
         )
-        _countdown_col.addWidget(self._countdown_bar)
+        col.addWidget(self._countdown_bar)
 
         self._btn_cancel_auto = QPushButton("キャンセル")
         self._btn_cancel_auto.setFixedHeight(18)
@@ -496,26 +511,24 @@ class RunSelectionWidget(QWidget):
         )
         self._btn_cancel_auto.setToolTip("自動遷移をキャンセルします")
         self._btn_cancel_auto.clicked.connect(self._cancel_countdown)
-        _countdown_col.addWidget(self._btn_cancel_auto)
+        col.addWidget(self._btn_cancel_auto)
 
         self._countdown_widget = QWidget()
-        self._countdown_widget.setLayout(_countdown_col)
+        self._countdown_widget.setLayout(col)
         self._countdown_widget.hide()
-        banner_layout.addWidget(self._countdown_widget)
+        return self._countdown_widget
 
-        btn_close_banner = QPushButton("✕")
-        btn_close_banner.setFlat(True)
-        btn_close_banner.setFixedSize(20, 20)
-        btn_close_banner.setStyleSheet(
+    def _build_close_banner_button(self) -> QPushButton:
+        btn = QPushButton("✕")
+        btn.setFlat(True)
+        btn.setFixedSize(20, 20)
+        btn.setStyleSheet(
             "QPushButton { color: #aaaaaa; font-size: 12px; background: transparent; border: none; }"
             "QPushButton:hover { color: white; }"
         )
-        btn_close_banner.setToolTip("バナーを閉じる（自動遷移もキャンセル）")
-        btn_close_banner.clicked.connect(self._close_banner)
-        banner_layout.addWidget(btn_close_banner)
-
-        self._completion_banner.hide()
-        layout.addWidget(self._completion_banner)
+        btn.setToolTip("バナーを閉じる（自動遷移もキャンセル）")
+        btn.clicked.connect(self._close_banner)
+        return btn
 
     def _build_error_panel(self, layout: QVBoxLayout) -> None:
         self._error_panel = QFrame()

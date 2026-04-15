@@ -102,98 +102,18 @@ class TransferFunctionService:
         freq_range: Optional[Tuple[float, float]] = None,
     ) -> TransferFunctionResult:
         """伝達関数を計算。"""
-        x = np.asarray(input_signal, dtype=np.float64).ravel()
-        y = np.asarray(output_signal, dtype=np.float64).ravel()
+        x, y = self._prepare_signals(input_signal, output_signal, detrend)
+        f, pxx, pyy, pxy = self._compute_spectra(x, y)
 
-        if len(x) != len(y):
-            raise ValueError(
-                f"入出力信号の長さが一致しません: {len(x)} vs {len(y)}"
+        magnitude_db, phase_deg = self._spectra_to_gain_phase(pxx, pxy)
+        coherence = self._compute_coherence(pxx, pyy, pxy)
+
+        if freq_range is not None:
+            f, magnitude_db, phase_deg, coherence = self._apply_freq_range(
+                f, magnitude_db, phase_deg, coherence, freq_range
             )
 
-        if len(x) < 2:
-            raise ValueError("時系列が短すぎます（最低 2 サンプル必要）")
-
-        # デトレンド
-        if detrend:
-            x = signal.detrend(x, type=detrend)
-            y = signal.detrend(y, type=detrend)
-
-        # Welch 法パラメータの決定
-        n_samples = len(x)
-        nperseg = self.nperseg or min(n_samples // 4, 2048)
-        noverlap = int(nperseg * self.noverlap_ratio)
-        nfft = self.welch_nfft or nperseg * 2
-
-        # Welch 法で電力スペクトラム及び相互スペクトラムを計算
-        f, pxx = signal.welch(
-            x,
-            fs=1.0 / self.dt,
-            window=self.window,
-            nperseg=nperseg,
-            noverlap=noverlap,
-            nfft=nfft,
-        )
-        f, pyy = signal.welch(
-            y,
-            fs=1.0 / self.dt,
-            window=self.window,
-            nperseg=nperseg,
-            noverlap=noverlap,
-            nfft=nfft,
-        )
-        f, pxy = signal.csd(
-            x,
-            y,
-            fs=1.0 / self.dt,
-            window=self.window,
-            nperseg=nperseg,
-            noverlap=noverlap,
-            nfft=nfft,
-        )
-
-        # 伝達関数 H(f) = Pxy(f) / Pxx(f)
-        eps = 1e-12
-        h = np.zeros_like(pxy)
-        np.divide(pxy, pxx + eps, where=(pxx > eps), out=h)
-        h[pxx <= eps] = 0
-
-        # ゲイン [dB] と位相 [degree]
-        magnitude = np.abs(h)
-        magnitude_db = 20 * np.log10(magnitude + eps)
-        phase_rad = np.angle(h)
-        phase_deg = np.degrees(phase_rad)
-
-        # NaN/Inf 防御
-        if not np.all(np.isfinite(magnitude_db)):
-            logger.warning("compute_transfer_function: NaN/Inf in gain_db, sanitizing")
-            magnitude_db = np.where(np.isfinite(magnitude_db), magnitude_db, -200.0)
-        if not np.all(np.isfinite(phase_deg)):
-            phase_deg = np.where(np.isfinite(phase_deg), phase_deg, 0.0)
-
-        # コヒーレンス
-        coh_squared = np.zeros_like(pxx, dtype=float)
-        np.divide(
-            np.abs(pxy) ** 2,
-            (pxx + eps) * (pyy + eps),
-            where=((pxx > eps) & (pyy > eps)),
-            out=coh_squared,
-        )
-        coh_squared = np.clip(coh_squared, 0, 1)
-        coherence = np.sqrt(coh_squared)
-
-        # 周波数範囲でのフィルタリング
-        if freq_range is not None:
-            fmin, fmax = freq_range
-            mask = (f >= fmin) & (f <= fmax)
-            f = f[mask]
-            magnitude_db = magnitude_db[mask]
-            phase_deg = phase_deg[mask]
-            coherence = coherence[mask]
-
-        # 1次ピークの検出
         peak_freq, peak_gain_db = self._find_first_peak(f, magnitude_db)
-
-        # 周波数分解能
         freq_resolution = f[1] - f[0] if len(f) > 1 else 0.0
 
         return TransferFunctionResult(
@@ -207,6 +127,85 @@ class TransferFunctionService:
             peak_gain_db=peak_gain_db,
             freq_resolution=freq_resolution,
         )
+
+    @staticmethod
+    def _prepare_signals(
+        input_signal: np.ndarray, output_signal: np.ndarray, detrend: str
+    ) -> Tuple[np.ndarray, np.ndarray]:
+        x = np.asarray(input_signal, dtype=np.float64).ravel()
+        y = np.asarray(output_signal, dtype=np.float64).ravel()
+        if len(x) != len(y):
+            raise ValueError(
+                f"入出力信号の長さが一致しません: {len(x)} vs {len(y)}"
+            )
+        if len(x) < 2:
+            raise ValueError("時系列が短すぎます（最低 2 サンプル必要）")
+        if detrend:
+            x = signal.detrend(x, type=detrend)
+            y = signal.detrend(y, type=detrend)
+        return x, y
+
+    def _welch_params(self, n_samples: int) -> Tuple[int, int, int]:
+        nperseg = self.nperseg or min(n_samples // 4, 2048)
+        noverlap = int(nperseg * self.noverlap_ratio)
+        nfft = self.welch_nfft or nperseg * 2
+        return nperseg, noverlap, nfft
+
+    def _compute_spectra(
+        self, x: np.ndarray, y: np.ndarray
+    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+        nperseg, noverlap, nfft = self._welch_params(len(x))
+        fs = 1.0 / self.dt
+        kw = dict(
+            fs=fs, window=self.window, nperseg=nperseg, noverlap=noverlap, nfft=nfft
+        )
+        f, pxx = signal.welch(x, **kw)
+        f, pyy = signal.welch(y, **kw)
+        f, pxy = signal.csd(x, y, **kw)
+        return f, pxx, pyy, pxy
+
+    @staticmethod
+    def _spectra_to_gain_phase(
+        pxx: np.ndarray, pxy: np.ndarray
+    ) -> Tuple[np.ndarray, np.ndarray]:
+        eps = 1e-12
+        h = np.zeros_like(pxy)
+        np.divide(pxy, pxx + eps, where=(pxx > eps), out=h)
+        h[pxx <= eps] = 0
+        magnitude_db = 20 * np.log10(np.abs(h) + eps)
+        phase_deg = np.degrees(np.angle(h))
+        if not np.all(np.isfinite(magnitude_db)):
+            logger.warning("compute_transfer_function: NaN/Inf in gain_db, sanitizing")
+            magnitude_db = np.where(np.isfinite(magnitude_db), magnitude_db, -200.0)
+        if not np.all(np.isfinite(phase_deg)):
+            phase_deg = np.where(np.isfinite(phase_deg), phase_deg, 0.0)
+        return magnitude_db, phase_deg
+
+    @staticmethod
+    def _compute_coherence(
+        pxx: np.ndarray, pyy: np.ndarray, pxy: np.ndarray
+    ) -> np.ndarray:
+        eps = 1e-12
+        coh_squared = np.zeros_like(pxx, dtype=float)
+        np.divide(
+            np.abs(pxy) ** 2,
+            (pxx + eps) * (pyy + eps),
+            where=((pxx > eps) & (pyy > eps)),
+            out=coh_squared,
+        )
+        return np.sqrt(np.clip(coh_squared, 0, 1))
+
+    @staticmethod
+    def _apply_freq_range(
+        f: np.ndarray,
+        magnitude_db: np.ndarray,
+        phase_deg: np.ndarray,
+        coherence: np.ndarray,
+        freq_range: Tuple[float, float],
+    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+        fmin, fmax = freq_range
+        mask = (f >= fmin) & (f <= fmax)
+        return f[mask], magnitude_db[mask], phase_deg[mask], coherence[mask]
 
     @staticmethod
     def _find_first_peak(
