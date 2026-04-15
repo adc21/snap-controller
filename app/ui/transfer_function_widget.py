@@ -154,11 +154,21 @@ class TransferFunctionWidget(QWidget):
         root.setContentsMargins(6, 6, 6, 6)
         root.setSpacing(4)
 
-        # ---- 上部コントロールバー ----
+        root.addLayout(self._build_control_bar())
+        self._build_info_labels(root)
+        self._build_chart_area(root)
+
+    def _build_control_bar(self) -> QHBoxLayout:
+        """上部コントロールバー（セレクタ + ボタン群）を構築。"""
         ctrl = QHBoxLayout()
         ctrl.addWidget(QLabel("📊 周波数応答ビューア"))
         ctrl.addStretch(1)
+        self._build_selector_combos(ctrl)
+        self._build_control_buttons(ctrl)
+        return ctrl
 
+    def _build_selector_combos(self, ctrl: QHBoxLayout) -> None:
+        """カテゴリ/レコード/成分コンボ + 対数スケールチェックを構築。"""
         ctrl.addWidget(QLabel("カテゴリ:"))
         self._cat_combo = QComboBox()
         self._cat_combo.setMinimumWidth(90)
@@ -185,6 +195,8 @@ class TransferFunctionWidget(QWidget):
         self._log_check.stateChanged.connect(self._on_selection_changed)
         ctrl.addWidget(self._log_check)
 
+    def _build_control_buttons(self, ctrl: QHBoxLayout) -> None:
+        """更新/SNAP伝達関数/基準/CSV出力ボタンを構築。"""
         btn_refresh = QPushButton("更新")
         btn_refresh.setFixedWidth(60)
         btn_refresh.clicked.connect(self._refresh)
@@ -202,7 +214,7 @@ class TransferFunctionWidget(QWidget):
         self._btn_set_ref = QPushButton("基準に設定")
         self._btn_set_ref.setFixedWidth(80)
         self._btn_set_ref.setToolTip(
-            "現在表示中のFFTスペクトルを基準（リファレンス）として保存します。\n"
+            "現在表示中のFFTスペクトルを基準(リファレンス)として保存します。\n"
             "制振前の応答を基準にして、制振後との比較に使えます。"
         )
         self._btn_set_ref.clicked.connect(self._set_reference)
@@ -223,9 +235,8 @@ class TransferFunctionWidget(QWidget):
         self._btn_export_csv.clicked.connect(self._export_csv)
         ctrl.addWidget(self._btn_export_csv)
 
-        root.addLayout(ctrl)
-
-        # ---- ピーク情報ラベル ----
+    def _build_info_labels(self, root: QVBoxLayout) -> None:
+        """ピーク情報 + ステータスラベルを構築。"""
         self._peak_label = QLabel("")
         self._peak_label.setStyleSheet(
             "color:#333; font-size:11px; padding:2px 4px; "
@@ -233,12 +244,12 @@ class TransferFunctionWidget(QWidget):
         )
         root.addWidget(self._peak_label)
 
-        # ---- ステータス ----
         self._status_label = QLabel("")
         self._status_label.setStyleSheet("color:#666; font-size:11px; padding:2px 4px;")
         root.addWidget(self._status_label)
 
-        # ---- チャートエリア ----
+    def _build_chart_area(self, root: QVBoxLayout) -> None:
+        """matplotlibチャートエリア(キャンバス+ナビゲーションツールバー)を構築。"""
         chart_widget = QWidget()
         chart_layout = QVBoxLayout(chart_widget)
         chart_layout.setContentsMargins(2, 2, 2, 2)

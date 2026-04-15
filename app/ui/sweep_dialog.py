@@ -510,8 +510,15 @@ class SweepDialog(QDialog):
 
     def _setup_ui(self) -> None:
         layout = QVBoxLayout(self)
+        layout.addWidget(self._build_base_group())
+        layout.addWidget(self._build_sweep_group())
+        layout.addLayout(self._build_live_count_row())
+        layout.addLayout(self._build_gen_row())
+        layout.addWidget(self._build_preview_group())
+        layout.addWidget(self._build_button_box())
 
-        # ---- ベースケース設定 ----
+    def _build_base_group(self) -> QGroupBox:
+        """ベースケース設定グループ(プレフィックス+モデルファイル選択)。"""
         base_group = QGroupBox("ベースケース設定")
         base_form = QFormLayout(base_group)
 
@@ -527,14 +534,13 @@ class SweepDialog(QDialog):
         model_row.addWidget(self._model_edit)
         model_row.addWidget(model_btn)
         base_form.addRow("モデルファイル (.s8i):", model_row)
+        return base_group
 
-        layout.addWidget(base_group)
-
-        # ---- スイープパラメータ設定 ----
+    def _build_sweep_group(self) -> QGroupBox:
+        """スイープパラメータ設定グループ(追加ボタン + 初期1行)。"""
         sweep_group = QGroupBox("スイープパラメータ（複数パラメータのグリッドサーチ対応）")
         self._sweep_layout = QVBoxLayout(sweep_group)
 
-        # パラメータ追加ボタン（_add_param_row より先に作成する）
         add_btn_row = QHBoxLayout()
         self._add_param_btn = QPushButton("＋ パラメータを追加（グリッドサーチ）")
         self._add_param_btn.setToolTip(
@@ -548,10 +554,10 @@ class SweepDialog(QDialog):
 
         # 最初のパラメータ行を追加（_add_param_btn 作成後に呼ぶ）
         self._add_param_row()
+        return sweep_group
 
-        layout.addWidget(sweep_group)
-
-        # ---- UX改善（新）: リアルタイムケース数プレビューラベル ----
+    def _build_live_count_row(self) -> QHBoxLayout:
+        """リアルタイムケース数プレビューラベル行を構築。"""
         live_count_row = QHBoxLayout()
         live_count_row.setContentsMargins(0, 0, 0, 0)
         self._live_count_label = QLabel("")
@@ -565,9 +571,10 @@ class SweepDialog(QDialog):
         )
         live_count_row.addWidget(self._live_count_label)
         live_count_row.addStretch()
-        layout.addLayout(live_count_row)
+        return live_count_row
 
-        # ---- 生成ボタン行 ----
+    def _build_gen_row(self) -> QHBoxLayout:
+        """生成ボタン行を構築。"""
         gen_row = QHBoxLayout()
         self._gen_btn = QPushButton("ケースを生成（プレビュー）")
         self._gen_btn.clicked.connect(self._generate_preview)
@@ -575,9 +582,10 @@ class SweepDialog(QDialog):
         self._count_label = QLabel("")
         gen_row.addWidget(self._count_label)
         gen_row.addStretch()
-        layout.addLayout(gen_row)
+        return gen_row
 
-        # ---- プレビューテーブル ----
+    def _build_preview_group(self) -> QGroupBox:
+        """生成プレビューテーブル群を構築。"""
         preview_group = QGroupBox("生成プレビュー")
         preview_layout = QVBoxLayout(preview_group)
 
@@ -591,10 +599,10 @@ class SweepDialog(QDialog):
         self._preview_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self._preview_table.verticalHeader().setVisible(False)
         preview_layout.addWidget(self._preview_table)
+        return preview_group
 
-        layout.addWidget(preview_group)
-
-        # ---- ボタン ----
+    def _build_button_box(self) -> QDialogButtonBox:
+        """OK/Cancel ボタンボックスを構築。"""
         self._buttons = QDialogButtonBox(
             QDialogButtonBox.Ok | QDialogButtonBox.Cancel
         )
@@ -602,7 +610,7 @@ class SweepDialog(QDialog):
         self._buttons.button(QDialogButtonBox.Ok).setEnabled(False)
         self._buttons.accepted.connect(self._on_accept)
         self._buttons.rejected.connect(self.reject)
-        layout.addWidget(self._buttons)
+        return self._buttons
 
     # ------------------------------------------------------------------
     # Param row management
