@@ -96,10 +96,17 @@ class StepNavFooter(QWidget):
         layout.setContentsMargins(12, 8, 12, 8)
         layout.setSpacing(8)
 
-        # UX改善: 「次へ」ボタンが無効な場合に表示するヒントテキスト
         self._next_hint_text: str = ""
 
-        # 「← 戻る」ボタン
+        self._build_back_button(layout, back_label, show_back, icon_color)
+        self._build_autosave_label(layout)
+        layout.addStretch()
+        self._build_hint_label(layout)
+        self._build_next_button(layout, next_label, show_next, next_primary, icon_color)
+
+    def _build_back_button(
+        self, layout: QHBoxLayout, back_label: str, show_back: bool, icon_color: str
+    ) -> None:
         self._btn_back = QPushButton(back_label)
         self._btn_back.setIcon(qta.icon("fa5s.chevron-left", color=icon_color))
         self._btn_back.setStyleSheet(
@@ -109,9 +116,7 @@ class StepNavFooter(QWidget):
         self._btn_back.setVisible(show_back)
         layout.addWidget(self._btn_back)
 
-        # UX改善（第7回⑤）: 自動保存ステータスインジケーター
-        # プロジェクトの保存状態（保存済み / 未保存 / 保存中 / エラー）を
-        # フッター中央に常時表示します。update_autosave_status() で外部から更新します。
+    def _build_autosave_label(self, layout: QHBoxLayout) -> None:
         self._autosave_lbl = QLabel("")
         self._autosave_lbl.setStyleSheet(
             "color: #9e9e9e; font-size: 10px; background: transparent;"
@@ -123,12 +128,10 @@ class StepNavFooter(QWidget):
             "● 未保存: まだ保存されていない変更があります\n"
             "⚠ 失敗: 自動保存に失敗しました（手動保存: Ctrl+S）"
         )
-        self._autosave_lbl.setVisible(False)  # update_autosave_status() 呼び出し時に表示
+        self._autosave_lbl.setVisible(False)
         layout.addWidget(self._autosave_lbl)
 
-        layout.addStretch()
-
-        # UX改善: 「次へ進むには」インラインヒントラベル（無効時のみ表示）
+    def _build_hint_label(self, layout: QHBoxLayout) -> None:
         self._hint_label = QLabel()
         self._hint_label.setStyleSheet(
             "color: #1976d2;"
@@ -139,10 +142,21 @@ class StepNavFooter(QWidget):
         self._hint_label.setVisible(False)
         layout.addWidget(self._hint_label)
 
-        # 「次へ →」ボタン
+    def _build_next_button(
+        self,
+        layout: QHBoxLayout,
+        next_label: str,
+        show_next: bool,
+        next_primary: bool,
+        icon_color: str,
+    ) -> None:
         self._btn_next = QPushButton(next_label)
-        self._btn_next.setIcon(qta.icon("fa5s.chevron-right", color="#ffffff" if next_primary else icon_color))
-        self._btn_next.setLayoutDirection(self._btn_next.layoutDirection())
+        self._btn_next.setIcon(
+            qta.icon(
+                "fa5s.chevron-right",
+                color="#ffffff" if next_primary else icon_color,
+            )
+        )
         # アイコンを右側に表示するため setLayoutDirection で RTL にする
         from PySide6.QtCore import Qt as _Qt
         self._btn_next.setLayoutDirection(_Qt.RightToLeft)

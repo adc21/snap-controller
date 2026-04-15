@@ -121,8 +121,16 @@ class ShortcutHelpDialog(QDialog):
 
     def _setup_ui(self) -> None:
         layout = QVBoxLayout(self)
+        self._build_title(layout)
+        self._build_pinned_cards(layout)
+        self._build_separator(layout)
+        self._build_search_box(layout)
+        self._build_table(layout)
+        self._build_count_label(layout)
+        self._build_close_button(layout)
+        self._populate("")
 
-        # ---- タイトル ----
+    def _build_title(self, layout: QVBoxLayout) -> None:
         title = QLabel("⌨  キーボードショートカット一覧")
         title_font = QFont()
         title_font.setPointSize(13)
@@ -134,7 +142,7 @@ class ShortcutHelpDialog(QDialog):
         subtitle.setStyleSheet("color: gray; margin-bottom: 4px;")
         layout.addWidget(subtitle)
 
-        # ---- UX改善（第6回⑤）: ピン留めショートカットカード ----
+    def _build_pinned_cards(self, layout: QVBoxLayout) -> None:
         pinned_header = QLabel("📌 よく使うショートカット")
         pinned_header.setStyleSheet(
             "font-size: 11px; font-weight: bold; color: #555; margin-top: 4px;"
@@ -143,67 +151,67 @@ class ShortcutHelpDialog(QDialog):
 
         pinned_row = QHBoxLayout()
         pinned_row.setSpacing(6)
-
-        for key_text, desc, icon, bg_color, fg_color in _PINNED_SHORTCUTS:
-            card = QFrame()
-            card.setFrameShape(QFrame.StyledPanel)
-            card.setStyleSheet(
-                f"QFrame {{ background:{bg_color}; border:1px solid {fg_color}40;"
-                f"border-radius:6px; }}"
-            )
-            card.setFixedHeight(56)
-            card.setMinimumWidth(80)
-
-            card_layout = QVBoxLayout(card)
-            card_layout.setContentsMargins(8, 4, 8, 4)
-            card_layout.setSpacing(1)
-
-            # キー名（大きく）
-            key_lbl = QLabel(f"{icon}  {key_text}")
-            key_font = QFont("Consolas", 11)
-            key_font.setBold(True)
-            key_lbl.setFont(key_font)
-            key_lbl.setStyleSheet(
-                f"color: {fg_color}; background: transparent;"
-            )
-            key_lbl.setAlignment(Qt.AlignCenter)
-            card_layout.addWidget(key_lbl)
-
-            # 機能説明（小さく）
-            desc_lbl = QLabel(desc)
-            desc_font = QFont()
-            desc_font.setPointSize(8)
-            desc_lbl.setFont(desc_font)
-            desc_lbl.setStyleSheet(f"color:{fg_color}; background:transparent;")
-            desc_lbl.setAlignment(Qt.AlignCenter)
-            card_layout.addWidget(desc_lbl)
-
-            card.setToolTip(f"{key_text}: {desc}")
-            pinned_row.addWidget(card)
-
+        for entry in _PINNED_SHORTCUTS:
+            pinned_row.addWidget(self._make_pinned_card(*entry))
         pinned_row.addStretch()
         layout.addLayout(pinned_row)
 
-        # セパレーター
+    def _make_pinned_card(
+        self, key_text: str, desc: str, icon: str, bg_color: str, fg_color: str
+    ) -> QFrame:
+        card = QFrame()
+        card.setFrameShape(QFrame.StyledPanel)
+        card.setStyleSheet(
+            f"QFrame {{ background:{bg_color}; border:1px solid {fg_color}40;"
+            f"border-radius:6px; }}"
+        )
+        card.setFixedHeight(56)
+        card.setMinimumWidth(80)
+
+        card_layout = QVBoxLayout(card)
+        card_layout.setContentsMargins(8, 4, 8, 4)
+        card_layout.setSpacing(1)
+
+        key_lbl = QLabel(f"{icon}  {key_text}")
+        key_font = QFont("Consolas", 11)
+        key_font.setBold(True)
+        key_lbl.setFont(key_font)
+        key_lbl.setStyleSheet(f"color: {fg_color}; background: transparent;")
+        key_lbl.setAlignment(Qt.AlignCenter)
+        card_layout.addWidget(key_lbl)
+
+        desc_lbl = QLabel(desc)
+        desc_font = QFont()
+        desc_font.setPointSize(8)
+        desc_lbl.setFont(desc_font)
+        desc_lbl.setStyleSheet(f"color:{fg_color}; background:transparent;")
+        desc_lbl.setAlignment(Qt.AlignCenter)
+        card_layout.addWidget(desc_lbl)
+
+        card.setToolTip(f"{key_text}: {desc}")
+        return card
+
+    def _build_separator(self, layout: QVBoxLayout) -> None:
         sep = QFrame()
         sep.setFrameShape(QFrame.HLine)
         sep.setStyleSheet("color: palette(mid); margin: 4px 0;")
         layout.addWidget(sep)
 
-        # ---- 検索ボックス ----
+    def _build_search_box(self, layout: QVBoxLayout) -> None:
         self._search_edit = QLineEdit()
         self._search_edit.setPlaceholderText("🔍  機能名・キーで絞り込み…")
         self._search_edit.setClearButtonEnabled(True)
         self._search_edit.textChanged.connect(self._on_search_changed)
         layout.addWidget(self._search_edit)
 
-        # ---- テーブル ----
+    def _build_table(self, layout: QVBoxLayout) -> None:
         self._table = QTableWidget()
         self._table.setColumnCount(3)
         self._table.setHorizontalHeaderLabels(["カテゴリ", "キー", "機能"])
-        self._table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
-        self._table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeToContents)
-        self._table.horizontalHeader().setSectionResizeMode(2, QHeaderView.Stretch)
+        header = self._table.horizontalHeader()
+        header.setSectionResizeMode(0, QHeaderView.ResizeToContents)
+        header.setSectionResizeMode(1, QHeaderView.ResizeToContents)
+        header.setSectionResizeMode(2, QHeaderView.Stretch)
         self._table.verticalHeader().setVisible(False)
         self._table.setEditTriggers(QTableWidget.NoEditTriggers)
         self._table.setSelectionBehavior(QTableWidget.SelectRows)
@@ -211,18 +219,15 @@ class ShortcutHelpDialog(QDialog):
         self._table.setSortingEnabled(True)
         layout.addWidget(self._table)
 
-        # ---- 件数ラベル ----
+    def _build_count_label(self, layout: QVBoxLayout) -> None:
         self._count_label = QLabel()
         self._count_label.setStyleSheet("color: gray; font-size: 11px;")
         layout.addWidget(self._count_label)
 
-        # ---- 閉じるボタン ----
+    def _build_close_button(self, layout: QVBoxLayout) -> None:
         buttons = QDialogButtonBox(QDialogButtonBox.Close)
         buttons.rejected.connect(self.accept)
         layout.addWidget(buttons)
-
-        # 初期データ描画
-        self._populate("")
 
     def _populate(self, filter_text: str) -> None:
         """ショートカット一覧をテーブルに描画します（フィルター適用）。"""
