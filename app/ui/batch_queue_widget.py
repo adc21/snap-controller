@@ -115,7 +115,14 @@ class BatchQueueWidget(QWidget):
         layout.setContentsMargins(4, 4, 4, 4)
         layout.setSpacing(6)
 
-        # ---- ヘッダ（サマリー） ----
+        layout.addWidget(self._build_header())
+        layout.addWidget(self._build_progress_bar())
+        layout.addWidget(self._build_queue_table(), stretch=1)
+        layout.addLayout(self._build_button_bar())
+        layout.addWidget(self._build_next_action_banner())
+
+    def _build_header(self) -> QFrame:
+        """ステータス / ETA / 速度警告のヘッダ行。"""
         header = QFrame()
         header.setFrameShape(QFrame.StyledPanel)
         header_layout = QHBoxLayout(header)
@@ -131,25 +138,24 @@ class BatchQueueWidget(QWidget):
         self._lbl_eta.setStyleSheet("color: #666; font-size: 12px;")
         header_layout.addWidget(self._lbl_eta)
 
-        # UX改善（新）: 速度警告ラベル（遅い実行中ケースがある場合に表示）
         self._slow_warning_lbl = QLabel("")
         self._slow_warning_lbl.setStyleSheet(
             "color: #e65100; font-size: 11px; font-weight: bold;"
         )
         self._slow_warning_lbl.hide()
         header_layout.addWidget(self._slow_warning_lbl)
+        return header
 
-        layout.addWidget(header)
-
-        # ---- 進捗バー ----
+    def _build_progress_bar(self) -> QProgressBar:
         self._progress = QProgressBar()
         self._progress.setMaximumHeight(18)
         self._progress.setTextVisible(True)
         self._progress.setFormat("%v / %m ケース完了")
         self._progress.hide()
-        layout.addWidget(self._progress)
+        return self._progress
 
-        # ---- テーブル ----
+    def _build_queue_table(self) -> QTableWidget:
+        """バッチキューの一覧テーブル (5列)。"""
         self._table = QTableWidget()
         self._table.setColumnCount(5)
         self._table.setHorizontalHeaderLabels([
@@ -172,9 +178,10 @@ class BatchQueueWidget(QWidget):
         h.setSectionResizeMode(4, QHeaderView.Stretch)
 
         self._table.verticalHeader().setDefaultSectionSize(28)
-        layout.addWidget(self._table, stretch=1)
+        return self._table
 
-        # ---- ボタンバー ----
+    def _build_button_bar(self) -> QHBoxLayout:
+        """一時停止 / 再開 / キャンセル + サマリーラベル。"""
         btn_layout = QHBoxLayout()
         btn_layout.setSpacing(8)
 
@@ -196,21 +203,20 @@ class BatchQueueWidget(QWidget):
 
         btn_layout.addStretch()
 
-        # サマリーラベル
         self._lbl_summary = QLabel("")
         self._lbl_summary.setStyleSheet("color: #555; font-size: 11px;")
         btn_layout.addWidget(self._lbl_summary)
+        return btn_layout
 
-        layout.addLayout(btn_layout)
-
-        # UX改善（第4回）①: 次のアクション誘導バナー
+    def _build_next_action_banner(self) -> QFrame:
+        """バッチ完了後の次アクション誘導バナー。デフォルト非表示。"""
         self._next_action_banner = QFrame()
         self._next_action_banner.setFrameShape(QFrame.StyledPanel)
         self._next_action_banner_layout = QVBoxLayout(self._next_action_banner)
         self._next_action_banner_layout.setContentsMargins(10, 6, 10, 6)
         self._next_action_banner_layout.setSpacing(4)
         self._next_action_banner.hide()
-        layout.addWidget(self._next_action_banner)
+        return self._next_action_banner
 
     def _setup_timer(self) -> None:
         """1秒ごとにETA・経過時間を更新。"""

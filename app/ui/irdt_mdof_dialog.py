@@ -97,8 +97,15 @@ class IRDTMdofDialog(QDialog):
     # ---- UI 構築 ------------------------------------------------------
     def _build_ui(self) -> None:
         root = QVBoxLayout(self)
+        root.addLayout(self._build_top_bar())
+        root.addWidget(self._build_header_group())
+        root.addWidget(self._build_input_table())
+        root.addWidget(self._build_summary_group())
+        root.addWidget(self._build_result_table())
+        root.addLayout(self._build_bottom_buttons())
 
-        # --- トップバー: 自動入力 + ダンパー挿入 -----------------------
+    def _build_top_bar(self) -> QHBoxLayout:
+        """s8i 自動入力 / ダンパー挿入ボタンの行。"""
         top_bar = QHBoxLayout()
         self._btn_import = QPushButton("s8i から自動入力...")
         self._btn_import.setToolTip(
@@ -121,10 +128,10 @@ class IRDTMdofDialog(QDialog):
         self._btn_inject.clicked.connect(self._on_inject_damper)
         self._btn_inject.setEnabled(self._project is not None)
         top_bar.addWidget(self._btn_inject)
+        return top_bar
 
-        root.addLayout(top_bar)
-
-        # ヘッダー: 入力モード選択 + 層数 + (vector時) 固有周期
+    def _build_header_group(self) -> QGroupBox:
+        """入力モード / 層数 / 固有周期 / 対象モード / 質量比配分 のフォーム。"""
         header = QGroupBox("設定")
         hform = QFormLayout(header)
 
@@ -144,12 +151,15 @@ class IRDTMdofDialog(QDialog):
         self._t0_label = QLabel("固有周期 [s]")
         hform.addRow(self._t0_label, self._t0_edit)
 
-        # 対象モード選択 (自動入力後のみ有効)
         self._target_mode_combo = QComboBox()
         self._target_mode_combo.setEnabled(False)
         hform.addRow("制御対象モード", self._target_mode_combo)
 
-        # 質量比による md 一括入力
+        hform.addRow("目標質量比 μ [-]", self._build_mass_distribute_row())
+        return header
+
+    def _build_mass_distribute_row(self) -> QHBoxLayout:
+        """目標 μ に基づく md 一括配分ボタンの行。"""
         mass_row = QHBoxLayout()
         self._mu_target_edit = QLineEdit("0.05")
         self._mu_target_edit.setValidator(QDoubleValidator(0.0, 1.0, 6))
@@ -164,20 +174,20 @@ class IRDTMdofDialog(QDialog):
         self._btn_distribute_md.clicked.connect(self._on_distribute_md_from_mu)
         mass_row.addWidget(self._btn_distribute_md)
         mass_row.addStretch(1)
-        hform.addRow("目標質量比 μ [-]", mass_row)
+        return mass_row
 
-        root.addWidget(header)
-
-        # 入力テーブル
+    def _build_input_table(self) -> QTableWidget:
+        """層別入力テーブル (質量/剛性 or ベクトル/md)。"""
         self._input_table = QTableWidget(0, 3)
         self._input_table.setEditTriggers(
             QAbstractItemView.DoubleClicked | QAbstractItemView.EditKeyPressed
         )
         self._input_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         self._input_table.verticalHeader().setDefaultSectionSize(24)
-        root.addWidget(self._input_table)
+        return self._input_table
 
-        # サマリ
+    def _build_summary_group(self) -> QGroupBox:
+        """最適値サマリ (μ / γ / h)。"""
         summary = QGroupBox("最適値")
         sform = QFormLayout(summary)
         self._lbl_mu = QLabel("-")
@@ -186,17 +196,19 @@ class IRDTMdofDialog(QDialog):
         sform.addRow("有効質量比 μ [-]", self._lbl_mu)
         sform.addRow("振動数比 γ [-]", self._lbl_gamma)
         sform.addRow("減衰定数 h [-]", self._lbl_h)
-        root.addWidget(summary)
+        return summary
 
-        # 結果テーブル (列構成は入力モードに応じて変化)
+    def _build_result_table(self) -> QTableWidget:
+        """層別 cd/kb 等の結果テーブル。列構成は入力モードで変化。"""
         self._result_table = QTableWidget(0, 4)
         self._apply_result_columns()
         self._result_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self._result_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         self._result_table.verticalHeader().setDefaultSectionSize(24)
-        root.addWidget(self._result_table)
+        return self._result_table
 
-        # ボタン
+    def _build_bottom_buttons(self) -> QHBoxLayout:
+        """リセット / コピー / CSV / 閉じる。"""
         btn_row = QHBoxLayout()
         btn_reset = QPushButton("リセット")
         btn_reset.clicked.connect(self._on_reset)
@@ -211,7 +223,7 @@ class IRDTMdofDialog(QDialog):
         btn_close = QDialogButtonBox(QDialogButtonBox.Close)
         btn_close.rejected.connect(self.reject)
         btn_row.addWidget(btn_close)
-        root.addLayout(btn_row)
+        return btn_row
 
     # ---- シグナル ------------------------------------------------------
     def _connect_signals(self) -> None:
