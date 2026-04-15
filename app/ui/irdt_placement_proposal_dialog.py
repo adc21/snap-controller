@@ -80,7 +80,7 @@ class IrdtPlacementProposalDialog(QDialog):
         parent: Optional[QWidget] = None,
     ) -> None:
         super().__init__(parent)
-        self.setWindowTitle("iRDT ダンパー挿入の確認")
+        self.setWindowTitle("iRDT 解析ケースの追加")
         self.resize(1050, 580)
 
         self._base_s8i_path = base_s8i_path
@@ -98,7 +98,7 @@ class IrdtPlacementProposalDialog(QDialog):
         root = QVBoxLayout(self)
 
         info = QLabel(
-            "以下の内容で .s8i ファイルに iRDT ダンパーを追加します。\n"
+            "以下の内容で iRDT ダンパーを配置した新しい解析ケースをプロジェクトに追加します。\n"
             "表の値は編集可能です。\n"
             "「配置」チェックを外した行は、ダンパー定義 (DVMS) のみ追加され、"
             "RD 要素 (配置) は作成されません。"
@@ -106,10 +106,14 @@ class IrdtPlacementProposalDialog(QDialog):
         info.setWordWrap(True)
         root.addWidget(info)
 
-        # 出力先
+        # 出力先 (内部的に生成される .s8i。通常は変更不要)
         out_row = QHBoxLayout()
-        out_row.addWidget(QLabel("出力 .s8i:"))
+        out_row.addWidget(QLabel("生成する .s8i:"))
         self._out_edit = QLineEdit(self._output_s8i_path)
+        self._out_edit.setToolTip(
+            "新ケース用に生成される .s8i ファイルのパスです。\n"
+            "通常はデフォルトのままで問題ありません。"
+        )
         out_row.addWidget(self._out_edit, stretch=1)
         btn_browse = QPushButton("参照...")
         btn_browse.clicked.connect(self._on_browse)
@@ -134,16 +138,22 @@ class IrdtPlacementProposalDialog(QDialog):
         batch_row.addStretch(1)
         root.addLayout(batch_row)
 
-        # 新規ケースとして追加
-        self._add_case_check = QCheckBox("出力後に新しい解析ケースとしてプロジェクトに追加")
-        self._add_case_check.setChecked(self._project is not None and self._base_case is not None)
-        self._add_case_check.setEnabled(self._project is not None and self._base_case is not None)
+        # 新規ケースとして追加 (プロジェクト連携が有効な場合のみ)
+        can_add_case = self._project is not None and self._base_case is not None
+        self._add_case_check = QCheckBox("新しい解析ケースとしてプロジェクトに追加")
+        self._add_case_check.setChecked(can_add_case)
+        self._add_case_check.setEnabled(can_add_case)
+        if not can_add_case:
+            self._add_case_check.setToolTip(
+                "プロジェクト/ケース情報が無いためケース追加は利用できません。"
+                " .s8i 生成のみ実行されます。"
+            )
         root.addWidget(self._add_case_check)
 
         # ボタン
         btn_box = QDialogButtonBox()
         btn_ok = btn_box.addButton(
-            "この内容で .s8i に書き込む", QDialogButtonBox.AcceptRole
+            "この内容で解析ケースを追加", QDialogButtonBox.AcceptRole
         )
         btn_ok.clicked.connect(self._on_accept)
         btn_cancel = btn_box.addButton(QDialogButtonBox.Cancel)
@@ -276,7 +286,8 @@ class IrdtPlacementProposalDialog(QDialog):
             msg += "\n\n警告:\n" + "\n".join(f"  - {w}" for w in result.warnings)
         if added:
             msg += f"\n\n新しい解析ケース '{result.new_case.name}' を追加しました。"
-        QMessageBox.information(self, "挿入完了", msg)
+        title = "ケース追加完了" if added else "iRDT 挿入完了"
+        QMessageBox.information(self, title, msg)
         self.accept()
 
     # ---- 公開 API -----------------------------------------------------
@@ -290,4 +301,9 @@ class IrdtPlacementProposalDialog(QDialog):
     @staticmethod
     def _default_output_path(base_path: str) -> str:
         p = Path(base_path)
-        return str(p.with_stem(p.stem + "_iRDT")) if p.name else base_path
+        if not p.name:
+            return base_path
+        # `with_stem` は Python 3.9+ だが、環境によっては利用できない場合が
+        # あるため `with_name` で等価処理を行う。
+        new_name = f"{p.stem}_iRDT{p.suffix}"
+        return str(p.with_name(new_name))
