@@ -1212,18 +1212,30 @@ class CaseEditDialog(QDialog):
             return
 
         rows: List[tuple] = []  # (category, def_name, field, orig, current, pct)
+        rows.extend(self._collect_basic_diff_rows())
+        rows.extend(self._collect_damper_def_diff_rows())
+        rows.extend(self._collect_placement_diff_rows())
 
-        # ── 基本設定の変更 ──
+        self._render_diff_table(rows)
+        self._update_diff_visibility(rows)
+
+    def _collect_basic_diff_rows(self) -> List[tuple]:
+        rows: List[tuple] = []
         if hasattr(self, "_name_edit"):
             new_name = self._name_edit.text().strip()
             if new_name != self._orig_name:
-                rows.append(("⚙ 基本設定", "—", "ケース名", self._orig_name, new_name, None))
+                rows.append(("⚙ 基本設定", "—", "ケース名",
+                             self._orig_name, new_name, None))
         if hasattr(self, "_out_edit"):
             new_out = self._out_edit.text().strip()
             if new_out != self._orig_output_dir:
-                rows.append(("⚙ 基本設定", "—", "出力ディレクトリ", self._orig_output_dir or "（未設定）", new_out or "（未設定）", None))
+                rows.append(("⚙ 基本設定", "—", "出力ディレクトリ",
+                             self._orig_output_dir or "（未設定）",
+                             new_out or "（未設定）", None))
+        return rows
 
-        # ── ダンパー定義の変更 ──
+    def _collect_damper_def_diff_rows(self) -> List[tuple]:
+        rows: List[tuple] = []
         for ddef in (self._s8i.damper_defs if self._s8i else []):
             tbl = self._damper_def_tables.get(ddef.name)
             if not tbl:
@@ -1232,67 +1244,72 @@ class CaseEditDialog(QDialog):
             for r in range(tbl.rowCount()):
                 vi = tbl.item(r, _DEF_COL_VALUE)
                 oi = tbl.item(r, _DEF_COL_ORIG)
-                if vi and oi and vi.text().strip() != oi.text().strip():
-                    field_idx = r + 1
-                    label = fl.get(field_idx, f"F{field_idx}")
-                    orig_v = oi.text().strip()
-                    new_v  = vi.text().strip()
-                    pct: Optional[float] = None
-                    try:
-                        o_f, n_f = float(orig_v), float(new_v)
-                        if o_f != 0:
-                            pct = (n_f - o_f) / abs(o_f) * 100.0
-                    except (ValueError, ZeroDivisionError):
-                        logger.debug("変更率計算失敗: orig=%s new=%s", orig_v, new_v)
-                    rows.append(("🔧 ダンパー定義", ddef.name, label, orig_v, new_v, pct))
+                if not (vi and oi and vi.text().strip() != oi.text().strip()):
+                    continue
+                field_idx = r + 1
+                label = fl.get(field_idx, f"F{field_idx}")
+                orig_v = oi.text().strip()
+                new_v = vi.text().strip()
+                pct = self._compute_pct_change(orig_v, new_v)
+                rows.append(("🔧 ダンパー定義", ddef.name, label, orig_v, new_v, pct))
+        return rows
 
-        # ── 配置計画の変更 ──
-        if self._s8i:
-            for i, elem in enumerate(self._s8i.damper_elements):
-                if i < len(self._rd_qty_spins):
-                    new_qty = self._rd_qty_spins[i].value()
-                    if new_qty != elem.quantity:
-                        pct_qty = (new_qty - elem.quantity) / max(elem.quantity, 1) * 100.0
-                        rows.append(("📐 配置計画", elem.name, "基数（倍数）",
-                                     str(elem.quantity), str(new_qty), pct_qty))
-                if i < len(self._rd_def_combos):
-                    new_def = self._rd_def_combos[i].currentText()
-                    if new_def != elem.damper_def_name:
-                        rows.append(("📐 配置計画", elem.name, "装置定義",
-                                     elem.damper_def_name, new_def, None))
+    @staticmethod
+    def _compute_pct_change(orig_v: str, new_v: str) -> Optional[float]:
+        try:
+            o_f, n_f = float(orig_v), float(new_v)
+            if o_f != 0:
+                return (n_f - o_f) / abs(o_f) * 100.0
+        except (ValueError, ZeroDivisionError):
+            logger.debug("変更率計算失敗: orig=%s new=%s", orig_v, new_v)
+        return None
 
-        # テーブルを書き換え
+    def _collect_placement_diff_rows(self) -> List[tuple]:
+        rows: List[tuple] = []
+        if not self._s8i:
+            return rows
+        for i, elem in enumerate(self._s8i.damper_elements):
+            if i < len(self._rd_qty_spins):
+                new_qty = self._rd_qty_spins[i].value()
+                if new_qty != elem.quantity:
+                    pct_qty = (new_qty - elem.quantity) / max(elem.quantity, 1) * 100.0
+                    rows.append(("📐 配置計画", elem.name, "基数（倍数）",
+                                 str(elem.quantity), str(new_qty), pct_qty))
+            if i < len(self._rd_def_combos):
+                new_def = self._rd_def_combos[i].currentText()
+                if new_def != elem.damper_def_name:
+                    rows.append(("📐 配置計画", elem.name, "装置定義",
+                                 elem.damper_def_name, new_def, None))
+        return rows
+
+    def _render_diff_table(self, rows: List[tuple]) -> None:
         self._diff_table.setRowCount(len(rows))
         for r_idx, (cat, def_name, field, orig, new_val, pct) in enumerate(rows):
-            # 変化率テキスト付き「変更後」表示
             if pct is not None:
                 sign = "+" if pct >= 0 else ""
                 pct_str = f"  ({sign}{pct:.1f}%)"
-                is_improvement = pct < 0  # 応答低減方向
             else:
                 pct_str = ""
-                is_improvement = None
 
-            def _make_item(text: str, fg: Optional[QColor] = None) -> QTableWidgetItem:
-                item = QTableWidgetItem(text)
-                item.setFlags(Qt.ItemIsSelectable | Qt.ItemIsEnabled)
-                if fg:
-                    item.setForeground(fg)
-                return item
-
-            self._diff_table.setItem(r_idx, 0, _make_item(cat))
-            self._diff_table.setItem(r_idx, 1, _make_item(def_name))
-            self._diff_table.setItem(r_idx, 2, _make_item(field))
-            # 変更前セル（薄い赤）
-            orig_item = _make_item(orig, QColor("#c62828"))
+            self._diff_table.setItem(r_idx, 0, self._make_diff_item(cat))
+            self._diff_table.setItem(r_idx, 1, self._make_diff_item(def_name))
+            self._diff_table.setItem(r_idx, 2, self._make_diff_item(field))
+            orig_item = self._make_diff_item(orig, QColor("#c62828"))
             orig_item.setBackground(QColor("#fff8f8"))
             self._diff_table.setItem(r_idx, 3, orig_item)
-            # 変更後セル（変化率付き、薄い緑）
-            new_item = _make_item(f"{new_val}{pct_str}", QColor("#1b5e20"))
+            new_item = self._make_diff_item(f"{new_val}{pct_str}", QColor("#1b5e20"))
             new_item.setBackground(QColor("#f1f8e9"))
             self._diff_table.setItem(r_idx, 4, new_item)
 
-        # 件数ラベルと可視性を更新
+    @staticmethod
+    def _make_diff_item(text: str, fg: Optional[QColor] = None) -> QTableWidgetItem:
+        item = QTableWidgetItem(text)
+        item.setFlags(Qt.ItemIsSelectable | Qt.ItemIsEnabled)
+        if fg:
+            item.setForeground(fg)
+        return item
+
+    def _update_diff_visibility(self, rows: List[tuple]) -> None:
         if rows:
             self._diff_count_lbl.setText(f"変更件数: {len(rows)} 件")
             self._diff_empty_lbl.hide()

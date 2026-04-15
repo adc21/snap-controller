@@ -1043,82 +1043,82 @@ class CaseTableWidget(QWidget):
         # UX改善5: 行挿入中はソートを一時停止してパフォーマンスと一貫性を確保
         self._table.setSortingEnabled(False)
         self._table.setRowCount(0)
-        # UX改善（新）: ケース状態サマリーフッターを更新
         self._update_status_footer()
-        # ヘッダーラベルに件数を表示
         total_count = len(cases)
 
-        # UX改善③新: 完了進捗プログレスバーを更新
-        if total_count > 0:
-            completed_count = sum(
-                1 for c in cases if c.status.name == "COMPLETED"
-            )
-            pct = int(completed_count / total_count * 100)
-            self._completion_bar.setValue(pct)
-            # 全件完了で青に、未完了は緑で表示
-            if completed_count == total_count:
-                self._completion_bar.setStyleSheet("""
-                    QProgressBar { border: none; border-radius: 3px;
-                                   background-color: palette(mid);
-                                   margin: 0px 0px 2px 0px; }
-                    QProgressBar::chunk { background-color: #1976d2;
-                                          border-radius: 3px; }
-                """)
-            else:
-                self._completion_bar.setStyleSheet("""
-                    QProgressBar { border: none; border-radius: 3px;
-                                   background-color: palette(mid);
-                                   margin: 0px 0px 2px 0px; }
-                    QProgressBar::chunk { background-color: #4CAF50;
-                                          border-radius: 3px; }
-                """)
-            self._completion_bar.setToolTip(
-                f"解析完了: {completed_count} / {total_count} ケース  ({pct}%)\n"
-                "全件完了すると青に変わります"
-            )
-        else:
-            self._completion_bar.setValue(0)
-            self._completion_bar.setToolTip("解析ケースがありません")
+        self._update_completion_bar(cases, total_count)
 
         if total_count == 0:
             self._header_label.setText("<b>解析ケース</b>")
             self._stack.setCurrentIndex(0)  # 空状態ガイダンスを表示
             self._table.setSortingEnabled(True)
-            # 追加ボタンのEnable状態をモデルロード状態に合わせて同期
             self._refresh_add_button_state()
             return
 
-        # グループ名マップを事前構築
+        filtered_cases = self._filter_cases(cases)
+        if not self._render_header_and_check_empty(filtered_cases, total_count):
+            return
+
+        self._stack.setCurrentIndex(1)
+        for case in filtered_cases:
+            row = self._table.rowCount()
+            self._table.insertRow(row)
+            self._set_row(row, case)
+        self._table.setSortingEnabled(True)
+        self._refresh_add_button_state()
+
+    _COMPLETION_BAR_STYLE = """
+                    QProgressBar {{ border: none; border-radius: 3px;
+                                   background-color: palette(mid);
+                                   margin: 0px 0px 2px 0px; }}
+                    QProgressBar::chunk {{ background-color: {color};
+                                          border-radius: 3px; }}
+                """
+
+    def _update_completion_bar(self, cases: list, total_count: int) -> None:
+        if total_count <= 0:
+            self._completion_bar.setValue(0)
+            self._completion_bar.setToolTip("解析ケースがありません")
+            return
+        completed_count = sum(1 for c in cases if c.status.name == "COMPLETED")
+        pct = int(completed_count / total_count * 100)
+        self._completion_bar.setValue(pct)
+        color = "#1976d2" if completed_count == total_count else "#4CAF50"
+        self._completion_bar.setStyleSheet(self._COMPLETION_BAR_STYLE.format(color=color))
+        self._completion_bar.setToolTip(
+            f"解析完了: {completed_count} / {total_count} ケース  ({pct}%)\n"
+            "全件完了すると青に変わります"
+        )
+
+    def _filter_cases(self, cases: list) -> list:
         group_of: dict = {}
         if self._project:
             for gname, cids in self._project.case_groups.items():
                 for cid in cids:
                     group_of[cid] = gname
-
-        # フィルタリング
-        filtered_cases = [
+        return [
             c for c in cases
             if self._case_matches_filter(c, group_of.get(c.id, ""))
         ]
+
+    def _render_header_and_check_empty(
+        self, filtered_cases: list, total_count: int
+    ) -> bool:
         filtered_count = len(filtered_cases)
-
-        # UX改善①新: テキスト検索またはステータスフィルターが有効な場合に件数バッジを表示
-        _any_filter_active = bool(self._get_filter_text() or self._get_status_filter())
-
-        if filtered_count == 0 and total_count > 0:
-            # フィルター結果が0件 → テーブルを表示するが行なし
-            if _any_filter_active:
-                self._header_label.setText(
-                    f"<b>解析ケース</b>　"
-                    f"<span style='color:orange;font-weight:normal;'>0件（{total_count}件中）</span>"
-                )
-                self._stack.setCurrentIndex(1)
-                self._table.setSortingEnabled(True)  # UX改善5
-                self._refresh_add_button_state()
-                return
-
-        if _any_filter_active:
-            # UX改善①新: フィルター件数バッジ（テキスト or ステータスフィルター両対応）
+        any_filter_active = bool(
+            self._get_filter_text() or self._get_status_filter()
+        )
+        if filtered_count == 0 and total_count > 0 and any_filter_active:
+            self._header_label.setText(
+                f"<b>解析ケース</b>　"
+                f"<span style='color:orange;font-weight:normal;'>"
+                f"0件（{total_count}件中）</span>"
+            )
+            self._stack.setCurrentIndex(1)
+            self._table.setSortingEnabled(True)
+            self._refresh_add_button_state()
+            return False
+        if any_filter_active:
             self._header_label.setText(
                 f"<b>解析ケース</b>　"
                 f"<span style='color:gray;font-weight:normal;'>"
@@ -1127,17 +1127,10 @@ class CaseTableWidget(QWidget):
         else:
             self._header_label.setText(
                 f"<b>解析ケース</b>　"
-                f"<span style='color:gray;font-weight:normal;'>({total_count}件)</span>"
+                f"<span style='color:gray;font-weight:normal;'>"
+                f"({total_count}件)</span>"
             )
-        self._stack.setCurrentIndex(1)  # テーブルを表示
-        for case in filtered_cases:
-            row = self._table.rowCount()
-            self._table.insertRow(row)
-            self._set_row(row, case)
-        # UX改善5: 全行挿入後にソートを再有効化
-        self._table.setSortingEnabled(True)
-        # 追加ボタンのEnable状態をモデルロード状態に合わせて同期
-        self._refresh_add_button_state()
+        return True
 
     def _set_row(self, row: int, case: AnalysisCase) -> None:
         import os
