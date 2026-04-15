@@ -162,97 +162,86 @@ class ModalPropertiesWidget(QWidget):
         logger.debug(f"Cases count = {len(self._cases)}")
 
         if not self._period_data:
-            # データなしメッセージを表示
-            logger.debug(f"No period data available")
-            self._table.insertRow(0)
-            self._table.insertColumn(0)
-            item = QTableWidgetItem("固有値解析結果がありません")
-            item.setFlags(item.flags() & ~Qt.ItemIsEditable)
-            self._table.setItem(0, 0, item)
+            logger.debug("No period data available")
+            self._show_empty_message("固有値解析結果がありません")
             return
 
-        # モード数を取得（全ケースの最大値）
+        max_modes = self._compute_max_modes()
+        if max_modes == 0:
+            self._show_empty_message("モード情報がありません")
+            return
+
+        self._setup_table_columns(max_modes)
+
+        row = 0
+        for case in self._cases:
+            if case.id not in self._period_data:
+                continue
+            self._populate_case_row(row, case, max_modes)
+            row += 1
+
+        self._table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
+
+    def _show_empty_message(self, text: str) -> None:
+        """1セル1列のメッセージを表示する。"""
+        self._table.insertRow(0)
+        self._table.insertColumn(0)
+        item = QTableWidgetItem(text)
+        item.setFlags(item.flags() & ~Qt.ItemIsEditable)
+        self._table.setItem(0, 0, item)
+
+    def _compute_max_modes(self) -> int:
+        """全ケースで読み込めたモード数の最大値を返す。"""
         max_modes = 0
         for data in self._period_data.values():
             if data.get("periods"):
                 max_modes = max(max_modes, len(data["periods"]))
+        return max_modes
 
-        if max_modes == 0:
-            # データなしメッセージ
-            self._table.insertRow(0)
-            self._table.insertColumn(0)
-            item = QTableWidgetItem("モード情報がありません")
-            item.setFlags(item.flags() & ~Qt.ItemIsEditable)
-            self._table.setItem(0, 0, item)
-            return
-
-        # テーブル構成: ケース名 + モード情報（周期、周波数、参加質量比）
-        # 列数: 1 (ケース名) + 3*モード数 (周期、周波数、%)
+    def _setup_table_columns(self, max_modes: int) -> None:
+        """列数とヘッダーラベルを設定する。"""
         num_cols = 1 + 3 * max_modes
         self._table.setColumnCount(num_cols)
 
-        # ヘッダー設定
         headers = ["ケース名"]
         for mode_num in range(1, max_modes + 1):
             headers.append(f"モード{mode_num}\n周期 [s]")
             headers.append(f"モード{mode_num}\n周波数 [Hz]")
             headers.append(f"モード{mode_num}\n参加質量比 [%]")
-
         self._table.setHorizontalHeaderLabels(headers)
 
-        # ケース順に行を追加
-        row = 0
-        for case in self._cases:
-            if case.id not in self._period_data:
-                continue
+    def _populate_case_row(self, row: int, case: AnalysisCase, max_modes: int) -> None:
+        """1ケース分の行を挿入してモード情報セルを埋める。"""
+        self._table.insertRow(row)
 
-            self._table.insertRow(row)
+        case_item = QTableWidgetItem(case.name)
+        case_item.setFlags(case_item.flags() & ~Qt.ItemIsEditable)
+        case_item.setBackground(
+            QColor(100, 100, 100) if ThemeManager.is_dark() else QColor(200, 200, 200)
+        )
+        self._table.setItem(row, 0, case_item)
 
-            # ケース名セル
-            case_item = QTableWidgetItem(case.name)
-            case_item.setFlags(case_item.flags() & ~Qt.ItemIsEditable)
-            case_item.setBackground(QColor(100, 100, 100) if ThemeManager.is_dark() else QColor(200, 200, 200))
-            self._table.setItem(row, 0, case_item)
+        data = self._period_data[case.id]
+        periods = data.get("periods", {})
+        frequencies = data.get("frequencies", {})
+        pm = data.get("participation_mass", {})
 
-            # モード情報セル
-            data = self._period_data[case.id]
-            periods = data.get("periods", {})
-            frequencies = data.get("frequencies", {})
-            pm = data.get("participation_mass", {})
+        col = 1
+        for mode_num in range(1, max_modes + 1):
+            self._set_value_cell(row, col, periods.get(mode_num), "{:.4f}")
+            col += 1
+            self._set_value_cell(row, col, frequencies.get(mode_num), "{:.4f}")
+            col += 1
+            self._set_value_cell(row, col, pm.get(mode_num), "{:.2f}")
+            col += 1
 
-            col = 1
-            for mode_num in range(1, max_modes + 1):
-                # 周期
-                period_val = periods.get(mode_num)
-                if period_val is not None:
-                    period_text = f"{period_val:.4f}"
-                    period_item = QTableWidgetItem(period_text)
-                    period_item.setFlags(period_item.flags() & ~Qt.ItemIsEditable)
-                    self._table.setItem(row, col, period_item)
-                col += 1
-
-                # 周波数
-                freq_val = frequencies.get(mode_num)
-                if freq_val is not None:
-                    freq_text = f"{freq_val:.4f}"
-                    freq_item = QTableWidgetItem(freq_text)
-                    freq_item.setFlags(freq_item.flags() & ~Qt.ItemIsEditable)
-                    self._table.setItem(row, col, freq_item)
-                col += 1
-
-                # 参加質量比
-                pm_val = pm.get(mode_num)
-                if pm_val is not None:
-                    pm_text = f"{pm_val:.2f}"
-                    pm_item = QTableWidgetItem(pm_text)
-                    pm_item.setFlags(pm_item.flags() & ~Qt.ItemIsEditable)
-                    self._table.setItem(row, col, pm_item)
-                col += 1
-
-            row += 1
-
-        # 列幅の自動調整
-        self._table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
+    def _set_value_cell(self, row: int, col: int, value, fmt: str) -> None:
+        """値が None でなければフォーマットして読み取り専用セルに設定する。"""
+        if value is None:
+            return
+        item = QTableWidgetItem(fmt.format(value))
+        item.setFlags(item.flags() & ~Qt.ItemIsEditable)
+        self._table.setItem(row, col, item)
 
     def _copy_to_clipboard(self) -> None:
         """テーブル全体をタブ区切りでクリップボードにコピーします。"""

@@ -169,105 +169,126 @@ class SidebarWidget(QWidget):
 
         self._step_done_states: list[bool] = [False, False, False, False]
 
+    _STEP_DEFS = [
+        ("STEP 1: モデル設定", "fa5s.building"),
+        ("STEP 2: ケース設計", "fa5s.tools"),
+        ("STEP 3: 解析実行", "fa5s.rocket"),
+        ("STEP 4: 結果・戦略", "fa5s.chart-bar"),
+    ]
+
+    _STEP_TOOLTIPS = [
+        "【STEP 1: モデル設定】\n"
+        "解析に使う SNAP 入力ファイル (.s8i) を読み込みます。\n\n"
+        "できること:\n"
+        "  • s8i ファイルの選択・ドラッグ&ドロップ\n"
+        "  • モデル概要(節点数・層数・ダンパー定義)の確認\n"
+        "  • s8i ファイル内容のプレビュー\n"
+        "  • 最近使ったファイルの再読み込み\n\n"
+        "完了したら → STEP2 へ",
+        "【STEP 2: ケース設計】\n"
+        "比較する解析ケースを複数設定します。\n\n"
+        "できること:\n"
+        "  • ケースの追加・複製・削除\n"
+        "  • ダンパー種別・パラメータ・基数の変更\n"
+        "  • グループ分けによるケース整理\n"
+        "  • パラメータスイープで一括生成\n"
+        "  • テンプレートの保存・適用\n\n"
+        "前提: STEP1 で s8i ファイルを読み込んでいること\n"
+        "完了したら → STEP3 へ",
+        "【STEP 3: 解析実行】\n"
+        "設定したケースを SNAP で解析します。\n\n"
+        "できること:\n"
+        "  • 実行するケースのチェック選択\n"
+        "  • 解析実行(F5 キーでも起動)\n"
+        "  • 実行状況・進捗のリアルタイム確認\n"
+        "  • 解析ログのフィルタリング・検索\n\n"
+        "前提: STEP2 でケースが1件以上あること\n"
+        "      SNAP 実行ファイル (Snap.exe) が設定済みであること\n"
+        "完了したら → STEP4 へ",
+        "【STEP 4: 結果・戦略】\n"
+        "解析結果を確認・比較して次の戦略を検討します。\n\n"
+        "できること:\n"
+        "  • ダッシュボードで全ケースの概要把握\n"
+        "  • 複数ケースの応答値グラフ比較\n"
+        "  • 層別応答分布の確認\n"
+        "  • ランキングで最良ケースを特定\n"
+        "  • 感度分析でパラメータ影響を評価\n"
+        "  • 解析戦略メモの記録\n\n"
+        "次のラウンドへ → STEP2 に戻って新ケースを設計",
+    ]
+
     def _build_step_buttons(self, layout: QVBoxLayout) -> None:
         """4つのステップボタン+バッジ+状態インジケーターを構築する。"""
         self._btn_group = QButtonGroup(self)
         self._btn_group.setExclusive(True)
         self._btn_group.idClicked.connect(self._on_step_clicked)
 
-        steps = [
-            ("STEP 1: モデル設定", "fa5s.building"),
-            ("STEP 2: ケース設計", "fa5s.tools"),
-            ("STEP 3: 解析実行", "fa5s.rocket"),
-            ("STEP 4: 結果・戦略", "fa5s.chart-bar"),
-        ]
-
-        _step_tooltips = [
-            "【STEP 1: モデル設定】\n"
-            "解析に使う SNAP 入力ファイル (.s8i) を読み込みます。\n\n"
-            "できること:\n"
-            "  • s8i ファイルの選択・ドラッグ&ドロップ\n"
-            "  • モデル概要（節点数・層数・ダンパー定義）の確認\n"
-            "  • s8i ファイル内容のプレビュー\n"
-            "  • 最近使ったファイルの再読み込み\n\n"
-            "完了したら → STEP2 へ",
-            "【STEP 2: ケース設計】\n"
-            "比較する解析ケースを複数設定します。\n\n"
-            "できること:\n"
-            "  • ケースの追加・複製・削除\n"
-            "  • ダンパー種別・パラメータ・基数の変更\n"
-            "  • グループ分けによるケース整理\n"
-            "  • パラメータスイープで一括生成\n"
-            "  • テンプレートの保存・適用\n\n"
-            "前提: STEP1 で s8i ファイルを読み込んでいること\n"
-            "完了したら → STEP3 へ",
-            "【STEP 3: 解析実行】\n"
-            "設定したケースを SNAP で解析します。\n\n"
-            "できること:\n"
-            "  • 実行するケースのチェック選択\n"
-            "  • 解析実行（F5 キーでも起動）\n"
-            "  • 実行状況・進捗のリアルタイム確認\n"
-            "  • 解析ログのフィルタリング・検索\n\n"
-            "前提: STEP2 でケースが1件以上あること\n"
-            "      SNAP 実行ファイル (Snap.exe) が設定済みであること\n"
-            "完了したら → STEP4 へ",
-            "【STEP 4: 結果・戦略】\n"
-            "解析結果を確認・比較して次の戦略を検討します。\n\n"
-            "できること:\n"
-            "  • ダッシュボードで全ケースの概要把握\n"
-            "  • 複数ケースの応答値グラフ比較\n"
-            "  • 層別応答分布の確認\n"
-            "  • ランキングで最良ケースを特定\n"
-            "  • 感度分析でパラメータ影響を評価\n"
-            "  • 解析戦略メモの記録\n\n"
-            "次のラウンドへ → STEP2 に戻って新ケースを設計",
-        ]
-
         self._buttons = []
         self._badge_labels: list[QLabel] = []
         self._state_indicators: list[QLabel] = []
         icon_color = "#d4d4d4" if ThemeManager.is_dark() else "#333333"
 
-        for idx, (label, icon_name) in enumerate(steps):
-            btn_row_widget = QWidget()
-            btn_row_layout = QHBoxLayout(btn_row_widget)
-            btn_row_layout.setContentsMargins(0, 0, 4, 0)
-            btn_row_layout.setSpacing(0)
+        for idx, (label, icon_name) in enumerate(self._STEP_DEFS):
+            row_widget = self._build_step_button_row(idx, label, icon_name, icon_color)
+            layout.addWidget(row_widget)
+            layout.addWidget(self._make_step_badge())
 
-            btn = QToolButton()
-            btn.setText(label)
-            btn.setIcon(qta.icon(icon_name, color=icon_color, color_active="white"))
-            btn.setIconSize(QSize(22, 22))
-            btn.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
-            btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-            btn.setCheckable(True)
-            btn.setToolTip(_step_tooltips[idx])
-            self._btn_group.addButton(btn, idx)
-            btn_row_layout.addWidget(btn, stretch=1)
+    def _build_step_button_row(
+        self, idx: int, label: str, icon_name: str, icon_color: str
+    ) -> QWidget:
+        """ボタン本体と状態インジケーターを横並びで1行にまとめる。"""
+        row_widget = QWidget()
+        row_layout = QHBoxLayout(row_widget)
+        row_layout.setContentsMargins(0, 0, 4, 0)
+        row_layout.setSpacing(0)
 
-            state_lbl = QLabel(_STATE_STYLES[STEP_STATE_PENDING]["text"])
-            state_lbl.setFixedWidth(20)
-            state_lbl.setAlignment(Qt.AlignCenter)
-            state_lbl.setStyleSheet(
-                f"color: {_STATE_STYLES[STEP_STATE_PENDING]['color']};"
-                "font-size: 11px; font-weight: bold;"
-            )
-            state_lbl.setToolTip(_STATE_STYLES[STEP_STATE_PENDING]["tooltip"])
-            btn_row_layout.addWidget(state_lbl)
-            self._state_indicators.append(state_lbl)
+        btn = self._make_step_toolbutton(label, icon_name, icon_color, self._STEP_TOOLTIPS[idx])
+        self._btn_group.addButton(btn, idx)
+        row_layout.addWidget(btn, stretch=1)
+        self._buttons.append(btn)
 
-            layout.addWidget(btn_row_widget)
-            self._buttons.append(btn)
+        state_lbl = self._make_state_indicator()
+        row_layout.addWidget(state_lbl)
+        self._state_indicators.append(state_lbl)
+        return row_widget
 
-            badge = QLabel("")
-            badge.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
-            badge.setStyleSheet(
-                "color: #888888; font-size: 10px; padding-right: 16px; "
-                "padding-bottom: 4px; margin: 0px 8px;"
-            )
-            badge.setVisible(False)
-            layout.addWidget(badge)
-            self._badge_labels.append(badge)
+    def _make_step_toolbutton(
+        self, label: str, icon_name: str, icon_color: str, tooltip: str
+    ) -> QToolButton:
+        """ステップ本体のトグル式ツールボタンを構築する。"""
+        btn = QToolButton()
+        btn.setText(label)
+        btn.setIcon(qta.icon(icon_name, color=icon_color, color_active="white"))
+        btn.setIconSize(QSize(22, 22))
+        btn.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+        btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        btn.setCheckable(True)
+        btn.setToolTip(tooltip)
+        return btn
+
+    def _make_state_indicator(self) -> QLabel:
+        """「●」などの状態インジケーターラベルを生成する。"""
+        state_lbl = QLabel(_STATE_STYLES[STEP_STATE_PENDING]["text"])
+        state_lbl.setFixedWidth(20)
+        state_lbl.setAlignment(Qt.AlignCenter)
+        state_lbl.setStyleSheet(
+            f"color: {_STATE_STYLES[STEP_STATE_PENDING]['color']};"
+            "font-size: 11px; font-weight: bold;"
+        )
+        state_lbl.setToolTip(_STATE_STYLES[STEP_STATE_PENDING]["tooltip"])
+        return state_lbl
+
+    def _make_step_badge(self) -> QLabel:
+        """ボタン下に表示する補助バッジ(初期非表示)を生成する。"""
+        badge = QLabel("")
+        badge.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        badge.setStyleSheet(
+            "color: #888888; font-size: 10px; padding-right: 16px; "
+            "padding-bottom: 4px; margin: 0px 8px;"
+        )
+        badge.setVisible(False)
+        self._badge_labels.append(badge)
+        return badge
 
     def _build_footer(self, layout: QVBoxLayout) -> None:
         """セパレーター・ヒント・プロジェクト状態サマリーを構築する。"""
