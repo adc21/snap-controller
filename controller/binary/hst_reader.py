@@ -203,7 +203,10 @@ class HstReader:
             # ただし ファイルに十分なメタ領域がある場合に限る
             if known_meta >= 0 and meta_floats >= num_records * known_meta:
                 meta_per = known_meta
-            for sh in range(0, 5):
+            # SNAP .hst は先頭 float にステップ番号を持つため sh=1 が標準。
+            # sh=0 から始めると num_records=1 の場合に常に sh=0 が選ばれ、
+            # ステップ番号がデータとして誤読されるバグを引き起こす。
+            for sh in (1, 2, 3, 4, 0):
                 remainder = step_size - sh
                 if remainder > 0 and remainder % num_records == 0:
                     fpr = remainder // num_records
