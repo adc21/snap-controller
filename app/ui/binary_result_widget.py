@@ -32,7 +32,7 @@ from typing import List, Optional, Dict, Tuple
 
 import numpy as np
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QWidget,
     QHBoxLayout,
@@ -67,6 +67,7 @@ import logging
 
 from controller.binary import SnapResultLoader
 from controller.binary.result_loader import BinaryCategory
+from controller.binary.hysteresis_analysis import energy_field_index
 
 logger = logging.getLogger(__name__)
 
@@ -94,15 +95,11 @@ _STORY_QUANTITIES: List[tuple] = [
 _DAMPER_FIELDS = {
     "荷重 F": 0,
     "変位 D": 1,
-    "速度 V": 2,
-    "累積エネルギー": 3,
 }
 
 _SPRING_FIELDS = {
     "荷重 F": 0,
     "変位 D": 1,
-    "速度 V": 2,
-    "累積エネルギー": 3,
 }
 
 
@@ -167,6 +164,9 @@ def _empty_panel(msg: str) -> QWidget:
 # ---------------------------------------------------------------------------
 class BinaryResultWidget(QWidget):
     """SNAP バイナリ結果を種類別・マルチケース比較表示するウィジェット。"""
+
+    # 左パネルのケース選択が変わったときに AnalysisCase リストを送出
+    cases_selected = Signal(list)
 
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
@@ -614,6 +614,7 @@ class BinaryResultWidget(QWidget):
     def _on_case_selection_changed(self) -> None:
         selected = self._case_list.selectedItems()
         self._active_entries = []
+        selected_cases = []
         for it in selected:
             cid = it.data(Qt.UserRole)
             if cid is None:
@@ -621,6 +622,14 @@ class BinaryResultWidget(QWidget):
             entry = self._entries.get(cid)
             if entry:
                 self._active_entries.append(entry)
+            # 対応する AnalysisCase を復元
+            for c in self._cases:
+                if id(c) == cid:
+                    selected_cases.append(c)
+                    break
+
+        # 選択ケースを外部に通知（CompareChartWidget 等が受信）
+        self.cases_selected.emit(selected_cases)
 
         if not self._active_entries:
             self._show_empty_state()
@@ -1194,7 +1203,7 @@ class BinaryResultWidget(QWidget):
                 plotted += 1
             else:
                 ok = self._plot_hysteresis_time(
-                    ax, e, bc, rec_idx, fields, mode, t, F, D, time_y, summaries
+                    ax, e, bc, rec_idx, cat_name, mode, t, F, D, time_y, summaries
                 )
                 if ok:
                     plotted += 1
@@ -1229,7 +1238,7 @@ class BinaryResultWidget(QWidget):
         e,
         bc,
         rec_idx: int,
-        fields: dict,
+        cat_name: str,
         mode: str,
         t: np.ndarray,
         F: np.ndarray,
@@ -1243,7 +1252,10 @@ class BinaryResultWidget(QWidget):
             y = D
         else:
             try:
-                y = bc.hst.time_series(rec_idx, fields["累積エネルギー"])
+                e_idx = energy_field_index(
+                    cat_name, bc.hst.header.fields_per_record
+                )
+                y = bc.hst.time_series(rec_idx, e_idx)
             except Exception:
                 logger.debug("累積エネルギー読込失敗: %s", e.name)
                 return False

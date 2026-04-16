@@ -371,6 +371,9 @@ class MainWindow(_MainWindowDialogsMixin, QMainWindow):
         self._binary_result.prepend_tab(self._mode_shape_widget, "🏗 モード形状")
         self._binary_result.prepend_tab(self._transfer_function_widget, "〜 伝達関数")
 
+        # BinaryResultWidget の左パネル選択を応答値比較グラフに連動
+        self._binary_result.cases_selected.connect(self._compare_chart.set_active_cases)
+
         self._right_tabs = _QTabWidget()
         _tab_defs = [
             (self._dashboard,      "fa5s.chart-pie",       "ダッシュボード",   True,  1),
@@ -1458,12 +1461,8 @@ class MainWindow(_MainWindowDialogsMixin, QMainWindow):
         )
 
     def _on_project_modified_groups(self) -> None:
-        """
-        UX改善⑤新: ケース変更（グループ追加・削除など）時に
-        比較グラフのグループ別選択ドロップダウンを更新します。
-        """
-        if self._project is not None:
-            self._compare_chart.set_case_groups(self._project.case_groups)
+        """ケース変更（グループ追加・削除など）時のコールバック。"""
+        pass
 
     def _navigate_to_step(self, step: int) -> None:
         """
@@ -1825,8 +1824,6 @@ class MainWindow(_MainWindowDialogsMixin, QMainWindow):
             )
             self._update_result_tabs(result_count)
             self._update_sidebar_badges()  # UX改善1: プロジェクト読込後にバッジ更新
-            # UX改善⑤新: プロジェクト読込時にグループ情報を比較グラフに反映
-            self._compare_chart.set_case_groups(self._project.case_groups)
             # UX改善④新: 解析戦略メモをテキストエリアに復元
             notes = getattr(self._project, "strategy_notes", "")
             self._strategy_notes_edit.blockSignals(True)
@@ -1955,17 +1952,6 @@ class MainWindow(_MainWindowDialogsMixin, QMainWindow):
         if case.model_path:
             self._file_preview.load_file(case.model_path)
         # 複数選択時は比較チャートも更新
-        selected_ids = self._case_table.selected_case_ids()
-        if len(selected_ids) > 1:
-            selected_cases = [
-                self._project.get_case(cid)
-                for cid in selected_ids
-                if self._project.get_case(cid) is not None
-                and self._project.get_case(cid).result_summary
-            ]
-            if selected_cases:
-                self._compare_chart.set_cases(selected_cases)
-
         # 改善③: ステータスバーに選択ケースのサマリーを表示
         self._update_case_info_label(case)
 
@@ -2004,8 +1990,6 @@ class MainWindow(_MainWindowDialogsMixin, QMainWindow):
             self._update_result_tabs(result_count)
             self._compare_chart.set_cases(self._project.cases)
             self._compare_chart.set_criteria(self._project.criteria)
-            # UX改善⑤新: 解析完了後にグループ情報を比較グラフに反映
-            self._compare_chart.set_case_groups(self._project.case_groups)
             self._chart.set_criteria(self._project.criteria)
             self._chart.set_cases(self._project.cases)
             self._envelope_chart.set_cases(self._project.cases)
