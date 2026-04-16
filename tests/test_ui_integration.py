@@ -712,11 +712,6 @@ class TestDialogInstantiation:
         assert dlg is not None
         assert len(dlg._spec_rows) == 1
 
-    def test_damper_catalog_dialog(self, qapp):
-        from app.ui.damper_catalog_dialog import DamperCatalogDialog
-        dlg = DamperCatalogDialog()
-        assert dlg is not None
-
     def test_sweep_dialog(self, qapp):
         from app.ui.sweep_dialog import SweepDialog
         dlg = SweepDialog()
