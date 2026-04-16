@@ -83,17 +83,22 @@ _KNOWN_META_PER: Dict[str, int] = {
 # SNAP の公式ドキュメント取得後に確定値へ差し替える想定のため、
 # デフォルトでは汎用 f0, f1, ... 名を返し、既知の明瞭なケース
 # (Damper, Spring) のみ物理名を付けています。
-_FIELD_LAYOUTS: Dict[str, List[str]] = {
-    # Damper.hst: 8 fields (1 + 60*8 = 481). ダンパー出力は
-    # 一般に Force / Disp / Vel / Energy を含むため暫定割当。
-    "Damper.hst": [
-        "Force", "Disp", "Vel", "Energy",
-        "f4", "f5", "f6", "f7",
-    ],
-    "Spring.hst": [
-        "Force", "Disp", "Vel", "Energy", "f4",
-    ],
+# ファイル名 → { fpr → ラベルリスト }
+# fpr が一致するレイアウトを使い、一致しなければ f0,f1,... にフォールバック。
+_FIELD_LAYOUTS_BY_FPR: Dict[str, Dict[int, List[str]]] = {
+    "Damper.hst": {
+        # 2D (shear) モデル: fpr=4 → Force, Disp, Vel, Energy
+        4: ["Force", "Disp", "Vel", "Energy"],
+        # 3D モデル: fpr=8 → Fx, Dx, Fy, Dy, f4, f5, f6, Energy
+        8: ["Fx", "Dx", "Fy", "Dy", "f4", "f5", "f6", "Energy"],
+    },
+    "Spring.hst": {
+        5: ["Force", "Disp", "Vel", "Energy", "f4"],
+    },
 }
+
+# 後方互換用（field_labels() 内で _FIELD_LAYOUTS_BY_FPR を優先使用）
+_FIELD_LAYOUTS: Dict[str, List[str]] = {}
 
 
 # 観測結果をもとにした Floor.hst / Story.hst のフィールド対応の「ヒント」:
@@ -325,11 +330,19 @@ class HstReader:
         if self.header is None:
             return []
         name = self.hst_file.name
+        fpr = self.header.fields_per_record
+        # fpr 別レイアウトを優先
+        by_fpr = _FIELD_LAYOUTS_BY_FPR.get(name)
+        if by_fpr:
+            layout = by_fpr.get(fpr)
+            if layout:
+                return list(layout)
+        # 旧形式フォールバック
         layout = _FIELD_LAYOUTS.get(name)
-        if layout and len(layout) == self.header.fields_per_record:
+        if layout and len(layout) == fpr:
             return list(layout)
-        # フォールバック: f0, f1, ...
-        return [f"f{i}" for i in range(self.header.fields_per_record)]
+        # 汎用フォールバック: f0, f1, ...
+        return [f"f{i}" for i in range(fpr)]
 
     def summary(self) -> str:
         if self.header is None:

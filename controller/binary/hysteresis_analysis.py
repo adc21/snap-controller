@@ -24,7 +24,20 @@ from .result_loader import SnapResultLoader
 FIELD_FORCE = 0    # 荷重 F
 FIELD_DISP = 1     # 変位 D
 FIELD_VEL = 2      # 速度 V
-FIELD_ENERGY = 3   # 累積エネルギー
+FIELD_ENERGY = 3   # 累積エネルギー（Spring.hst 等 fpr≤5 用）
+
+
+def energy_field_index(category: str, fields_per_record: int) -> int:
+    """カテゴリと fpr に応じた累積エネルギーのフィールドインデックスを返す。
+
+    Damper.hst は 3D モデルで fpr=8 となり、エネルギーは最終フィールド (7)。
+    Spring.hst は fpr=5 でエネルギーは field[3]。
+    """
+    if category == "Damper":
+        # Damper: エネルギーは常に最終フィールド (fpr=4→3, fpr=8→7)
+        return fields_per_record - 1
+    # Spring 等: field[3] 固定
+    return FIELD_ENERGY
 
 
 # ---------------------------------------------------------------------------
@@ -64,14 +77,16 @@ def fetch_hysteresis_data(
         # F / D / V が揃わない
         return None
 
+    e_idx = energy_field_index(category, h.fields_per_record)
+
     try:
         t = hst.times()
         F = hst.time_series(rec_idx, FIELD_FORCE)
         D = hst.time_series(rec_idx, FIELD_DISP)
         V = hst.time_series(rec_idx, FIELD_VEL)
         E = (
-            hst.time_series(rec_idx, FIELD_ENERGY)
-            if h.fields_per_record > FIELD_ENERGY
+            hst.time_series(rec_idx, e_idx)
+            if h.fields_per_record > e_idx
             else np.zeros_like(F)
         )
     except (IndexError, ValueError):

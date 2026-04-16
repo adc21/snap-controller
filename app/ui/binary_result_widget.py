@@ -67,6 +67,7 @@ import logging
 
 from controller.binary import SnapResultLoader
 from controller.binary.result_loader import BinaryCategory
+from controller.binary.hysteresis_analysis import energy_field_index
 
 logger = logging.getLogger(__name__)
 
@@ -94,15 +95,11 @@ _STORY_QUANTITIES: List[tuple] = [
 _DAMPER_FIELDS = {
     "荷重 F": 0,
     "変位 D": 1,
-    "速度 V": 2,
-    "累積エネルギー": 3,
 }
 
 _SPRING_FIELDS = {
     "荷重 F": 0,
     "変位 D": 1,
-    "速度 V": 2,
-    "累積エネルギー": 3,
 }
 
 
@@ -1194,7 +1191,7 @@ class BinaryResultWidget(QWidget):
                 plotted += 1
             else:
                 ok = self._plot_hysteresis_time(
-                    ax, e, bc, rec_idx, fields, mode, t, F, D, time_y, summaries
+                    ax, e, bc, rec_idx, cat_name, mode, t, F, D, time_y, summaries
                 )
                 if ok:
                     plotted += 1
@@ -1229,7 +1226,7 @@ class BinaryResultWidget(QWidget):
         e,
         bc,
         rec_idx: int,
-        fields: dict,
+        cat_name: str,
         mode: str,
         t: np.ndarray,
         F: np.ndarray,
@@ -1243,7 +1240,10 @@ class BinaryResultWidget(QWidget):
             y = D
         else:
             try:
-                y = bc.hst.time_series(rec_idx, fields["累積エネルギー"])
+                e_idx = energy_field_index(
+                    cat_name, bc.hst.header.fields_per_record
+                )
+                y = bc.hst.time_series(rec_idx, e_idx)
             except Exception:
                 logger.debug("累積エネルギー読込失敗: %s", e.name)
                 return False
