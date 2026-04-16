@@ -145,7 +145,7 @@ def _apply_mpl_theme() -> None:
 
 
 try:
-    plt.rcParams["font.family"] = ["MS Gothic", "Meiryo", "IPAGothic", "sans-serif"]
+    plt.rcParams["font.family"] = ["MS Gothic", "Meiryo", "sans-serif"]
 except Exception:
     logger.debug("日本語フォント設定失敗、デフォルトフォントを使用")
 
