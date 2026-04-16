@@ -63,7 +63,7 @@ from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
 import matplotlib.pyplot as plt
 
-from app.models import AnalysisCase
+from app.models import AnalysisCase, Project
 from app.models.performance_criteria import PerformanceCriteria
 from app.models.s8i_parser import parse_s8i, DamperDefinition
 from app.services.optimizer import (
@@ -159,6 +159,7 @@ class UnifiedOptimizerDialog(QDialog):
         criteria: Optional[PerformanceCriteria] = None,
         snap_exe_path: str = "",
         snap_work_dir: str = "",
+        project: Optional[Project] = None,
         parent: Optional[QWidget] = None,
     ) -> None:
         super().__init__(parent)
@@ -166,6 +167,7 @@ class UnifiedOptimizerDialog(QDialog):
         self._criteria = criteria
         self._snap_exe_path = snap_exe_path
         self._snap_work_dir = snap_work_dir
+        self._project = project
 
         # 最適化エンジン
         self._optimizer = DamperOptimizer()
@@ -292,6 +294,7 @@ class UnifiedOptimizerDialog(QDialog):
         self._build_damper_selector(left_layout)
         self._build_param_table(left_layout)
         self._build_floor_table(left_layout)
+        self._build_variable_count_label(left_layout)
         self._build_objectives(left_layout)
         self._build_constraints(left_layout)
         self._build_method_section(left_layout)
@@ -337,20 +340,28 @@ class UnifiedOptimizerDialog(QDialog):
 
     def _build_param_table(self, layout: QVBoxLayout) -> None:
         """物理パラメータ選択テーブル。"""
-        group = QGroupBox("物理パラメータ")
+        group = QGroupBox("最適化変数 ① 物理パラメータ")
         gl = QVBoxLayout(group)
+
+        hint = QLabel("☑ を付けたフィールドが最適化の変数になります（未選択は現在値で固定）")
+        hint.setStyleSheet("color: gray; font-size: 11px; padding: 2px 0px;")
+        hint.setWordWrap(True)
+        gl.addWidget(hint)
 
         self._param_table = QTableWidget()
         self._param_table.setColumnCount(6)
         self._param_table.setHorizontalHeaderLabels(
-            ["", "フィールド", "現在値", "下限", "上限", "単位"]
+            ["変数", "フィールド", "現在値", "下限", "上限", "単位"]
         )
         header = self._param_table.horizontalHeader()
-        header.setSectionResizeMode(0, QHeaderView.ResizeToContents)
+        header.setMinimumSectionSize(40)
+        header.setSectionResizeMode(0, QHeaderView.Fixed)
+        header.resizeSection(0, 44)
         header.setSectionResizeMode(1, QHeaderView.Stretch)
         header.setSectionResizeMode(5, QHeaderView.ResizeToContents)
         self._param_table.verticalHeader().setVisible(False)
-        self._param_table.setMaximumHeight(220)
+        self._param_table.verticalHeader().setDefaultSectionSize(30)
+        self._param_table.setMinimumHeight(160)
 
         gl.addWidget(self._param_table)
         layout.addWidget(group)
@@ -413,6 +424,12 @@ class UnifiedOptimizerDialog(QDialog):
 
         cb = QCheckBox()
         cb.toggled.connect(self._refresh_axis_combos)
+        cb.toggled.connect(
+            lambda checked, r=row: self._highlight_table_row(
+                self._param_table, r, checked
+            )
+        )
+        cb.toggled.connect(self._update_variable_count_label)
         self._param_table.setCellWidget(row, 0, cb)
 
         self._set_readonly_item(row, 1, label_text)
@@ -452,21 +469,70 @@ class UnifiedOptimizerDialog(QDialog):
         spin.setValue(value)
         return spin
 
+    _HIGHLIGHT_COLOR = QColor("#e3f2fd")
+
+    @staticmethod
+    def _highlight_table_row(
+        table: QTableWidget, row: int, checked: bool
+    ) -> None:
+        """チェック状態に応じてテーブル行の背景色を切り替える。"""
+        color = UnifiedOptimizerDialog._HIGHLIGHT_COLOR if checked else QColor()
+        for col in range(table.columnCount()):
+            item = table.item(row, col)
+            if item is not None:
+                item.setBackground(color)
+
+    def _build_variable_count_label(self, layout: QVBoxLayout) -> None:
+        """選択中の最適化変数カウンタを表示。"""
+        self._var_count_label = QLabel()
+        self._var_count_label.setStyleSheet(
+            "font-size: 12px; font-weight: bold; padding: 4px 2px;"
+        )
+        layout.addWidget(self._var_count_label)
+        self._update_variable_count_label()
+
+    def _update_variable_count_label(self) -> None:
+        """チェック状態から選択変数数を集計してラベルを更新。"""
+        n_phys = sum(1 for r in self._field_rows if r["cb"].isChecked())
+        n_floor = sum(1 for r in self._floor_rows if r["cb"].isChecked())
+        total = n_phys + n_floor
+        if total == 0:
+            self._var_count_label.setText("⚠ 最適化変数が選択されていません")
+            self._var_count_label.setStyleSheet(
+                "color: #c62828; font-size: 12px; font-weight: bold; padding: 4px 2px;"
+            )
+        else:
+            self._var_count_label.setText(
+                f"選択中の変数: {total} 個"
+                f"（物理パラメータ: {n_phys}, ダンパー基数: {n_floor}）"
+            )
+            self._var_count_label.setStyleSheet(
+                "color: #1565c0; font-size: 12px; font-weight: bold; padding: 4px 2px;"
+            )
+
     def _build_floor_table(self, layout: QVBoxLayout) -> None:
         """ダンパー基数テーブル。"""
-        group = QGroupBox("ダンパー基数")
+        group = QGroupBox("最適化変数 ② ダンパー基数")
         gl = QVBoxLayout(group)
+
+        hint = QLabel("☑ を付けた階のダンパー本数が変数になります（未選択は現在値で固定）")
+        hint.setStyleSheet("color: gray; font-size: 11px; padding: 2px 0px;")
+        hint.setWordWrap(True)
+        gl.addWidget(hint)
 
         self._floor_table = QTableWidget()
         self._floor_table.setColumnCount(5)
         self._floor_table.setHorizontalHeaderLabels(
-            ["", "階", "現在基数", "下限", "上限"]
+            ["変数", "階", "現在基数", "下限", "上限"]
         )
         header = self._floor_table.horizontalHeader()
-        header.setSectionResizeMode(0, QHeaderView.ResizeToContents)
+        header.setMinimumSectionSize(40)
+        header.setSectionResizeMode(0, QHeaderView.Fixed)
+        header.resizeSection(0, 44)
         header.setSectionResizeMode(1, QHeaderView.Stretch)
         self._floor_table.verticalHeader().setVisible(False)
-        self._floor_table.setMaximumHeight(160)
+        self._floor_table.verticalHeader().setDefaultSectionSize(30)
+        self._floor_table.setMinimumHeight(100)
 
         gl.addWidget(self._floor_table)
         layout.addWidget(group)
@@ -485,6 +551,12 @@ class UnifiedOptimizerDialog(QDialog):
 
             cb = QCheckBox()
             cb.toggled.connect(self._refresh_axis_combos)
+            cb.toggled.connect(
+                lambda checked, r=row: self._highlight_table_row(
+                    self._floor_table, r, checked
+                )
+            )
+            cb.toggled.connect(self._update_variable_count_label)
             self._floor_table.setCellWidget(row, 0, cb)
 
             fk_item = QTableWidgetItem(fk)
@@ -541,13 +613,26 @@ class UnifiedOptimizerDialog(QDialog):
 
     def _build_constraints(self, layout: QVBoxLayout) -> None:
         """制約条件パネル。PerformanceCriteria の有効項目を自動読込。"""
-        group = QGroupBox("制約条件")
-        gl = QFormLayout(group)
+        self._constraints_group = QGroupBox("制約条件")
+        self._constraints_layout = QFormLayout(self._constraints_group)
 
         self._constraint_widgets: Dict[str, QDoubleSpinBox] = {}
+        self._populate_constraint_rows()
 
+        # 基準設定を編集ボタン
+        edit_btn = QPushButton("📋 基準設定を編集...")
+        edit_btn.setToolTip(
+            "性能基準（PerformanceCriteria）の設定画面を開きます。\n"
+            "基準を変更すると、制約条件が自動的に更新されます。"
+        )
+        edit_btn.clicked.connect(self._open_criteria_dialog)
+        self._constraints_layout.addRow(edit_btn)
+
+        layout.addWidget(self._constraints_group)
+
+    def _populate_constraint_rows(self) -> None:
+        """制約条件のスピンボックス行を構築。"""
         if self._criteria and self._criteria.items:
-            # PerformanceCriteria の有効項目から制約を構築
             for item in self._criteria.items:
                 if not item.enabled or item.limit_value is None:
                     continue
@@ -555,10 +640,11 @@ class UnifiedOptimizerDialog(QDialog):
                 spin.setDecimals(item.decimals)
                 spin.setRange(0, 1e6)
                 spin.setValue(item.limit_value)
-                gl.addRow(f"{item.label} ({item.unit}) <", spin)
+                self._constraints_layout.addRow(
+                    f"{item.label} ({item.unit}) <", spin
+                )
                 self._constraint_widgets[item.key] = spin
         else:
-            # デフォルト制約（criteria未設定時）
             defaults = [
                 ("max_drift", 0.005, "最大層間変形角 <", 6),
                 ("shear_coeff", 0.30, "せん断力係数 <", 4),
@@ -568,10 +654,40 @@ class UnifiedOptimizerDialog(QDialog):
                 spin.setDecimals(decimals)
                 spin.setRange(0, 10)
                 spin.setValue(val)
-                gl.addRow(label, spin)
+                self._constraints_layout.addRow(label, spin)
                 self._constraint_widgets[key] = spin
 
-        layout.addWidget(group)
+    def _open_criteria_dialog(self) -> None:
+        """基準設定ダイアログを開き、制約条件を更新する。"""
+        from .criteria_dialog import CriteriaDialog
+
+        dlg = CriteriaDialog(self._criteria, parent=self)
+        if not dlg.exec():
+            return
+
+        self._criteria = dlg.get_criteria()
+        if self._project is not None:
+            self._project.criteria = self._criteria
+        self._rebuild_constraints()
+
+    def _rebuild_constraints(self) -> None:
+        """制約条件パネルを最新のcriteriaで再構築する。"""
+        # 既存の行をクリア（ボタン行含む全てを削除）
+        while self._constraints_layout.rowCount() > 0:
+            self._constraints_layout.removeRow(0)
+        self._constraint_widgets.clear()
+
+        # スピン行を再構築
+        self._populate_constraint_rows()
+
+        # 編集ボタンを再追加
+        edit_btn = QPushButton("📋 基準設定を編集...")
+        edit_btn.setToolTip(
+            "性能基準（PerformanceCriteria）の設定画面を開きます。\n"
+            "基準を変更すると、制約条件が自動的に更新されます。"
+        )
+        edit_btn.clicked.connect(self._open_criteria_dialog)
+        self._constraints_layout.addRow(edit_btn)
 
     def _build_method_section(self, layout: QVBoxLayout) -> None:
         """探索手法・反復数。"""

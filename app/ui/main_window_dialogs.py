@@ -297,6 +297,8 @@ class _MainWindowDialogsMixin:
             log_callback=log_cb,
         )
         dlg.exec()
+        # ダイアログ内でケースが追加された場合にメインウィンドウのケース一覧を更新
+        self._case_table.refresh()
 
     def _open_unified_optimizer(self) -> None:
         """統合最適化ダイアログを開きます。"""
@@ -330,6 +332,7 @@ class _MainWindowDialogsMixin:
                 criteria=self._project.criteria,
                 snap_exe_path=self._project.snap_exe_path,
                 snap_work_dir=self._project.snap_work_dir,
+                project=self._project,
                 parent=self,
             )
         except Exception as e:
