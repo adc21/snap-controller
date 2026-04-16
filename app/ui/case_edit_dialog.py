@@ -1256,13 +1256,19 @@ class CaseEditDialog(QDialog):
         #   run_input == src となり shutil.SameFileError が発生する）
 
         # ---- ダンパー定義パラメータの変更値を反映 ----
+        # damper_params のフォーマット:
+        #   通常ケース: {"DefName": {"1": val, "2": val, ...}}  (1-indexed フィールド上書き)
+        #   iRDTケース: {"IRDT1": {"type": "iRDT", "floor": ...}}  (メタデータ; s8iに焼き込み済み)
         if c.damper_params and self._damper_def_tables:
             for def_name, overrides in c.damper_params.items():
                 tbl = self._damper_def_tables.get(def_name)
                 if not tbl or not isinstance(overrides, dict):
                     continue
                 for idx_str, val in overrides.items():
-                    row = int(idx_str) - 1  # 1-indexed → 0-indexed
+                    try:
+                        row = int(idx_str) - 1  # 1-indexed → 0-indexed
+                    except (ValueError, TypeError):
+                        continue  # 非数値キー（iRDTメタデータ等）はスキップ
                     if 0 <= row < tbl.rowCount():
                         tbl.blockSignals(True)
                         tbl.setItem(row, _DEF_COL_VALUE, QTableWidgetItem(str(val)))
