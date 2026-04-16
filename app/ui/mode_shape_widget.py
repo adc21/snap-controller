@@ -35,8 +35,9 @@ from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 
-import matplotlib
-matplotlib.use("QtAgg")
+import os, matplotlib
+if not os.environ.get("MPLBACKEND"):
+    matplotlib.use("QtAgg")
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.backends.backend_qtagg import NavigationToolbar2QT as NavigationToolbar
 from matplotlib.figure import Figure

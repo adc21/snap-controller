@@ -42,8 +42,9 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-import matplotlib
-matplotlib.use("QtAgg")
+import os, matplotlib
+if not os.environ.get("MPLBACKEND"):
+    matplotlib.use("QtAgg")
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
 import matplotlib.pyplot as plt
