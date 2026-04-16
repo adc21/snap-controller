@@ -78,11 +78,11 @@ class TestGeneticAlgorithm:
         config = OptimizationConfig(
             objective_key="max_drift",
             parameters=[ParameterRange(key="x", min_val=0, max_val=1, step=0)],
-            method="genetic",
+            method="ga",
             max_iterations=40,
         )
         worker = _OptimizationWorker(config, evaluate)
-        result = worker._run_genetic_algorithm(config)
+        result = worker._run_ga_search(config)
 
         assert result.best is not None
         assert result.best.objective_value < 0.2
@@ -101,11 +101,11 @@ class TestGeneticAlgorithm:
                 ParameterRange(key="x", min_val=0, max_val=1, step=0),
                 ParameterRange(key="y", min_val=0, max_val=1, step=0),
             ],
-            method="genetic",
+            method="ga",
             max_iterations=50,
         )
         worker = _OptimizationWorker(config, evaluate)
-        result = worker._run_genetic_algorithm(config)
+        result = worker._run_ga_search(config)
 
         assert result.best is not None
         assert result.best.objective_value < 0.3
@@ -118,11 +118,11 @@ class TestGeneticAlgorithm:
         config = OptimizationConfig(
             objective_key="max_drift",
             parameters=[ParameterRange(key="x", min_val=0, max_val=1, step=0)],
-            method="genetic",
+            method="ga",
             max_iterations=20,
         )
         worker = _OptimizationWorker(config, evaluate)
-        result = worker._run_genetic_algorithm(config)
+        result = worker._run_ga_search(config)
         assert "遺伝的" in result.message
 
 
@@ -137,11 +137,11 @@ class TestSimulatedAnnealing:
         config = OptimizationConfig(
             objective_key="max_drift",
             parameters=[ParameterRange(key="x", min_val=0, max_val=1, step=0)],
-            method="simulated_annealing",
+            method="sa",
             max_iterations=80,
         )
         worker = _OptimizationWorker(config, evaluate)
-        result = worker._run_simulated_annealing(config)
+        result = worker._run_sa_search(config)
 
         assert result.best is not None
         assert result.best.objective_value < 0.15
@@ -160,11 +160,11 @@ class TestSimulatedAnnealing:
                 ParameterRange(key="x", min_val=0, max_val=1, step=0),
                 ParameterRange(key="y", min_val=0, max_val=1, step=0),
             ],
-            method="simulated_annealing",
+            method="sa",
             max_iterations=200,
         )
         worker = _OptimizationWorker(config, evaluate)
-        result = worker._run_simulated_annealing(config)
+        result = worker._run_sa_search(config)
 
         assert result.best is not None
         assert result.best.objective_value < 0.5
@@ -177,9 +177,9 @@ class TestSimulatedAnnealing:
         config = OptimizationConfig(
             objective_key="max_drift",
             parameters=[ParameterRange(key="x", min_val=0, max_val=1, step=0)],
-            method="simulated_annealing",
+            method="sa",
             max_iterations=40,
         )
         worker = _OptimizationWorker(config, evaluate)
-        result = worker._run_simulated_annealing(config)
+        result = worker._run_sa_search(config)
         assert "焼きなまし法" in result.message

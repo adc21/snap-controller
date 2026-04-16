@@ -37,10 +37,15 @@ jobs:
       - name: Install pipenv
         run: pip install pipenv --quiet
 
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y libegl1-mesa
+
       - name: Install dependencies
         run: pipenv install --dev --skip-lock
 
       - name: Run unit tests (no Qt required)
+        env:
+          QT_QPA_PLATFORM: offscreen
         run: |
           pipenv run pytest tests/ \
             --ignore=tests/test_build.py \

@@ -82,17 +82,17 @@ class TestTransferFunctionPeakMinimizer:
 
     def test_init(self) -> None:
         tf = self._create_sample_tf()
-        minimizer = TransferFunctionPeakMinimizer(tf)
+        minimizer = TransferFunctionPeakMinimizer(tf, structural_damping=0.05)
         assert minimizer.natural_freq == 2.0  # ピーク周波数から推定
 
     def test_init_with_explicit_frequency(self) -> None:
         tf = self._create_sample_tf()
-        minimizer = TransferFunctionPeakMinimizer(tf, natural_frequency=1.8)
+        minimizer = TransferFunctionPeakMinimizer(tf, natural_frequency=1.8, structural_damping=0.05)
         assert minimizer.natural_freq == 1.8
 
     def test_synthesize_damper_response(self) -> None:
         tf = self._create_sample_tf()
-        minimizer = TransferFunctionPeakMinimizer(tf)
+        minimizer = TransferFunctionPeakMinimizer(tf, structural_damping=0.05)
 
         # ダンパーなしでは元のゲイン
         tf_orig_peak = tf.peak_gain_db
@@ -110,7 +110,7 @@ class TestTransferFunctionPeakMinimizer:
 
     def test_evaluate_objective(self) -> None:
         tf = self._create_sample_tf()
-        minimizer = TransferFunctionPeakMinimizer(tf)
+        minimizer = TransferFunctionPeakMinimizer(tf, structural_damping=0.05)
 
         # 妥当なパラメータ範囲
         peak_damped = minimizer._evaluate_objective(
@@ -127,7 +127,7 @@ class TestTransferFunctionPeakMinimizer:
 
     def test_optimize_grid(self) -> None:
         tf = self._create_sample_tf()
-        minimizer = TransferFunctionPeakMinimizer(tf)
+        minimizer = TransferFunctionPeakMinimizer(tf, structural_damping=0.05)
 
         result = minimizer.optimize(
             damping_range=(0.01, 0.30),
@@ -145,7 +145,7 @@ class TestTransferFunctionPeakMinimizer:
 
     def test_optimize_simplex(self) -> None:
         tf = self._create_sample_tf()
-        minimizer = TransferFunctionPeakMinimizer(tf)
+        minimizer = TransferFunctionPeakMinimizer(tf, structural_damping=0.05)
 
         result = minimizer.optimize(
             damping_range=(0.01, 0.30),
@@ -161,7 +161,7 @@ class TestTransferFunctionPeakMinimizer:
     def test_optimization_improves_peak(self) -> None:
         """最適化がピークゲインを改善することを確認。"""
         tf = self._create_sample_tf()
-        minimizer = TransferFunctionPeakMinimizer(tf)
+        minimizer = TransferFunctionPeakMinimizer(tf, structural_damping=0.05)
 
         result = minimizer.optimize(method="grid", grid_points=15)
 
@@ -172,10 +172,10 @@ class TestTransferFunctionPeakMinimizer:
     def test_multiple_optimizations_convergence(self) -> None:
         """複数回の最適化が収束することを確認。"""
         tf = self._create_sample_tf()
-        minimizer1 = TransferFunctionPeakMinimizer(tf)
+        minimizer1 = TransferFunctionPeakMinimizer(tf, structural_damping=0.05)
         result1 = minimizer1.optimize(method="grid", grid_points=10)
 
-        minimizer2 = TransferFunctionPeakMinimizer(tf)
+        minimizer2 = TransferFunctionPeakMinimizer(tf, structural_damping=0.05)
         result2 = minimizer2.optimize(method="grid", grid_points=10)
 
         # ピークゲインがほぼ同じ（収束している）
@@ -184,7 +184,7 @@ class TestTransferFunctionPeakMinimizer:
     def test_eval_count_tracked(self) -> None:
         """評価回数が正確に追跡されることを確認。"""
         tf = self._create_sample_tf()
-        minimizer = TransferFunctionPeakMinimizer(tf)
+        minimizer = TransferFunctionPeakMinimizer(tf, structural_damping=0.05)
 
         grid_points = 8
         result = minimizer.optimize(method="grid", grid_points=grid_points)
@@ -196,7 +196,7 @@ class TestTransferFunctionPeakMinimizer:
     def test_parameter_bounds_respected(self) -> None:
         """最適パラメータが指定範囲内であることを確認。"""
         tf = self._create_sample_tf()
-        minimizer = TransferFunctionPeakMinimizer(tf)
+        minimizer = TransferFunctionPeakMinimizer(tf, structural_damping=0.05)
 
         d_min, d_max = (0.02, 0.25)
         s_min, s_max = (0.02, 0.40)
@@ -266,8 +266,8 @@ class TestIntegrationTransferFunctionPeakMinimization:
         assert tf_result.peak_freq > 0
         assert tf_result.peak_gain_db > 0
 
-        # ピーク最小化を実行
-        minimizer = TransferFunctionPeakMinimizer(tf_result)
+        # ピーク最小化を実行（合成データのzeta=0.05と一致させる）
+        minimizer = TransferFunctionPeakMinimizer(tf_result, structural_damping=0.05)
         opt_result = minimizer.optimize(method="grid", grid_points=12)
 
         # ピークが低下していることを確認
