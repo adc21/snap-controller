@@ -394,8 +394,7 @@ class CaseEditDialog(QDialog):
         outer_layout.addWidget(self._make_tab_guide_banner(
             "🔧",
             "ダンパーの物性値（減衰係数・降伏荷重など）を変更します。"
-            "変更しなければ .s8i ファイルの元の値がそのまま使われます。"
-            "行を選択すると下部にパラメータの説明が表示されます。",
+            "変更しなければ .s8i ファイルの元の値がそのまま使われます。",
             bg="#fff8e1", border="#ffca28", text_color="#e65100",
         ))
 
@@ -945,8 +944,7 @@ class CaseEditDialog(QDialog):
         layout.addWidget(self._make_tab_guide_banner(
             "📐",
             "RD（免制振装置）ごとに「装置定義（ダンパー種類）」と「基数（本数）」を変更します。"
-            "変更しない行は元の .s8i の配置のまま解析されます。"
-            "行を選択すると下部に紐づくダンパー定義パラメータが表示されます。",
+            "変更しない行は元の .s8i の配置のまま解析されます。",
             bg="#fce4ec", border="#f48fb1", text_color="#880e4f",
         ))
 
