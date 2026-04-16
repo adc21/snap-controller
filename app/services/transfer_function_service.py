@@ -12,7 +12,6 @@ from dataclasses import dataclass
 from typing import Dict, Optional, Tuple
 
 import numpy as np
-from scipy import signal
 
 logger = logging.getLogger(__name__)
 
@@ -141,6 +140,7 @@ class TransferFunctionService:
         if len(x) < 2:
             raise ValueError("時系列が短すぎます（最低 2 サンプル必要）")
         if detrend:
+            from scipy import signal
             x = signal.detrend(x, type=detrend)
             y = signal.detrend(y, type=detrend)
         return x, y
@@ -159,6 +159,7 @@ class TransferFunctionService:
         kw = dict(
             fs=fs, window=self.window, nperseg=nperseg, noverlap=noverlap, nfft=nfft
         )
+        from scipy import signal
         f, pxx = signal.welch(x, **kw)
         f, pyy = signal.welch(y, **kw)
         f, pxy = signal.csd(x, y, **kw)
