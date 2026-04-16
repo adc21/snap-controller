@@ -56,10 +56,8 @@ _XBN_FIELD_LABELS: Dict[str, List[str]] = {
         "MinMx", "MinMy", "MinDrx", "MinDry",
         "f20", "f21", "f22", "f23", "f24", "f25", "f26", "f27",
     ],
-    "Damper.xbn": [
-        "MaxForce", "MaxDisp", "MaxVel", "MaxEnergy",
-        "MinForce", "MinDisp", "MinVel", "MinEnergy",
-    ],
+    # Damper.xbn: vpr 別に _XBN_FIELD_LABELS_BY_VPR を優先使用
+    "Damper.xbn": [],
     # モード応答値（Modal Displacement）—— 各モードの変形形状
     # フィールド構造は SNAP バージョン依存のため、6 DOF 暫定ラベル
     "MDFloor.xbn": [
@@ -70,6 +68,16 @@ _XBN_FIELD_LABELS: Dict[str, List[str]] = {
         "Dx", "Dy", "Dz", "Rx", "Ry", "Rz",
         "f6", "f7", "f8", "f9", "f10", "f11",
     ],
+}
+
+# ファイル名 → { vpr → ラベルリスト }
+_XBN_FIELD_LABELS_BY_VPR: Dict[str, Dict[int, List[str]]] = {
+    "Damper.xbn": {
+        # 2D: Force, Disp, Vel, Energy
+        4: ["Force", "Disp", "Vel", "Energy"],
+        # 3D: Fx, Dx, Fy, Dy, f4, f5, f6, Energy
+        8: ["Fx", "Dx", "Fy", "Dy", "f4", "f5", "f6", "Energy"],
+    },
 }
 
 
@@ -153,10 +161,18 @@ class XbnReader:
 
     def field_labels(self) -> List[str]:
         name = self.xbn_file.name
+        vpr = self.values_per_record
+        # vpr 別レイアウトを優先
+        by_vpr = _XBN_FIELD_LABELS_BY_VPR.get(name)
+        if by_vpr:
+            labels = by_vpr.get(vpr)
+            if labels:
+                return list(labels)
+        # 旧形式フォールバック
         labels = _XBN_FIELD_LABELS.get(name)
-        if labels and len(labels) >= self.values_per_record:
-            return labels[: self.values_per_record]
-        return [f"f{i}" for i in range(self.values_per_record)]
+        if labels and len(labels) >= vpr:
+            return labels[:vpr]
+        return [f"f{i}" for i in range(vpr)]
 
     def summary(self) -> str:
         return (

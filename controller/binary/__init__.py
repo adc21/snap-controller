@@ -42,7 +42,7 @@ from .period_xbn_reader import PeriodXbnReader, ModeInfo
 from .result_loader import SnapResultLoader, BinaryCategory
 from .mode_analysis import estimate_mdfloor_structure, get_mdfloor_mode_series
 from .hysteresis_analysis import (
-    fetch_hysteresis_data, compute_peak_stats,
+    fetch_hysteresis_data, compute_peak_stats, energy_field_index,
     FIELD_FORCE, FIELD_DISP, FIELD_VEL, FIELD_ENERGY,
 )
 
@@ -59,6 +59,7 @@ __all__ = [
     "get_mdfloor_mode_series",
     "fetch_hysteresis_data",
     "compute_peak_stats",
+    "energy_field_index",
     "FIELD_FORCE",
     "FIELD_DISP",
     "FIELD_VEL",
