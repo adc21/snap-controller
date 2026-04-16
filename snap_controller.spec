@@ -98,6 +98,12 @@ a = Analysis(
             'app.services.report_generator',
             'app.services.autosave',
             'app.services.validation',
+            'app.services.transfer_function_service',
+            'app.services.irdt_designer',
+            # scipy（伝達関数解析で使用）
+            'scipy',
+            'scipy.signal',
+            'scipy.optimize',
             # アプリ UI（全ウィジェット）
             'app.ui',
             'app.ui.main_window',
@@ -136,7 +142,14 @@ a = Analysis(
             'app.ui.snap_params',
             'app.ui.step_nav_footer',
             'app.ui.theme',
-            # k-DB 連携（新規追加）
+            # 伝達関数・iRDT・ピーク最小化
+            'app.ui.transfer_function_widget',
+            'app.ui.binary_result_widget',
+            'app.ui.unified_optimizer_dialog',
+            'app.ui.irdt_wizard_dialog',
+            'app.ui.peak_minimizer_dialog',
+            'app.ui.dyd_override_widget',
+            # k-DB 連携
             'app.models.kdb_reader',
             'app.ui.kdb_browser_dialog',
         ]
@@ -156,7 +169,6 @@ a = Analysis(
         'IPython',
         'jupyter',
         'notebook',
-        'scipy',
         'sklearn',
     ],
     win_no_prefer_redirects=False,

@@ -61,6 +61,7 @@ from PySide6.QtWidgets import (
     QListWidgetItem, QGroupBox, QMessageBox, QLabel, QFrame, QProgressBar
 )
 import qtawesome as qta
+from .dyd_override_widget import DydOverrideWidget
 from .theme import ThemeManager
 
 logger = logging.getLogger(__name__)
@@ -97,6 +98,11 @@ class RunSelectionWidget(QWidget):
 
     def set_project(self, project) -> None:
         self._project = project
+        # DYD 履歴出力オーバーライドをプロジェクトから復元
+        if project is not None:
+            self._dyd_override.set_overrides(
+                getattr(project, "dyd_history_overrides", None)
+            )
         self.refresh()
 
     def set_snap_exe_path(self, path: str) -> None:
@@ -196,6 +202,7 @@ class RunSelectionWidget(QWidget):
 
         self._build_checklist(layout)
         self._build_ready_banner(layout)
+        self._build_dyd_override(layout)
         self._build_case_selection(layout)
         self._build_completion_banner(layout)
         self._build_error_panel(layout)
@@ -267,6 +274,10 @@ class RunSelectionWidget(QWidget):
         _ready_layout.addLayout(_ready_col, stretch=1)
         self._ready_banner.hide()
         layout.addWidget(self._ready_banner)
+
+    def _build_dyd_override(self, layout: QVBoxLayout) -> None:
+        self._dyd_override = DydOverrideWidget()
+        layout.addWidget(self._dyd_override)
 
     def _build_case_selection(self, layout: QVBoxLayout) -> None:
         group = QGroupBox("解析実行対象の選択")

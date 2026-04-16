@@ -566,6 +566,11 @@ class MainWindow(_MainWindowDialogsMixin, QMainWindow):
         self._service.progress_updated.connect(self._on_progress_updated)
         self._service.batch_state_changed.connect(self._on_batch_state_changed)
 
+        # DYD 履歴出力オーバーライド
+        self._run_selection._dyd_override.overrides_changed.connect(
+            self._on_dyd_override_changed
+        )
+
         # バッチキューウィジェットのシグナル接続
         self._batch_queue.pauseRequested.connect(self._service.pause_batch)
         self._batch_queue.resumeRequested.connect(self._service.resume_batch)
@@ -1605,6 +1610,7 @@ class MainWindow(_MainWindowDialogsMixin, QMainWindow):
             self._project.snap_work_dir = settings["snap_work_dir"]
         self._service.set_snap_exe_path(self._project.snap_exe_path)
         self._service.set_snap_work_dir(self._project.snap_work_dir)
+        self._service.set_dyd_overrides(self._project.dyd_history_overrides)
         self._autosave.set_project(self._project)
         # s8i未読み込み状態にリセット（前プロジェクトの状態汚染を防ぐ）
         self._case_table.set_model_loaded(False)
@@ -1785,6 +1791,7 @@ class MainWindow(_MainWindowDialogsMixin, QMainWindow):
             self._project = Project.load(path)
             self._service.set_snap_exe_path(self._project.snap_exe_path)
             self._service.set_snap_work_dir(self._project.snap_work_dir)
+            self._service.set_dyd_overrides(self._project.dyd_history_overrides)
             self._autosave.set_project(self._project)
             self._model_info.set_model(self._project.s8i_model)
             # UX改善②: プロジェクト読込時にモデルロード状態を反映
@@ -2022,6 +2029,14 @@ class MainWindow(_MainWindowDialogsMixin, QMainWindow):
             self._progress_bar.show()
         # UX改善④新: グローバル進捗インジケーターも更新
         self._update_global_progress()
+
+    def _on_dyd_override_changed(self, overrides) -> None:
+        """DYD 履歴出力オーバーライドが変更されたときの処理。"""
+        if self._project is not None:
+            self._project.dyd_history_overrides = overrides
+            self._project.modified = True
+            self._update_title()
+        self._service.set_dyd_overrides(overrides)
 
     def _on_batch_state_changed(self, running: bool) -> None:
         """バッチ実行の開始・終了に応じてUI状態を更新します。"""

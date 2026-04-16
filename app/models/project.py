@@ -62,6 +62,8 @@ class Project:
         self.updated_at: str = self.created_at
         # UX改善④新: 解析戦略メモ（次ラウンドに向けた気づきや方針を記録）
         self.strategy_notes: str = ""
+        # DYD 履歴結果の出力指定オーバーライド
+        self.dyd_history_overrides: Optional[Dict[int, int]] = None
 
     # ------------------------------------------------------------------
     # S8i file
@@ -239,6 +241,11 @@ class Project:
             "case_groups": self.case_groups,
             # UX改善④新: 解析戦略メモ
             "strategy_notes": self.strategy_notes,
+            # DYD 履歴結果の出力指定オーバーライド
+            "dyd_history_overrides": (
+                {str(k): v for k, v in self.dyd_history_overrides.items()}
+                if self.dyd_history_overrides is not None else None
+            ),
         }
         with open(self.file_path, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
@@ -271,6 +278,10 @@ class Project:
         proj.case_groups = data.get("case_groups", {})
         # UX改善④新: 解析戦略メモ
         proj.strategy_notes = data.get("strategy_notes", "")
+        # DYD 履歴結果の出力指定オーバーライド
+        dyd_raw = data.get("dyd_history_overrides")
+        if dyd_raw is not None:
+            proj.dyd_history_overrides = {int(k): v for k, v in dyd_raw.items()}
 
         for case_data in data.get("cases", []):
             proj.cases.append(AnalysisCase.from_dict(case_data))

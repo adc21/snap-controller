@@ -12,7 +12,7 @@ import logging
 import shutil
 import tempfile
 from pathlib import Path
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -55,11 +55,14 @@ class _AnalysisWorker(QThread):
     case_finished = Signal(str, bool)   # (case_id, success)
     status_changed = Signal(str)        # ステータスバー用メッセージ
 
-    def __init__(self, case: AnalysisCase, snap_exe_path: str, snap_work_dir: str = "", parent: Optional[QObject] = None) -> None:
+    def __init__(self, case: AnalysisCase, snap_exe_path: str, snap_work_dir: str = "",
+                 dyd_overrides: Optional[Dict[int, int]] = None,
+                 parent: Optional[QObject] = None) -> None:
         super().__init__(parent)
         self._case = case
         self._snap_exe_path = snap_exe_path
         self._snap_work_dir = snap_work_dir
+        self._dyd_overrides = dyd_overrides
 
     def run(self) -> None:
         case = self._case
@@ -117,13 +120,14 @@ class _AnalysisWorker(QThread):
 
         has_overrides = bool(case.damper_params) or bool(
             case.parameters.get("_rd_overrides")
-        ) or bool(getattr(case, "extra_defs", None))
+        ) or bool(getattr(case, "extra_defs", None)) or bool(self._dyd_overrides)
 
         if has_overrides:
             model = parse_s8i(str(src))
             self._apply_damper_overrides(case, model)
             self._apply_extra_defs(case, model)
             self._apply_rd_overrides(case, model)
+            self._apply_dyd_overrides(model)
             model.write(str(run_input))
             self.log_emitted.emit("  パラメータ変更を適用しました")
         else:
@@ -211,6 +215,20 @@ class _AnalysisWorker(QThread):
                 )
             else:
                 self.log_emitted.emit(f"  RD[{row_idx}] 変更: {changes}")
+
+    def _apply_dyd_overrides(self, model) -> None:
+        """DYD 応答解析条件の履歴結果出力指定を上書きします。"""
+        if not self._dyd_overrides:
+            return
+        dyd = model.dyd_record
+        if dyd is None:
+            self.log_emitted.emit("  [WARN] DYD レコードが見つかりません")
+            return
+        for idx, val in self._dyd_overrides.items():
+            if 0 <= idx < len(dyd.values):
+                old_val = dyd.values[idx]
+                dyd.values[idx] = str(val)
+                self.log_emitted.emit(f"  DYD[{idx}]: {old_val} → {val}")
 
     def _execute_snap(self, run_input: Path) -> None:
         """SNAP を実行し、return_code をケースに記録します。"""
@@ -535,6 +553,7 @@ class AnalysisService(QObject):
         self._current_worker: Optional[_AnalysisWorker] = None
         self._snap_exe_path: str = ""
         self._snap_work_dir: str = ""
+        self._dyd_overrides: Optional[Dict[int, int]] = None
         # 進捗追跡
         self._total_in_batch: int = 0
         self._completed_in_batch: int = 0
@@ -553,6 +572,10 @@ class AnalysisService(QObject):
     def set_snap_work_dir(self, path: str) -> None:
         """SNAP work ディレクトリのパスを設定します。"""
         self._snap_work_dir = path
+
+    def set_dyd_overrides(self, overrides: Optional[Dict[int, int]]) -> None:
+        """DYD 履歴結果出力指定のオーバーライドを設定します（プロジェクトレベル）。"""
+        self._dyd_overrides = overrides
 
     @property
     def is_running(self) -> bool:
@@ -705,7 +728,8 @@ class AnalysisService(QObject):
     # ------------------------------------------------------------------
 
     def _start_worker(self, case: AnalysisCase) -> None:
-        worker = _AnalysisWorker(case, self._snap_exe_path, self._snap_work_dir)
+        worker = _AnalysisWorker(case, self._snap_exe_path, self._snap_work_dir,
+                                 dyd_overrides=self._dyd_overrides)
         worker.log_emitted.connect(self.log_emitted)
         worker.case_finished.connect(self._on_worker_finished)
         worker.status_changed.connect(self.status_changed)

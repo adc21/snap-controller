@@ -141,6 +141,51 @@ class DamperElement:
 
 
 @dataclass
+class DydRecord:
+    """応答解析条件 (DYD)。
+
+    .s8i ファイル内の DYD レコードに対応します。
+
+    フィールド対応 (0-based index):
+      0:  解析方法 (Newmark-β法) = 0.25
+      1:  履歴結果の出力指定 - すべての節点 (0/1)
+      2:  すべてのはり (0/1)
+      3:  すべての柱 (0/1)
+      4:  すべてのトラス (0/1)
+      5:  すべての壁 (0/1)
+      6:  すべての平板 (0/1)
+      7:  すべての仕口パネル (0/1)
+      8:  すべてのスプリング (0/1)
+      9:  すべての曲げせん断棒 (0/1)
+      10: すべてのダンパー (0/1)
+      11: すべての免震支承材と免震用履歴型ダンパー (0/1)
+      12: 不釣合力を出力する (0/1)
+      13: 既存架構・補強架構・トグル制震ブレース毎に集計する (0/1)
+      14-17: イテレーション条件
+      18-21: 解析中止条件
+    """
+    values: List[str]       # 全フィールド値
+    raw: str = ""
+    line_no: int = 0
+
+    # 履歴結果の出力指定フィールド (0-indexed)
+    HISTORY_OUTPUT_FIELDS: tuple = (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11)
+    HISTORY_OUTPUT_LABELS: tuple = (
+        "すべての節点",
+        "すべてのはり",
+        "すべての柱",
+        "すべてのトラス",
+        "すべての壁",
+        "すべての平板",
+        "すべての仕口パネル",
+        "すべてのスプリング",
+        "すべての曲げせん断棒",
+        "すべてのダンパー",
+        "すべての免震支承材と免震用履歴型ダンパー",
+    )
+
+
+@dataclass
 class DycCase:
     """応答解析ケース (DYC)。
 
@@ -203,6 +248,8 @@ class S8iModel:
     damper_braces: List[DamperBrace] = field(default_factory=list)
     # 免制振装置 (RD)
     damper_elements: List[DamperElement] = field(default_factory=list)
+    # 応答解析条件 (DYD)
+    dyd_record: Optional[DydRecord] = None
     # 応答解析ケース (DYC)
     dyc_cases: List[DycCase] = field(default_factory=list)
     # 全行（書き戻し用）
@@ -257,57 +304,85 @@ class S8iModel:
     # ------------------------------------------------------------------
 
     def write(self, output_path: str) -> None:
-        """変更を反映した .s8i ファイルを書き出します。"""
+        """変更を反映した .s8i ファイルを書き出します。
+
+        手順:
+        1. 既存行をすべてインプレース更新（行数は変わらない）
+        2. 新規行を挿入位置と共に収集
+        3. 下から上へ挿入（上の行番号に影響しない）
+        """
         lines = list(self._lines)  # コピー
 
-        # ダンパー定義の変更を反映（既存行の更新）
+        # ---- Phase 1: 既存行のインプレース更新 ----
         for ddef in self.damper_defs:
             if ddef.line_no > 0 and ddef.line_no <= len(lines):
-                new_line = f"{ddef.keyword} / {','.join(ddef.values)}"
-                lines[ddef.line_no - 1] = new_line
+                lines[ddef.line_no - 1] = f"{ddef.keyword} / {','.join(ddef.values)}"
 
-        # 新規追加ダンパー定義（line_no=0）を既存定義の直後に挿入
+        for brace in self.damper_braces:
+            if brace.line_no > 0 and brace.line_no <= len(lines):
+                lines[brace.line_no - 1] = f"SR / {','.join(brace.values)}"
+
+        for elem in self.damper_elements:
+            if elem.line_no > 0 and elem.line_no <= len(lines):
+                lines[elem.line_no - 1] = f"RD / {','.join(elem.values)}"
+
+        if self.dyd_record and self.dyd_record.line_no > 0 and self.dyd_record.line_no <= len(lines):
+            lines[self.dyd_record.line_no - 1] = f"DYD / {','.join(self.dyd_record.values)}"
+
+        for dyc in self.dyc_cases:
+            if dyc.line_no > 0 and dyc.line_no <= len(lines):
+                lines[dyc.line_no - 1] = f"DYC / {','.join(dyc.values)}"
+
+        # ---- Phase 2: 新規行の挿入位置を決定 ----
+        # (insert_pos, line_text) のリストを収集し、下から挿入する
+        insertions: list = []  # [(0-indexed insert position, line_text)]
+
+        # 新規ダンパー定義
         new_defs = [d for d in self.damper_defs if d.line_no == 0]
         if new_defs:
-            # 最後の既存ダンパー定義行の位置を探す
             last_def_line = 0
             for ddef in self.damper_defs:
                 if ddef.line_no > last_def_line:
                     last_def_line = ddef.line_no
-            # SR 行の位置も確認（ダンパー定義は SR の前に挿入）
             for brace in self.damper_braces:
                 if brace.line_no > 0 and (last_def_line == 0 or brace.line_no < last_def_line):
                     if last_def_line == 0:
                         last_def_line = brace.line_no - 1
-            # RD 行の位置も確認
             for elem in self.damper_elements:
                 if elem.line_no > 0 and (last_def_line == 0 or elem.line_no < last_def_line):
                     if last_def_line == 0:
                         last_def_line = elem.line_no - 1
-
-            insert_pos = last_def_line  # 0-indexed で直後に挿入
+            pos = last_def_line  # 0-indexed
             for new_def in new_defs:
-                new_line = f"{new_def.keyword} / {','.join(new_def.values)}"
-                lines.insert(insert_pos, new_line)
-                insert_pos += 1
+                insertions.append((pos, f"{new_def.keyword} / {','.join(new_def.values)}"))
+                pos += 1  # 同じブロック内で連続挿入
 
-        # 制振ブレースの変更を反映
-        for brace in self.damper_braces:
-            if brace.line_no > 0 and brace.line_no <= len(lines):
-                new_line = f"SR / {','.join(brace.values)}"
-                lines[brace.line_no - 1] = new_line
+        # 新規 RD 要素
+        new_elems = [e for e in self.damper_elements if e.line_no == 0]
+        if new_elems:
+            last_rd_line = 0
+            for elem in self.damper_elements:
+                if elem.line_no > last_rd_line:
+                    last_rd_line = elem.line_no
+            if last_rd_line == 0:
+                for brace in self.damper_braces:
+                    if brace.line_no > last_rd_line:
+                        last_rd_line = brace.line_no
+            if last_rd_line == 0:
+                # ダンパー定義の直後
+                for ddef in self.damper_defs:
+                    if ddef.line_no > last_rd_line:
+                        last_rd_line = ddef.line_no
+            pos = last_rd_line  # 0-indexed
+            for new_elem in new_elems:
+                insertions.append((pos, f"RD / {','.join(new_elem.values)}"))
+                pos += 1
 
-        # 免制振装置の変更を反映
-        for elem in self.damper_elements:
-            if elem.line_no > 0 and elem.line_no <= len(lines):
-                new_line = f"RD / {','.join(elem.values)}"
-                lines[elem.line_no - 1] = new_line
-
-        # DYC ケースの変更を反映
-        for dyc in self.dyc_cases:
-            if dyc.line_no > 0 and dyc.line_no <= len(lines):
-                new_line = f"DYC / {','.join(dyc.values)}"
-                lines[dyc.line_no - 1] = new_line
+        # ---- Phase 3: 下から上へ挿入 ----
+        # 挿入位置が大きい順にソートして挿入（上の行番号に影響しない）
+        insertions.sort(key=lambda x: x[0], reverse=True)
+        for insert_pos, line_text in insertions:
+            lines.insert(insert_pos, line_text)
 
         path = Path(output_path)
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -623,6 +698,13 @@ def parse_s8i(file_path: str) -> S8iModel:
 
         elif keyword == "RD":
             _parse_damper_element(model, vals, raw_line, line_no)
+
+        elif keyword == "DYD":
+            model.dyd_record = DydRecord(
+                values=vals,
+                raw=raw_line,
+                line_no=line_no,
+            )
 
         elif keyword == "DYC":
             _parse_dyc_case(model, vals, raw_line, line_no)

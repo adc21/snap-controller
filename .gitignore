@@ -47,10 +47,16 @@ build_log.txt
 Thumbs.db
 Desktop.ini
 
-# ===== Test results =====
+# ===== Test artifacts =====
 example_*Case*
 tests/_proc_*.txt
 tests/_check_procs.py
+
+# ===== Debug scripts =====
+debug_*.py
+
+# ===== Backup files =====
+*.bak
 
 # ===== Claude AI session files =====
 .claude/

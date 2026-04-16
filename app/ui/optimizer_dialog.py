@@ -2286,6 +2286,18 @@ class OptimizerDialog(_OptimizerResultActionsMixin, QDialog):
                 )
 
         obj_label = result.config.objective_label if result.config else "目的関数"
+
+        # 制約境界線: 目的関数キーに対する制約がある場合、水平線を描画
+        if result.config and result.config.constraints:
+            obj_key = result.config.objective_key
+            if obj_key in result.config.constraints:
+                limit = result.config.constraints[obj_key]
+                ax.axhline(
+                    y=limit, color="#d62728", linestyle="--",
+                    linewidth=1.2, alpha=0.7,
+                    label=f"制約: {limit:.4g}",
+                )
+
         ax.set_xlabel("評価回数", fontsize=7)
         ax.set_ylabel(obj_label, fontsize=7)
         ax.set_title("収束履歴", fontsize=9)

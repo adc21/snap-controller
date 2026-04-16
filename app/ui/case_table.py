@@ -44,6 +44,28 @@ import qtawesome as qta
 
 logger = logging.getLogger(__name__)
 
+
+def _resolve_s8i_for_case(
+    case: AnalysisCase, project: "Project"
+) -> "S8iModel | None":
+    """ケース編集用の S8iModel を返す。
+
+    ケースの model_path がプロジェクトのベース s8i と異なる場合
+    （例: DamperInjector で生成された iRDT 入り .s8i）は
+    そのケース固有のファイルをパースして返す。
+    """
+    import os
+    base_s8i = getattr(project, "s8i_model", None)
+    base_path = os.path.normpath(project.s8i_path) if project.s8i_path else ""
+    case_path = os.path.normpath(case.model_path) if case.model_path else ""
+    if case_path and base_path and case_path != base_path and os.path.isfile(case_path):
+        try:
+            from app.models.s8i_parser import parse_s8i
+            return parse_s8i(case_path)
+        except Exception:
+            logger.debug("ケース固有 s8i のパース失敗: %s", case_path, exc_info=True)
+    return base_s8i
+
 # テーブル列定義
 # UX改善③: 「変更点」列を追加。ダンパー定義・配置計画の変更内容を簡略表示します。
 _COLUMNS = ["ケース名", "グループ", "変更点", "モデルファイル", "状態", "最大層間変形角", "最大加速度", "メモ"]
@@ -331,7 +353,7 @@ class CaseTableWidget(QWidget):
         case = self._project.get_case(case_id)
         if case is None:
             return
-        s8i = self._project.s8i_model if self._project else None
+        s8i = _resolve_s8i_for_case(case, self._project)
         existing_names = {c.name for c in self._project.cases if c.id != case_id}
         dlg = CaseEditDialog(case, s8i_model=s8i, existing_names=existing_names, parent=self)
         if dlg.exec():
@@ -1803,7 +1825,7 @@ class CaseTableWidget(QWidget):
         case = self._project.get_case(case_id)
         if case is None:
             return
-        s8i = self._project.s8i_model if self._project else None
+        s8i = _resolve_s8i_for_case(case, self._project)
         existing_names = {c.name for c in self._project.cases if c.id != case.id}
         # UX改善①: 既存ケースの場合、変更内容に応じたタブを自動選択するため initial_tab=None
         # （CaseEditDialog 内の _auto_focus_tab() が適切なタブを選択します）
@@ -1892,7 +1914,7 @@ class CaseTableWidget(QWidget):
 
         # 編集ダイアログを即座に開く
         # UX改善①: 複製ケースはダンパー定義を変更することが多いので tab=1 を初期表示
-        s8i = self._project.s8i_model if self._project else None
+        s8i = _resolve_s8i_for_case(new_case, self._project)
         existing_names_dup = {c.name for c in self._project.cases if c.id != new_case.id}
         dlg = CaseEditDialog(
             new_case,

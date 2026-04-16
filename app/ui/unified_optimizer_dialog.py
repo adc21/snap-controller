@@ -1697,6 +1697,10 @@ class UnifiedOptimizerDialog(QDialog):
         self._ax.set_xlabel(self._axis_label(x_key), fontsize=10)
         self._ax.set_ylabel(self._axis_label(y_key), fontsize=10)
         self._ax.set_title(f"{self._axis_label(x_key)} vs {self._axis_label(y_key)}", fontsize=12)
+
+        # 制約境界線を描画
+        self._draw_constraint_lines(x_key, y_key)
+
         self._ax.legend(fontsize=8, loc="upper right")
 
     def _plot_scatter_layer(
@@ -1753,6 +1757,10 @@ class UnifiedOptimizerDialog(QDialog):
         obj_label = self._obj1_combo.currentText()
         self._ax.set_ylabel(obj_label, fontsize=10)
         self._ax.set_title("収束プロット", fontsize=12)
+
+        # 制約境界線を描画（Y軸が目的関数キー）
+        self._draw_constraint_lines("iteration", obj_key)
+
         self._ax.legend(fontsize=8, loc="upper right")
 
     def _update_pareto_plot(self) -> None:
@@ -1802,6 +1810,10 @@ class UnifiedOptimizerDialog(QDialog):
         self._ax.set_xlabel(obj1_label, fontsize=10)
         self._ax.set_ylabel(obj2_label, fontsize=10)
         self._ax.set_title("パレートフロント", fontsize=12)
+
+        # 制約境界線を描画
+        self._draw_constraint_lines(obj1_key, obj2_key)
+
         self._ax.legend(fontsize=8, loc="upper right")
 
     def _compute_pareto_front(self) -> List[OptimizationCandidate]:
@@ -1841,6 +1853,32 @@ class UnifiedOptimizerDialog(QDialog):
                 pareto.append(ci)
 
         return pareto
+
+    def _draw_constraint_lines(self, x_key: str, y_key: str) -> None:
+        """軸に対応する制約条件の境界線を描画する。
+
+        X軸・Y軸のキーが制約条件に含まれている場合、
+        それぞれ垂直線（X軸制約）/ 水平線（Y軸制約）を破線で描画する。
+        """
+        if not self._constraint_widgets:
+            return
+
+        for key, spin in self._constraint_widgets.items():
+            limit = spin.value()
+            if limit <= 0:
+                continue
+            if key == y_key:
+                self._ax.axhline(
+                    y=limit, color="#d62728", linestyle="--",
+                    linewidth=1.2, alpha=0.7,
+                    label=f"制約: {self._axis_label(key)} = {limit:.4g}",
+                )
+            elif key == x_key:
+                self._ax.axvline(
+                    x=limit, color="#d62728", linestyle="--",
+                    linewidth=1.2, alpha=0.7,
+                    label=f"制約: {self._axis_label(key)} = {limit:.4g}",
+                )
 
     # ------------------------------------------------------------------
     # 候補詳細表示

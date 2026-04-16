@@ -1120,6 +1120,7 @@ class _OptimizationWorker(_SearchAlgorithmsMixin, QThread):
                     key,
                 )
         # 性能基準による制約
+        # 明示的制約(config.constraints)と同一キーは二重チェックしない
         if config.criteria:
             verdicts = config.criteria.evaluate(response)
             # 有効な基準のキーセット（無効基準はNoneでも問題なし）
@@ -1128,6 +1129,9 @@ class _OptimizationWorker(_SearchAlgorithmsMixin, QThread):
                 if item.enabled and item.limit_value is not None
             }
             for k, v in verdicts.items():
+                if k in config.constraints:
+                    # 明示的制約で既にチェック済み → スキップ
+                    continue
                 if v is False:
                     is_feasible = False
                     margins[f"criteria:{k}"] = -1.0

@@ -102,6 +102,21 @@ _SPRING_FIELDS = {
     "変位 D": 1,
 }
 
+_NODE_QUANTITIES: List[tuple] = [
+    ("変位", 0, "m"),
+    ("応答量 f1", 1, ""),
+    ("応答量 f2", 2, ""),
+    ("応答量 f3", 3, ""),
+    ("速度", 4, "m/s"),
+    ("応答量 f5", 5, ""),
+    ("加速度", 6, "m/s²"),
+]
+
+_MEMBER_FIELDS = {
+    "荷重 F": 0,
+    "変位 D": 1,
+}
+
 
 # ---------------------------------------------------------------------------
 # 各ケースのロード結果を保持するエントリ
@@ -263,6 +278,36 @@ class BinaryResultWidget(QWidget):
         )
         self._tab_stacks["spring"] = self._make_stack(self._spring_content)
         self._tabs.addTab(self._tab_stacks["spring"], "🧩 バネ履歴")
+
+        # DYD 履歴出力で追加される結果タブ
+        self._node_content, self._node_widgets = self._build_timehistory_tab(
+            title="節点応答時刻歴",
+            record_label="節点",
+            quantities=_NODE_QUANTITIES,
+        )
+        self._tab_stacks["node"] = self._make_stack(self._node_content)
+        self._tabs.addTab(self._tab_stacks["node"], "📌 節点応答")
+
+        self._beam_content, self._beam_widgets = self._build_hysteresis_tab(
+            record_label="はり",
+            fields=_MEMBER_FIELDS,
+        )
+        self._tab_stacks["beam"] = self._make_stack(self._beam_content)
+        self._tabs.addTab(self._tab_stacks["beam"], "🔗 はり応答")
+
+        self._column_content, self._column_widgets = self._build_hysteresis_tab(
+            record_label="柱",
+            fields=_MEMBER_FIELDS,
+        )
+        self._tab_stacks["column"] = self._make_stack(self._column_content)
+        self._tabs.addTab(self._tab_stacks["column"], "🏛 柱応答")
+
+        self._truss_content, self._truss_widgets = self._build_hysteresis_tab(
+            record_label="トラス",
+            fields=_MEMBER_FIELDS,
+        )
+        self._tab_stacks["truss"] = self._make_stack(self._truss_content)
+        self._tabs.addTab(self._tab_stacks["truss"], "⚙ トラス応答")
 
         self._maxvals_content, self._maxvals_widgets = self._build_maxvals_tab()
         self._tab_stacks["maxvals"] = self._make_stack(self._maxvals_content)
@@ -681,12 +726,20 @@ class BinaryResultWidget(QWidget):
         self._story_widgets["category_name"] = "Story"
         self._damper_widgets["category_name"] = "Damper"
         self._spring_widgets["category_name"] = "Spring"
+        self._node_widgets["category_name"] = "Node"
+        self._beam_widgets["category_name"] = "Beam"
+        self._column_widgets["category_name"] = "Column"
+        self._truss_widgets["category_name"] = "Truss"
 
         self._refresh_period_tab()
         self._refresh_timehistory_tab("floor", self._floor_widgets)
         self._refresh_timehistory_tab("story", self._story_widgets)
         self._refresh_hysteresis_tab("damper", self._damper_widgets)
         self._refresh_hysteresis_tab("spring", self._spring_widgets)
+        self._refresh_timehistory_tab("node", self._node_widgets)
+        self._refresh_hysteresis_tab("beam", self._beam_widgets)
+        self._refresh_hysteresis_tab("column", self._column_widgets)
+        self._refresh_hysteresis_tab("truss", self._truss_widgets)
         self._refresh_maxvals_tab()
         self._refresh_energy_tab()
 
