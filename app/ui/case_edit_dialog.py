@@ -520,9 +520,7 @@ class CaseEditDialog(QDialog):
         _hint_icon.setFixedWidth(22)
         _hint_layout.addWidget(_hint_icon)
 
-        self._def_hint_label = QLabel(
-            "↑ テーブルの行を選択すると、そのパラメータの工学的な説明がここに表示されます。"
-        )
+        self._def_hint_label = QLabel("")
         self._def_hint_label.setStyleSheet(
             "color: #6a1b9a; font-size: 11px; background: transparent; border: none;"
         )
@@ -553,9 +551,7 @@ class CaseEditDialog(QDialog):
             return
         selected = tbl.selectionModel().selectedRows()
         if not selected:
-            self._def_hint_label.setText(
-                "↑ テーブルの行を選択すると、そのパラメータの工学的な説明がここに表示されます。"
-            )
+            self._def_hint_label.setText("")
             return
 
         row = selected[0].row()
