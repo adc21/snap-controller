@@ -46,6 +46,7 @@ jobs:
       - name: Run unit tests (no Qt required)
         env:
           QT_QPA_PLATFORM: offscreen
+          MPLBACKEND: Agg
         run: |
           pipenv run pytest tests/ \
             --ignore=tests/test_build.py \
