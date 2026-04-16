@@ -87,7 +87,7 @@ import matplotlib.pyplot as plt
 import logging
 
 try:
-    plt.rcParams["font.family"] = ["MS Gothic", "Meiryo", "IPAGothic", "sans-serif"]
+    plt.rcParams["font.family"] = ["MS Gothic", "Meiryo", "sans-serif"]
 except Exception:
     logging.getLogger(__name__).debug("日本語フォント設定失敗")
 

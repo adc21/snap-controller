@@ -140,7 +140,7 @@ import logging
 logger = logging.getLogger(__name__)
 
 try:
-    plt.rcParams["font.family"] = ["MS Gothic", "Meiryo", "IPAGothic", "sans-serif"]
+    plt.rcParams["font.family"] = ["MS Gothic", "Meiryo", "sans-serif"]
 except Exception:
     logger.debug("Japanese font not available, using default")
     pass
