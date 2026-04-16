@@ -41,7 +41,6 @@ from PySide6.QtWidgets import (
 )
 
 from app.models import AnalysisCaseStatus, Project
-from app.models.case_template import TemplateManager
 from app.services import AnalysisService
 from app.services.autosave import AutoSaveService
 from .case_table import CaseTableWidget
@@ -94,7 +93,6 @@ class MainWindow(_MainWindowDialogsMixin, QMainWindow):
         self._project: Optional[Project] = None
         self._service = AnalysisService()
         self._autosave = AutoSaveService(self)
-        self._template_manager = TemplateManager()
 
         self._setup_ui()
         self._setup_menu()
@@ -649,11 +647,6 @@ class MainWindow(_MainWindowDialogsMixin, QMainWindow):
         act_criteria.triggered.connect(self._open_criteria_dialog)
         analysis_menu.addAction(act_criteria)
 
-        act_catalog = QAction("ダンパーカタログ(&K)…", self)
-        act_catalog.setShortcut("Ctrl+K")
-        act_catalog.triggered.connect(self._open_damper_catalog)
-        analysis_menu.addAction(act_catalog)
-
         act_unified = QAction("統合最適化(&O)…", self)
         act_unified.setShortcut("Ctrl+Shift+O")
         act_unified.triggered.connect(self._open_unified_optimizer)
@@ -681,17 +674,6 @@ class MainWindow(_MainWindowDialogsMixin, QMainWindow):
         act_groups = QAction("グループ管理(&G)…", self)
         act_groups.triggered.connect(self._open_group_manager)
         analysis_menu.addAction(act_groups)
-
-        analysis_menu.addSeparator()
-
-        act_template = QAction("テンプレートから適用(&T)…", self)
-        act_template.setShortcut("Ctrl+Shift+T")
-        act_template.triggered.connect(self._open_template_dialog)
-        analysis_menu.addAction(act_template)
-
-        act_save_template = QAction("テンプレートとして保存…", self)
-        act_save_template.triggered.connect(self._save_as_template)
-        analysis_menu.addAction(act_save_template)
 
         analysis_menu.addSeparator()
 

@@ -23,7 +23,6 @@ from .sweep_dialog import SweepDialog
 from .log_widget import LogWidget
 from .export_dialog import ExportDialog
 from .settings_dialog import SettingsDialog, load_settings, save_settings
-from .damper_catalog_dialog import DamperCatalogDialog
 from .validation_dialog import ValidationDialog, BatchValidationDialog
 from .welcome_widget import WelcomeWidget
 from .step4_summary_bar import Step4SummaryBar
@@ -53,7 +52,6 @@ __all__ = [
     "SettingsDialog",
     "load_settings",
     "save_settings",
-    "DamperCatalogDialog",
     "ValidationDialog",
     "BatchValidationDialog",
     "WelcomeWidget",

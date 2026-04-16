@@ -81,9 +81,7 @@ class TestAppModelsImports:
         "app.models.analysis_case",
         "app.models.project",
         "app.models.s8i_parser",
-        "app.models.damper_catalog",
         "app.models.earthquake_wave",
-        "app.models.case_template",
         "app.models.performance_criteria",
     ]
 
