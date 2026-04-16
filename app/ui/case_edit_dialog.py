@@ -412,8 +412,6 @@ class CaseEditDialog(QDialog):
 
         outer_layout.addWidget(self._build_def_scroll_area())
         outer_layout.addWidget(self._build_validity_bar())
-        outer_layout.addWidget(self._build_def_hint_panel())
-        self._connect_def_table_signals()
         return outer
 
     def _build_def_scroll_area(self) -> QScrollArea:
@@ -496,94 +494,6 @@ class CaseEditDialog(QDialog):
 
         self._param_validity_bar.hide()
         return self._param_validity_bar
-
-    def _build_def_hint_panel(self) -> QFrame:
-        self._def_hint_panel = QFrame()
-        self._def_hint_panel.setFrameShape(QFrame.StyledPanel)
-        self._def_hint_panel.setStyleSheet(
-            "QFrame {"
-            "  background-color: #f3e5f5;"
-            "  border: 1px solid #ce93d8;"
-            "  border-radius: 4px;"
-            "  margin: 4px;"
-            "}"
-        )
-        self._def_hint_panel.setMaximumHeight(100)
-        _hint_layout = QHBoxLayout(self._def_hint_panel)
-        _hint_layout.setContentsMargins(10, 6, 10, 6)
-        _hint_layout.setSpacing(8)
-
-        _hint_icon = QLabel("💡")
-        _hint_icon.setStyleSheet(
-            "font-size: 16px; background: transparent; border: none;"
-        )
-        _hint_icon.setFixedWidth(22)
-        _hint_layout.addWidget(_hint_icon)
-
-        self._def_hint_label = QLabel("")
-        self._def_hint_label.setStyleSheet(
-            "color: #6a1b9a; font-size: 11px; background: transparent; border: none;"
-        )
-        self._def_hint_label.setWordWrap(True)
-        self._def_hint_label.setAlignment(Qt.AlignTop | Qt.AlignLeft)
-        _hint_layout.addWidget(self._def_hint_label, stretch=1)
-        return self._def_hint_panel
-
-    def _connect_def_table_signals(self) -> None:
-        for ddef_name, tbl in self._damper_def_tables.items():
-            tbl.itemSelectionChanged.connect(
-                lambda t=tbl, kw=ddef_name: self._on_def_table_row_selected(t, kw)
-            )
-
-    def _on_def_table_row_selected(self, tbl: QTableWidget, keyword: str) -> None:
-        """
-        UX改善（新②）: ダンパー定義テーブルの行が選択されたとき、
-        そのパラメータの説明をヒントパネルに表示します。
-
-        Parameters
-        ----------
-        tbl : QTableWidget
-            シグナルを発行したテーブル。
-        keyword : str
-            ダンパー定義のキーワード（例: "DVOD", "DSD"）。
-        """
-        if not hasattr(self, "_def_hint_label"):
-            return
-        selected = tbl.selectionModel().selectedRows()
-        if not selected:
-            self._def_hint_label.setText("")
-            return
-
-        row = selected[0].row()
-        field_idx = row + 1  # 1-indexed
-
-        # キーワードを参照するためにddef名からキーワードを取得
-        ddef_kw = keyword
-        # ddef_nameからkeywordを取得（s8iから）
-        if self._s8i:
-            for ddef in self._s8i.damper_defs:
-                if ddef.name == keyword:
-                    ddef_kw = ddef.keyword
-                    break
-
-        hints = _DAMPER_FIELD_HINTS.get(ddef_kw, {})
-        hint_text = hints.get(field_idx)
-
-        # フィールド名を取得
-        field_labels = _get_damper_field_labels(ddef_kw)
-        field_label = field_labels.get(field_idx, f"フィールド {field_idx}")
-
-        if hint_text:
-            self._def_hint_label.setText(
-                f"<b>#{field_idx} {field_label.split('（')[0].split('(')[0].strip()}</b><br>"
-                f"<span style='color:#4a148c;'>{hint_text.replace(chr(10), '<br>')}</span>"
-            )
-            self._def_hint_label.setTextFormat(Qt.RichText)
-        else:
-            self._def_hint_label.setText(
-                f"<b>#{field_idx}</b>  {field_label}"
-            )
-            self._def_hint_label.setTextFormat(Qt.RichText)
 
     def _open_kdb_browser(self, ddef) -> None:
         """k-DB ブラウザを開き、選択したパラメータをダンパー定義テーブルに反映します。"""
