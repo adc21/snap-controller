@@ -51,6 +51,7 @@ class Project:
         self.name: str = name
         self.snap_exe_path: str = ""
         self.snap_work_dir: str = ""
+        self.snap_wave_dir: str = ""
         self.s8i_path: str = ""
         self.s8i_model: Optional[S8iModel] = None
         self.cases: List[AnalysisCase] = []
@@ -71,24 +72,48 @@ class Project:
 
     def load_s8i(self, path: str) -> S8iModel:
         """
-        .s8i ファイルを読み込んでパースします。
+        .s8i または .NAP ファイルを読み込んでパースします。
+
+        .NAP を渡した場合は SNAP.exe の GUI 自動化で同一フォルダに .s8i を
+        生成し、その s8i をパースします (SNAP は NAP→s8i 変換 CLI を持たない)。
 
         Parameters
         ----------
         path : str
-            .s8i ファイルのパス。
+            .s8i または .NAP ファイルのパス。
 
         Returns
         -------
         S8iModel
             パースされたモデルオブジェクト。
         """
-        self.s8i_path = str(path)
-        self.s8i_model = parse_s8i(path)
+        src = Path(path)
+        if src.suffix.lower() == ".nap":
+            s8i_path = self._convert_nap_to_s8i(src)
+        else:
+            s8i_path = src
+        self.s8i_path = str(s8i_path)
+        self.s8i_model = parse_s8i(s8i_path)
         if not self.name or self.name == "新規プロジェクト":
-            self.name = self.s8i_model.title or Path(path).stem
+            self.name = self.s8i_model.title or Path(s8i_path).stem
         self._touch()
         return self.s8i_model
+
+    def _convert_nap_to_s8i(self, nap_path: Path) -> Path:
+        """NAP を SNAP.exe 経由で s8i に変換し、生成パスを返す。
+
+        SNAP.exe のパスはプロジェクト設定 ``snap_exe_path`` を優先し、
+        未設定時は :data:`controller.nap_converter.DEFAULT_SNAP_EXE` を使う。
+        """
+        from controller.nap_converter import (
+            DEFAULT_SNAP_EXE,
+            convert_nap_to_s8i,
+        )
+
+        out = nap_path.with_suffix(".s8i")
+        snap_exe = self.snap_exe_path or DEFAULT_SNAP_EXE
+        logger.info("NAP→s8i 変換: %s → %s (SNAP=%s)", nap_path, out, snap_exe)
+        return convert_nap_to_s8i(nap_path, out, snap_exe=snap_exe)
 
     @property
     def has_s8i(self) -> bool:
@@ -233,6 +258,7 @@ class Project:
             "name": self.name,
             "snap_exe_path": self.snap_exe_path,
             "snap_work_dir": self.snap_work_dir,
+            "snap_wave_dir": self.snap_wave_dir,
             "s8i_path": self.s8i_path,
             "created_at": self.created_at,
             "updated_at": self.updated_at,
@@ -263,6 +289,7 @@ class Project:
         proj = cls(name=data.get("name", fp.stem))
         proj.snap_exe_path = data.get("snap_exe_path", "")
         proj.snap_work_dir = data.get("snap_work_dir", "")
+        proj.snap_wave_dir = data.get("snap_wave_dir", "")
         proj.s8i_path = data.get("s8i_path", data.get("model_path", ""))
         proj.created_at = data.get("created_at", "")
         proj.updated_at = data.get("updated_at", "")

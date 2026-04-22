@@ -24,6 +24,7 @@ SNAP の自動バッチ実行機能（`/BD` フラグ）を利用して、複数
 - **バッチキュー管理** — 複数ケースの実行状況をキュー形式でリアルタイムに把握
 - **複数ケース管理** — ダンパー種別・パラメータを変えた複数ケースをテーブルで一括管理
 - **複数地震波対応** — 複数の入力地震波を一括管理し、全波の最大値で評価
+- **NAP / s8i 両対応** — SNAP のバイナリ入力 `.NAP` も読み込み可能（内部で自動的に `.s8i` へ変換）
 - **入力バリデーション** — 解析実行前に入力値の整合性を自動チェック
 - **デモ実行** — SNAP が手元になくてもモックデータで UI を確認可能
 
@@ -119,10 +120,16 @@ pipenv shell
 | matplotlib | >=3.7.0 | グラフ描画 |
 | numpy | >=1.24.0 | 数値計算 |
 | pandas | >=2.0.0 | データ処理 |
+| scipy | >=1.10.0 | 最適化・FFT・信号処理 |
 | Pillow | >=9.0.0 | 画像処理 |
 | pyqtdarktheme | >=2.1.0 | ダーク/ライトテーマ |
 | qtawesome | >=1.2.0 | アイコン |
 | openpyxl | >=3.1.0 | Excel 出力 |
+| pywinauto ⚙ | >=0.6.8 | `.NAP` 読み込み時の SNAP.exe GUI 自動操作（Windows 限定） |
+| pywin32 ⚙ | >=306   | クリップボード／ウィンドウ制御（Windows 限定） |
+
+> ⚙ の 2 つは `.NAP` ファイルを読み込む場合のみ必要です。`.s8i` のみ扱う場合は無くても動作します。
+> Windows 環境では `pipenv install` / `pip install -r requirements.txt` で自動的に入ります。
 
 ---
 
@@ -147,9 +154,16 @@ python run_app.py
 
 > **work フォルダ**は SNAP がインストールされたユーザーフォルダ内にある `SNAPV8\work` です。解析結果の読み取りに使用します。
 
-### 2. .s8i ファイルを読み込む
+### 2. 入力ファイル (.s8i / .NAP) を読み込む
 
-ファイルメニュー「モデルファイルを開く」から、SNAP の入力ファイル（`.s8i`）を選択します。
+STEP1「モデル設定」の **「📂 入力ファイルを読み込む… (.s8i / .NAP)」** ボタン、またはファイルメニュー「モデルファイルを開く」から、SNAP の入力ファイルを選択します。
+
+| 拡張子 | 種類 | 読み込み方式 |
+|---|---|---|
+| `.s8i` | テキスト入力ファイル | そのままパース |
+| `.NAP` | SNAP バイナリ | SNAP.exe を自動起動し `.s8i` へ変換 (約 20-30 秒) |
+
+> `.NAP` を選択すると、変換中に「NAP → s8i 変換中」ダイアログが表示されます（操作不要で自動的に閉じます）。変換後の `.s8i` は同じフォルダに生成されます。
 
 ### 3. 解析ケースを作成・実行する
 
@@ -276,6 +290,7 @@ snap-controller/
     ├── result.py               # 解析結果パーサー（Floor*.txt / Story*.txt）
     ├── updater.py              # .s8i ファイルパラメータ書き換え
     ├── executor.py             # バッチ実行エンジン（BatchExecutor）
+    ├── nap_converter.py        # .NAP → .s8i 変換（SNAP.exe GUI 自動操作）
     └── _path.py                # SNAP work ディレクトリパス管理
 ```
 
@@ -324,6 +339,21 @@ print(res.max_story_drift)  # {2: 0.0266, ...} 最大層間変形角 [rad]
 print(res.shear_coeff)      # {2: 0.046, ...}  せん断力係数
 print(res.max_otm)          # {2: 181.4, ...}  最大転倒モーメント [kN·m]
 ```
+
+### nap_converter — .NAP → .s8i 変換
+
+```python
+from controller.nap_converter import convert_nap_to_s8i
+
+s8i_path = convert_nap_to_s8i(
+    nap_path=r"path\to\model.NAP",
+    out_s8i_path=r"path\to\model.s8i",
+    # snap_exe=r"C:\Program Files\SNAP Ver.8\Snap.exe",  # 省略時はデフォルト
+)
+print(f"生成されたファイル: {s8i_path}")
+```
+
+> SNAP.exe を pywinauto で GUI 操作して変換するため、**Windows 環境のみ**で動作します。変換中に SNAP.exe のウィンドウが一瞬表示されます（自動で閉じます）。
 
 ### BatchExecutor — バッチ実行エンジン
 

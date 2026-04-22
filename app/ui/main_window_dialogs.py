@@ -398,6 +398,46 @@ class _MainWindowDialogsMixin:
                     8000,
                 )
 
+    def _open_impulse_response_dialog(self) -> None:
+        """インパルス応答解析ケース作成ダイアログを開きます。"""
+        if self._project is None:
+            QMessageBox.warning(
+                self, "プロジェクト未読込",
+                "プロジェクトを読み込んでから実行してください。",
+            )
+            return
+
+        if not self._project.cases:
+            QMessageBox.warning(
+                self, "ケース未作成",
+                "ベースとなる解析ケースが存在しません。\n"
+                "先に .s8i を読み込み、ケースを追加してください。",
+            )
+            return
+
+        base_case = None
+        case_id = self._case_table.selected_case_id()
+        if case_id:
+            base_case = self._project.get_case(case_id)
+
+        from .impulse_response_dialog import ImpulseResponseDialog
+        dlg = ImpulseResponseDialog(
+            project=self._project, base_case=base_case, parent=self,
+        )
+        if dlg.exec():
+            new_case = dlg.created_case
+            if new_case:
+                self._project.add_case(new_case)
+                self._case_table.refresh()
+                self._project._touch()
+                self._log.append_line(
+                    f"=== インパルス応答ケースを追加: 「{new_case.name}」 ==="
+                )
+                self.statusBar().showMessage(
+                    f"インパルス応答ケースを追加しました — 「{new_case.name}」",
+                    8000,
+                )
+
     def _open_case_compare(self) -> None:
         """2ケース詳細比較ダイアログを開きます。"""
         if self._project is None:

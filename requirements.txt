@@ -6,3 +6,6 @@ Pillow>=9.0.0
 pyqtdarktheme>=2.1.0
 qtawesome>=1.2.0
 openpyxl>=3.1.0
+# NAP→s8i 変換 (SNAP.exe GUI 自動操作) 用 — Windows 限定
+pywinauto>=0.6.8; sys_platform == "win32"
+pywin32>=306; sys_platform == "win32"

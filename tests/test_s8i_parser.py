@@ -276,6 +276,74 @@ class TestS8iDycCase:
         assert dyc.folder_name == "D4"
 
 
+class TestApplyImpulseMode:
+    """Test S8iModel.apply_impulse_mode for transfer function optimization."""
+
+    def _build_dyc_content(self) -> str:
+        # 20 fields: index 0=name, 1=run_flag, ..., 19=wave_name, 20=scale
+        # field: 0    1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20
+        rows = [
+            "CASE1,1,2,0,0,MIX,0,0,,D1,1,10,0,1,0,0,1,DL+LL,,WAVE_A,1",
+            "CASE2,1,2,0,0,MIX,0,0,,D1,1,10,0,1,0,0,1,DL+LL,,WAVE_B,1",
+            "CASE3,0,2,0,0,MIX,0,0,,D1,1,10,0,1,0,0,1,DL+LL,,WAVE_C,1",
+        ]
+        return "\n".join(f"DYC / {r}" for r in rows)
+
+    def test_target_case_becomes_run_and_wave_replaced(self, tmp_path):
+        s8i = tmp_path / "input.s8i"
+        s8i.write_text(self._build_dyc_content(), encoding="shift_jis")
+        model = parse_s8i(str(s8i))
+        assert len(model.dyc_cases) == 3
+
+        result = model.apply_impulse_mode(target_case_no=2, impulse_wave_name="IMP_X")
+
+        assert result is not None
+        assert result.case_no == 2
+        assert result.run_flag == 1
+        assert result.values[19] == "IMP_X"
+
+    def test_other_cases_are_disabled(self, tmp_path):
+        s8i = tmp_path / "input.s8i"
+        s8i.write_text(self._build_dyc_content(), encoding="shift_jis")
+        model = parse_s8i(str(s8i))
+
+        model.apply_impulse_mode(target_case_no=2, impulse_wave_name="IMP_X")
+
+        for c in model.dyc_cases:
+            if c.case_no == 2:
+                assert c.run_flag == 1
+            else:
+                assert c.run_flag == 0
+                assert c.values[1] == "0"
+
+    def test_unknown_case_returns_none(self, tmp_path):
+        s8i = tmp_path / "input.s8i"
+        s8i.write_text(self._build_dyc_content(), encoding="shift_jis")
+        model = parse_s8i(str(s8i))
+
+        result = model.apply_impulse_mode(target_case_no=99, impulse_wave_name="IMP")
+        assert result is None
+
+    def test_write_roundtrip(self, tmp_path):
+        """apply_impulse_mode の結果が write→parse で保持される。"""
+        s8i = tmp_path / "input.s8i"
+        s8i.write_text(self._build_dyc_content(), encoding="shift_jis")
+        model = parse_s8i(str(s8i))
+
+        model.apply_impulse_mode(target_case_no=1, impulse_wave_name="IMPULSE_RT")
+
+        out = tmp_path / "output.s8i"
+        model.write(str(out))
+        model2 = parse_s8i(str(out))
+
+        # ケース1: run_flag=1, wave_name=IMPULSE_RT
+        assert model2.dyc_cases[0].run_flag == 1
+        assert model2.dyc_cases[0].values[19] == "IMPULSE_RT"
+        # 他のケース: run_flag=0
+        assert model2.dyc_cases[1].run_flag == 0
+        assert model2.dyc_cases[2].run_flag == 0
+
+
 class TestS8iWriteDyc:
     """Test DYC write-back in S8iModel.write()."""
 

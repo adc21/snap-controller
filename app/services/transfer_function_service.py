@@ -699,6 +699,98 @@ class TransferFunctionPeakMinimizer:
 # ---------------------------------------------------------------------------
 
 
+def compute_impulse_transfer_function(
+    input_signal: np.ndarray,
+    output_signal: np.ndarray,
+    dt: float,
+    freq_range: Optional[Tuple[float, float]] = None,
+    input_label: str = "Impulse",
+    output_label: str = "Response",
+) -> TransferFunctionResult:
+    """インパルス入力用の直接 FFT 伝達関数を計算する。
+
+    インパルス波（ほとんどのサンプルがゼロ）に対しては、Welch 法はセグメントの
+    大半で入力がほぼ 0 になり条件数が悪化するため、全長の FFT を 1 回ずつ
+    計算して H(f) = Y(f) / X(f) を求めるほうが適切。
+
+    Parameters
+    ----------
+    input_signal : array
+        入力時刻歴（インパルス波形）。
+    output_signal : array
+        出力時刻歴（SNAP 応答）。
+    dt : float
+        時刻刻み [秒]。
+    freq_range : tuple, optional
+        結果として残す周波数範囲 (f_min, f_max) [Hz]。
+    input_label, output_label : str
+        ラベル。
+
+    Returns
+    -------
+    TransferFunctionResult
+    """
+    n = min(len(input_signal), len(output_signal))
+    if n < 2:
+        return TransferFunctionResult(
+            frequencies=np.array([0.0]),
+            gain_db=np.array([-200.0]),
+            phase_deg=np.array([0.0]),
+            input_label=input_label,
+            output_label=output_label,
+            peak_freq=0.0,
+            peak_gain_db=-200.0,
+        )
+    x = np.asarray(input_signal[:n], dtype=np.float64).ravel()
+    y = np.asarray(output_signal[:n], dtype=np.float64).ravel()
+
+    freqs = np.fft.rfftfreq(n, d=dt)
+    X = np.fft.rfft(x)
+    Y = np.fft.rfft(y)
+
+    eps = 1e-30
+    H = Y / (X + eps)
+    gain_db = 20.0 * np.log10(np.abs(H) + eps)
+    phase_deg = np.degrees(np.angle(H))
+
+    # 入力が実質ゼロの周波数は信頼できないので -200 dB に
+    x_thresh = eps * max(float(np.max(np.abs(X))), eps)
+    invalid = np.abs(X) <= x_thresh
+    gain_db[invalid] = -200.0
+
+    if freq_range is not None:
+        fmin, fmax = freq_range
+        mask = (freqs >= fmin) & (freqs <= fmax)
+        freqs = freqs[mask]
+        gain_db = gain_db[mask]
+        phase_deg = phase_deg[mask]
+
+    if len(freqs) == 0:
+        return TransferFunctionResult(
+            frequencies=np.array([0.0]),
+            gain_db=np.array([-200.0]),
+            phase_deg=np.array([0.0]),
+            input_label=input_label,
+            output_label=output_label,
+            peak_freq=0.0,
+            peak_gain_db=-200.0,
+        )
+
+    peak_idx = int(np.argmax(gain_db))
+    freq_res = float(freqs[1] - freqs[0]) if len(freqs) > 1 else 0.0
+
+    return TransferFunctionResult(
+        frequencies=freqs,
+        gain_db=gain_db,
+        phase_deg=phase_deg,
+        input_label=input_label,
+        output_label=output_label,
+        peak_freq=float(freqs[peak_idx]),
+        peak_gain_db=float(gain_db[peak_idx]),
+        freq_resolution=freq_res,
+    )
+
+
 def compute_transfer_function_from_time_histories(
     input_time_history: np.ndarray,
     output_time_history: np.ndarray,

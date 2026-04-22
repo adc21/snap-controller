@@ -31,6 +31,7 @@ from PySide6.QtWidgets import (
     QMainWindow,
     QMessageBox,
     QProgressBar,
+    QProgressDialog,
     QPushButton,
     QSplitter,
     QStackedWidget,
@@ -200,8 +201,12 @@ class MainWindow(_MainWindowDialogsMixin, QMainWindow):
             next_primary=True,
         )
         self._step1_footer.set_next_enabled(False)
-        self._step1_footer.set_next_hint(".s8i ファイルを読み込むと STEP2 へ進めます")
-        self._step1_footer.setToolTip("STEP1でs8iファイルを読み込むとSTEP2へ進めます")
+        self._step1_footer.set_next_hint(
+            "入力ファイル (.s8i / .NAP) を読み込むと STEP2 へ進めます"
+        )
+        self._step1_footer.setToolTip(
+            "STEP1 で入力ファイル (.s8i / .NAP) を読み込むと STEP2 へ進めます"
+        )
         self._step1_footer.nextRequested.connect(lambda: self._sidebar.set_current_step(1))
         step1_layout.addWidget(self._step1_footer)
         return step1
@@ -376,7 +381,9 @@ class MainWindow(_MainWindowDialogsMixin, QMainWindow):
         _tab_defs = [
             (self._dashboard,      "fa5s.chart-pie",       "ダッシュボード",   True,  1),
             (self._chart,          "fa5s.chart-line",      "解析結果",         True,  1),
-            (self._binary_result,  "fa5s.exchange-alt",    "ケース比較",       True,  2),
+            # ケース比較タブは内部に伝達関数/時刻歴/ダンパー履歴など単一ケースでも
+            # 有用な子タブを含むため、1 ケースから有効化する (実比較は 2 件以上で可能)
+            (self._binary_result,  "fa5s.exchange-alt",    "ケース比較",       True,  1),
             (self._envelope_chart,    "fa5s.ruler-combined",  "エンベロープ",     True,  1),
             (self._radar_chart,       "fa5s.spider",          "レーダーチャート", True,  2),
             (self._result_table,      "fa5s.table",           "結果テーブル",     True,  1),
@@ -670,6 +677,15 @@ class MainWindow(_MainWindowDialogsMixin, QMainWindow):
         act_injector.setShortcut("Ctrl+Shift+J")
         act_injector.triggered.connect(self._open_damper_injector)
         analysis_menu.addAction(act_injector)
+
+        act_impulse = QAction("インパルス応答解析(&U)…", self)
+        act_impulse.setShortcut("Ctrl+Shift+U")
+        act_impulse.setToolTip(
+            "選択した解析ケースをベースに、DYCケース1つを\n"
+            "インパルス波入力に差し替えた新ケースを作成します"
+        )
+        act_impulse.triggered.connect(self._open_impulse_response_dialog)
+        analysis_menu.addAction(act_impulse)
 
         act_compare = QAction("ケース詳細比較(&D)…", self)
         act_compare.setShortcut("Ctrl+D")
@@ -988,13 +1004,15 @@ class MainWindow(_MainWindowDialogsMixin, QMainWindow):
         # 2: ケース比較
         (
             "↔ ケース比較",
-            "複数ケースの解析結果を並べて比較できます。\n\n"
+            "ケースごとの詳細な時刻歴・履歴・伝達関数などを確認できます。\n"
+            "複数ケースがある場合は最大応答値を並べて比較します。\n\n"
             "【見方】\n"
-            "・各ケースの最大応答値を棒グラフで並べて比較します\n"
-            "・凡例の色はケース名に対応しています\n"
-            "・グラフ上部で比較する指標（変位/速度/加速度/層間変形角）を選択できます\n\n"
+            "・左パネルでケースを選択（複数選択可）すると右側に結果が表示されます\n"
+            "・サブタブで「固有値解析／時刻歴応答／層応答／ダンパー履歴／伝達関数」などを切替\n"
+            "・複数ケース選択時は各ケースの最大応答値を並べて比較できます\n\n"
             "【活用ヒント】\n"
-            "「ベースライン（ダンパーなし）」を含めて比較すると制振効果が分かりやすくなります。"
+            "・1 ケースでも伝達関数・履歴ループ・時刻歴などの詳細分析に使えます\n"
+            "・「ベースライン（ダンパーなし）」を含めて比較すると制振効果が分かりやすくなります"
         ),
         # 3: エンベロープ
         (
@@ -1312,7 +1330,7 @@ class MainWindow(_MainWindowDialogsMixin, QMainWindow):
             self._step1_footer.set_next_enabled(model_loaded)
             self._step1_footer.setToolTip(
                 "" if model_loaded
-                else "STEP1でs8iファイルを読み込むとSTEP2へ進めます"
+                else "STEP1 で入力ファイル (.s8i / .NAP) を読み込むと STEP2 へ進めます"
             )
         has_cases = total_cases > 0
         if hasattr(self, "_step2_footer"):
@@ -1628,30 +1646,83 @@ class MainWindow(_MainWindowDialogsMixin, QMainWindow):
         # 新規プロジェクトは結果なし
         self._update_result_tabs(result_count=0)
 
+    def _load_input_file_with_feedback(self, path: str):
+        """project.load_s8i() を UI フィードバック付きで呼び出す。
+
+        .NAP の場合は SNAP.exe 経由の変換が走って 20～30 秒かかるため、
+        キャンセルボタン無しの不定進捗ダイアログ + ウェイトカーソル +
+        ステータスメッセージで可視化する。ダイアログは変換完了時に自動で閉じる
+        (OK ボタンを押す操作は不要)。
+        """
+        is_nap = path.lower().endswith(".nap")
+        progress: QProgressDialog | None = None
+        if is_nap:
+            progress = QProgressDialog(
+                f"NAP ファイルを s8i に変換しています…\n\n"
+                f"対象: {Path(path).name}\n"
+                f"所要時間: 最大約 30 秒 (SNAP.exe 経由)\n\n"
+                f"変換が終わると自動で閉じます。",
+                None,          # キャンセルボタン無し (第2引数 None)
+                0, 0,          # 不定進捗 (min=max=0)
+                self,
+            )
+            progress.setWindowTitle("NAP → s8i 変換中")
+            progress.setWindowModality(Qt.ApplicationModal)
+            progress.setMinimumDuration(0)   # 即時表示
+            progress.setAutoClose(False)
+            progress.setAutoReset(False)
+            # 変換中は SNAP.exe がフォアグラウンドに出るため、
+            # 常時最前面にしてダイアログを見失わないようにする
+            progress.setWindowFlag(Qt.WindowStaysOnTopHint, True)
+            # タイトルバーの閉じる(X)も無効にする (キャンセル手段を一切与えない)
+            progress.setWindowFlag(Qt.WindowCloseButtonHint, False)
+            progress.show()
+            progress.raise_()
+            progress.activateWindow()
+            self.statusBar().showMessage(
+                f"⏳ NAP→s8i 変換中 (SNAP.exe 起動): {Path(path).name}  …最大 30 秒"
+            )
+            self._log.append_line(
+                f"=== NAP→s8i 変換開始: {path} ==="
+            )
+            QApplication.setOverrideCursor(Qt.WaitCursor)
+            QApplication.processEvents()
+        try:
+            return self._project.load_s8i(path)
+        finally:
+            if is_nap:
+                QApplication.restoreOverrideCursor()
+                if progress is not None:
+                    progress.close()
+                    progress.deleteLater()
+
     def _load_s8i_file(self) -> None:
-        """入力ファイル (.s8i) を選択して読み込みます。"""
+        """入力ファイル (.s8i / .NAP) を選択して読み込みます。"""
         if self._project is None:
             return
         path, _ = QFileDialog.getOpenFileName(
             self,
             "SNAP 入力ファイルを選択",
             self._project.s8i_path or "",
-            "SNAP 入力ファイル (*.s8i);;すべてのファイル (*)",
+            "SNAP 入力ファイル (*.s8i *.nap *.NAP);;テキスト入力 (*.s8i);;"
+            "NAP バイナリ (*.nap *.NAP);;すべてのファイル (*)",
         )
         if not path:
             return
         try:
             old_s8i = self._project.s8i_path
-            model = self._project.load_s8i(path)
+            model = self._load_input_file_with_feedback(path)
+            # NAP→s8i 変換後は project.s8i_path に解決後のパスが入っている
+            resolved_s8i = self._project.s8i_path or path
             # ロード成功後すぐに状態を確定させる（後続処理で例外が起きても反映される）
             self._case_table.set_model_loaded(True)
             self._model_info.set_model(model)
-            self._file_preview.load_file(path)
+            self._file_preview.load_file(resolved_s8i)
             # s8i が変更された場合は全ケースをリセット
-            if old_s8i and old_s8i != path:
-                self._reset_all_cases_for_new_s8i(path)
+            if old_s8i and old_s8i != resolved_s8i:
+                self._reset_all_cases_for_new_s8i(resolved_s8i)
                 self._log.append_line(
-                    f"  [INFO] s8iファイルが変更されたため全ケースをリセットしました: {old_s8i} → {path}"
+                    f"  [INFO] s8iファイルが変更されたため全ケースをリセットしました: {old_s8i} → {resolved_s8i}"
                 )
             self._case_table.refresh()
             self._update_title()
@@ -1670,6 +1741,7 @@ class MainWindow(_MainWindowDialogsMixin, QMainWindow):
             self._update_sidebar_badges()
             self._sidebar.set_current_step(1)
             # UX改善⑤新: 読み込んだファイルを最近使ったs8iファイル履歴に追加
+            # (NAP で開いた場合はユーザーが選んだ .NAP をそのまま履歴に残す)
             self._model_info.add_recent_s8i(path)
             self.statusBar().showMessage(
                 f"✅ モデル読み込み完了: {Path(path).name}  "
@@ -1683,21 +1755,22 @@ class MainWindow(_MainWindowDialogsMixin, QMainWindow):
             )
 
     def _load_s8i_from_path(self, path: str) -> None:
-        """UX改善D: ドロップされた .s8i ファイルを直接読み込みます。"""
+        """UX改善D: ドロップされた .s8i / .NAP ファイルを直接読み込みます。"""
         if not path or self._project is None:
             return
         try:
             old_s8i = self._project.s8i_path
-            model = self._project.load_s8i(path)
+            model = self._load_input_file_with_feedback(path)
+            resolved_s8i = self._project.s8i_path or path
             # ロード成功後すぐに状態を確定させる（後続処理で例外が起きても反映される）
             self._case_table.set_model_loaded(True)
             self._model_info.set_model(model)
-            self._file_preview.load_file(path)
+            self._file_preview.load_file(resolved_s8i)
             # s8i が変更された場合は全ケースをリセット
-            if old_s8i and old_s8i != path:
-                self._reset_all_cases_for_new_s8i(path)
+            if old_s8i and old_s8i != resolved_s8i:
+                self._reset_all_cases_for_new_s8i(resolved_s8i)
                 self._log.append_line(
-                    f"  [INFO] s8iファイルが変更されたため全ケースをリセットしました: {old_s8i} → {path}"
+                    f"  [INFO] s8iファイルが変更されたため全ケースをリセットしました: {old_s8i} → {resolved_s8i}"
                 )
             self._case_table.refresh()
             self._update_title()
@@ -2279,5 +2352,5 @@ class MainWindow(_MainWindowDialogsMixin, QMainWindow):
         s = QSettings(ORG_NAME, APP_NAME)
         s.setValue("geometry", self.saveGeometry())
         s.setValue("windowState", self.saveState())
-        self._autosave.stop()
+        self._autosave.shutdown()
         event.accept()

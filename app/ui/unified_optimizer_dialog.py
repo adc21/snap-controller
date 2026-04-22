@@ -42,6 +42,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QHeaderView,
     QLabel,
+    QLineEdit,
     QMessageBox,
     QProgressBar,
     QPushButton,
@@ -105,7 +106,11 @@ _OBJECTIVE_ITEMS = [
     ("shear_coeff", "せん断力係数", "—"),
     ("max_otm", "最大転倒モーメント", "kN·m"),
     ("total_damper_count", "総ダンパー本数", "本"),
+    ("transfer_function_peak", "伝達関数ピーク (1次モード付近)", "dB"),
 ]
+
+#: 伝達関数最適化モードの目的関数キー
+_TF_OBJECTIVE_KEY = "transfer_function_peak"
 
 # 探索手法 (key, label, multi_objective_ok)
 _METHOD_ITEMS = [
@@ -229,10 +234,10 @@ class UnifiedOptimizerDialog(QDialog):
         for key, val in params.items():
             if key.startswith("field_"):
                 try:
-                    idx_0 = int(key.replace("field_", ""))
-                    idx_1 = str(idx_0 + 1)  # damper_params は 1-indexed
+                    field_idx = int(key.replace("field_", ""))
+                    # damper_params キー "N" = values[N]（values[0]=名前）
                     if def_name:
-                        damper_params.setdefault(def_name, {})[idx_1] = str(val)
+                        damper_params.setdefault(def_name, {})[str(field_idx)] = str(val)
                 except (ValueError, TypeError):
                     logger.debug("field key 変換失敗: %s", key)
 
@@ -297,6 +302,7 @@ class UnifiedOptimizerDialog(QDialog):
         self._build_floor_table(left_layout)
         self._build_variable_count_label(left_layout)
         self._build_objectives(left_layout)
+        self._build_tf_settings(left_layout)
         self._build_constraints(left_layout)
         self._build_method_section(left_layout)
         self._build_advanced_options(left_layout)
@@ -447,7 +453,7 @@ class UnifiedOptimizerDialog(QDialog):
         self._field_rows.append({
             "cb": cb,
             "field_idx_1based": field_idx_1based,
-            "val_idx_0based": val_idx,
+            "val_idx_1based": val_idx,
             "label": label_text,
             "current": current,
             "lo_spin": lo_spin,
@@ -611,6 +617,100 @@ class UnifiedOptimizerDialog(QDialog):
         gl.addRow("目的関数 2:", row2)
 
         layout.addWidget(group)
+
+    def _build_tf_settings(self, layout: QVBoxLayout) -> None:
+        """伝達関数最適化設定パネル（obj1=伝達関数 選択時のみ表示）。"""
+        self._tf_group = QGroupBox("伝達関数最適化設定")
+        gl = QFormLayout(self._tf_group)
+
+        # ベースケース選択
+        self._tf_base_case_combo = QComboBox()
+        self._populate_tf_base_case_combo()
+        self._tf_base_case_combo.setToolTip(
+            "インパルス波に差し替える対象の DYC ケース。"
+            "他のケースは実行しない（run_flag=0）に設定されます。"
+        )
+        gl.addRow("ベースケース:", self._tf_base_case_combo)
+
+        # 応答タイプ
+        self._tf_response_combo = QComboBox()
+        self._tf_response_combo.addItem("相対変位 (相対変位伝達関数)", "rel_disp")
+        self._tf_response_combo.addItem("絶対加速度 (絶対加速度伝達関数)", "abs_acc")
+        gl.addRow("応答タイプ:", self._tf_response_combo)
+
+        # 応答層
+        self._tf_floor_spin = QSpinBox()
+        self._tf_floor_spin.setRange(-1, 999)
+        self._tf_floor_spin.setValue(-1)
+        self._tf_floor_spin.setToolTip(
+            "Floor.hst のレコードインデックス。-1=最上階を自動選択。"
+        )
+        gl.addRow("応答階インデックス:", self._tf_floor_spin)
+
+        # インパルス加速度
+        self._tf_amax_spin = QDoubleSpinBox()
+        self._tf_amax_spin.setDecimals(1)
+        self._tf_amax_spin.setRange(1.0, 1.0e6)
+        self._tf_amax_spin.setValue(1000.0)
+        self._tf_amax_spin.setSuffix(" gal")
+        gl.addRow("インパルス最大加速度:", self._tf_amax_spin)
+
+        # dt
+        self._tf_dt_spin = QDoubleSpinBox()
+        self._tf_dt_spin.setDecimals(4)
+        self._tf_dt_spin.setRange(0.0001, 1.0)
+        self._tf_dt_spin.setValue(0.02)
+        self._tf_dt_spin.setSuffix(" s")
+        gl.addRow("時刻刻み:", self._tf_dt_spin)
+
+        # 周波数範囲スケール
+        self._tf_scale_spin = QDoubleSpinBox()
+        self._tf_scale_spin.setDecimals(2)
+        self._tf_scale_spin.setRange(1.01, 50.0)
+        self._tf_scale_spin.setValue(5.0)
+        self._tf_scale_spin.setToolTip(
+            "1次周期 T1 に対する探索周波数範囲の倍率。\n"
+            "範囲は [1/(scale·T1), scale/T1] Hz"
+        )
+        gl.addRow("周波数範囲倍率 (1次Tx):", self._tf_scale_spin)
+
+        # wave ディレクトリ
+        wave_row = QHBoxLayout()
+        self._tf_wave_dir_edit = QLineEdit()
+        if self._project is not None and getattr(self._project, "snap_wave_dir", ""):
+            self._tf_wave_dir_edit.setText(self._project.snap_wave_dir)
+        self._tf_wave_dir_edit.setPlaceholderText(
+            "例: D:/Kakemoto/kozosystem/SNAPV8/wave"
+        )
+        wave_row.addWidget(self._tf_wave_dir_edit, 1)
+        browse_btn = QPushButton("参照…")
+        browse_btn.clicked.connect(self._on_browse_wave_dir)
+        wave_row.addWidget(browse_btn)
+        gl.addRow("SNAP waveフォルダ:", wave_row)
+
+        # デフォルトは非表示
+        self._tf_group.setVisible(False)
+        layout.addWidget(self._tf_group)
+
+    def _populate_tf_base_case_combo(self) -> None:
+        """ベース DYC ケース一覧を更新。"""
+        self._tf_base_case_combo.clear()
+        if self._project is None or self._project.s8i_model is None:
+            return
+        for c in self._project.s8i_model.dyc_cases:
+            label = f"D{c.case_no}: {c.name}"
+            self._tf_base_case_combo.addItem(label, c.case_no)
+
+    def _on_browse_wave_dir(self) -> None:
+        initial = self._tf_wave_dir_edit.text() or ""
+        path = QFileDialog.getExistingDirectory(
+            self, "SNAP wave フォルダを選択", initial
+        )
+        if path:
+            self._tf_wave_dir_edit.setText(path)
+            if self._project is not None:
+                self._project.snap_wave_dir = path
+                self._project.modified = True
 
     def _build_constraints(self, layout: QVBoxLayout) -> None:
         """制約条件パネル。PerformanceCriteria の有効項目を自動読込。"""
@@ -883,7 +983,7 @@ class UnifiedOptimizerDialog(QDialog):
         for row_info in getattr(self, "_field_rows", []):
             cb = row_info.get("cb")
             if cb is not None and cb.isChecked():
-                key = f"field_{row_info['val_idx_0based']}"
+                key = f"field_{row_info['val_idx_1based']}"
                 unit = row_info.get("unit") or ""
                 unit_str = f" [{unit}]" if unit and unit != "—" else ""
                 items.append((key, f"◇ {row_info['label']}{unit_str}"))
@@ -1026,6 +1126,7 @@ class UnifiedOptimizerDialog(QDialog):
         self._comparison_btn.clicked.connect(self._on_show_comparison)
 
         self._obj2_enabled.toggled.connect(self._on_obj2_toggled)
+        self._obj1_combo.currentIndexChanged.connect(self._on_obj1_changed)
         self._def_combo.currentIndexChanged.connect(self._on_damper_def_changed)
         self._iter_spin.valueChanged.connect(self._update_estimate)
         self._method_combo.currentIndexChanged.connect(self._on_method_changed)
@@ -1051,6 +1152,38 @@ class UnifiedOptimizerDialog(QDialog):
     def _on_obj2_toggled(self, checked: bool) -> None:
         self._obj2_combo.setEnabled(checked)
         self._on_method_changed()
+
+    def _on_obj1_changed(self) -> None:
+        """目的関数 1 変更時のハンドラ。
+
+        伝達関数モードでは:
+        - 第2目的を無効化（単目的強制）
+        - 制約条件を無視（TF 目的のみ最適化）
+        - TF 設定パネルを表示
+        """
+        is_tf = self._obj1_combo.currentData() == _TF_OBJECTIVE_KEY
+        # TF 設定パネル
+        if hasattr(self, "_tf_group"):
+            self._tf_group.setVisible(is_tf)
+            if is_tf:
+                # ベースケース一覧を最新化
+                self._populate_tf_base_case_combo()
+
+        # 第2目的
+        if is_tf:
+            self._obj2_enabled.setChecked(False)
+            self._obj2_enabled.setEnabled(False)
+            self._obj2_combo.setEnabled(False)
+        else:
+            self._obj2_enabled.setEnabled(True)
+
+        # 制約条件（TF モードでは無視）
+        if hasattr(self, "_constraints_group"):
+            self._constraints_group.setEnabled(not is_tf)
+            if is_tf:
+                self._constraints_group.setTitle("制約条件 (TFモードでは無視)")
+            else:
+                self._constraints_group.setTitle("制約条件")
 
     def _on_damper_def_changed(self) -> None:
         self._populate_param_table()
@@ -1375,7 +1508,7 @@ class UnifiedOptimizerDialog(QDialog):
         """パラメータキー→日本語ラベルのマッピングを構築。"""
         label_map: Dict[str, str] = {}
         for row_info in self._field_rows:
-            key = f"field_{row_info['val_idx_0based']}"
+            key = f"field_{row_info['val_idx_1based']}"
             label_map[key] = row_info["label"]
         for row_info in self._floor_rows:
             key = f"floor_count_{row_info['floor_key']}"
@@ -1402,7 +1535,7 @@ class UnifiedOptimizerDialog(QDialog):
                 skipped.append(f"{row_info['label']} (下限{lo} >= 上限{hi})")
                 continue
             # キー: field_{0-based index}
-            key = f"field_{row_info['val_idx_0based']}"
+            key = f"field_{row_info['val_idx_1based']}"
             step = self._suggest_step(lo, hi)
             params.append(ParameterRange(
                 key=key,
@@ -1449,12 +1582,17 @@ class UnifiedOptimizerDialog(QDialog):
         method = self._method_combo.currentData()
         max_iter = self._iter_spin.value()
 
-        constraints = {}
-        for key, spin in self._constraint_widgets.items():
-            constraints[key] = spin.value()
+        constraints: Dict[str, float] = {}
+        is_tf_mode = obj1_key == _TF_OBJECTIVE_KEY
+        if not is_tf_mode:
+            for key, spin in self._constraint_widgets.items():
+                constraints[key] = spin.value()
 
         dd = self._selected_damper_def()
         damper_type = dd.keyword if dd else ""
+
+        # TF モードでは性能基準も無視（必須キー欠損で全 infeasible になるのを避ける）
+        config_criteria = None if is_tf_mode else self._criteria
 
         config = OptimizationConfig(
             objective_key=obj1_key,
@@ -1463,7 +1601,7 @@ class UnifiedOptimizerDialog(QDialog):
             constraints=constraints,
             method=method,
             max_iterations=max_iter,
-            criteria=self._criteria,
+            criteria=config_criteria,
             damper_type=damper_type,
             base_case=self._base_case,
             snap_timeout=self._timeout_spin.value(),
@@ -1502,7 +1640,7 @@ class UnifiedOptimizerDialog(QDialog):
         return config
 
     def _create_evaluator(self, params: List[ParameterRange]):
-        """create_unified_evaluator で SNAP 評価関数を構築。"""
+        """SNAP 評価関数を構築。目的関数に応じて通常 or 伝達関数 evaluator を返す。"""
         if not self._base_case:
             return None
 
@@ -1511,6 +1649,10 @@ class UnifiedOptimizerDialog(QDialog):
 
         def log_cb(msg: str) -> None:
             logger.info(msg)
+
+        # 伝達関数モード
+        if self._obj1_combo.currentData() == _TF_OBJECTIVE_KEY:
+            return self._create_tf_evaluator(params, def_name, log_cb)
 
         return create_unified_evaluator(
             snap_exe_path=self._snap_exe_path,
@@ -1521,6 +1663,84 @@ class UnifiedOptimizerDialog(QDialog):
             timeout=self._timeout_spin.value(),
             damper_def_name=def_name,
         )
+
+    def _create_tf_evaluator(
+        self,
+        params: List[ParameterRange],
+        damper_def_name: str,
+        log_cb,
+    ):
+        """伝達関数ピーク最小化用 evaluator を構築。"""
+        from app.services.transfer_function_evaluator import (
+            TransferFunctionEvalConfig,
+            TransferFunctionEvaluator,
+        )
+        from app.services.snap_evaluator import (
+            _build_param_field_map,
+            _build_floor_rd_map_for_counts,
+        )
+
+        wave_dir = self._tf_wave_dir_edit.text().strip()
+        if not wave_dir:
+            QMessageBox.warning(
+                self, "設定不足", "SNAP wave フォルダを指定してください。"
+            )
+            return None
+        target_case_no = self._tf_base_case_combo.currentData()
+        if target_case_no is None:
+            QMessageBox.warning(
+                self, "設定不足", "ベース DYC ケースを選択してください。"
+            )
+            return None
+
+        exe_path = self._snap_exe_path or self._base_case.snap_exe_path
+        model_path = self._base_case.model_path
+        if not exe_path or not model_path:
+            QMessageBox.warning(
+                self, "設定不足",
+                "SNAP.exe またはモデルファイルパスが未設定です。"
+            )
+            return None
+
+        phys_ranges = [pr for pr in params if not pr.is_floor_count]
+        count_ranges = [pr for pr in params if pr.is_floor_count]
+        param_field_map = _build_param_field_map(
+            phys_ranges, damper_def_name, self._base_case
+        )
+        floor_rd_map = _build_floor_rd_map_for_counts(
+            count_ranges, model_path, log_cb
+        )
+        rd_overrides = self._base_case.parameters.get("_rd_overrides", {})
+
+        cfg = TransferFunctionEvalConfig(
+            snap_exe_path=exe_path,
+            base_s8i_path=model_path,
+            snap_work_dir=self._snap_work_dir,
+            snap_wave_dir=wave_dir,
+            target_case_no=int(target_case_no),
+            response_type=self._tf_response_combo.currentData(),
+            response_floor_index=self._tf_floor_spin.value(),
+            impulse_amax=self._tf_amax_spin.value(),
+            impulse_dt=self._tf_dt_spin.value(),
+            freq_range_scale=self._tf_scale_spin.value(),
+            damper_def_name=damper_def_name,
+            param_field_map=param_field_map,
+            floor_rd_map=floor_rd_map,
+            rd_overrides=rd_overrides,
+            timeout=self._timeout_spin.value(),
+        )
+        try:
+            evaluator = TransferFunctionEvaluator(cfg, log_callback=log_cb)
+        except (FileNotFoundError, ValueError) as e:
+            QMessageBox.warning(self, "評価関数エラー", str(e))
+            return None
+        log_cb(
+            f"[INFO] 伝達関数最適化モードで開始。\n"
+            f"  ベース D{cfg.target_case_no}, 応答={cfg.response_type}, "
+            f"Floor[{cfg.response_floor_index}], amax={cfg.impulse_amax}gal, "
+            f"dt={cfg.impulse_dt}s, 範囲倍率={cfg.freq_range_scale}"
+        )
+        return evaluator
 
     # ------------------------------------------------------------------
     # プロット
@@ -1601,7 +1821,7 @@ class UnifiedOptimizerDialog(QDialog):
         if key.startswith("field_"):
             val_idx = int(key.split("_", 1)[1])
             for row in getattr(self, "_field_rows", []):
-                if row.get("val_idx_0based") == val_idx:
+                if row.get("val_idx_1based") == val_idx:
                     unit = row.get("unit") or ""
                     unit_str = f" [{unit}]" if unit and unit != "—" else ""
                     return f"{row['label']}{unit_str}"
