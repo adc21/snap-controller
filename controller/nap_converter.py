@@ -102,6 +102,7 @@ def convert_nap_to_s8i(
         import win32clipboard
         import win32con
         import win32gui
+        import win32process
     except ImportError as e:
         raise NapConversionError(
             "NAP 変換には pywinauto / pywin32 が必要です。\n"
@@ -129,34 +130,64 @@ def convert_nap_to_s8i(
             time.sleep(0.02)
             win32api.keybd_event(m, 0, win32con.KEYEVENTF_KEYUP, 0)
 
-    def _kill_snap() -> None:
+    def _kill_snap(pid: Optional[int]) -> None:
+        """変換のために起動した SNAP.exe プロセスだけを終了する。
+
+        他の SNAP ウィンドウを巻き込まないよう PID 指定で taskkill を呼ぶ。
+        PID 不明時はキルを諦める (ユーザーの他作業を保護するため)。
+        """
+        if not pid:
+            logger.warning(
+                "変換用 SNAP の PID が不明なため自動終了をスキップしました。"
+                " 必要なら手動で SNAP ウィンドウを閉じてください。"
+            )
+            return
         try:
             subprocess.run(
-                ["taskkill", "/F", "/IM", "Snap.exe"],
+                ["taskkill", "/F", "/PID", str(pid)],
                 capture_output=True, timeout=10,
             )
         except Exception:
-            logger.debug("taskkill 失敗は無視", exc_info=True)
+            logger.debug("taskkill /PID %s 失敗は無視", pid, exc_info=True)
+
+    def _window_pid(h: int) -> Optional[int]:
+        try:
+            _tid, pid = win32process.GetWindowThreadProcessId(h)
+            return int(pid) if pid else None
+        except Exception:
+            return None
 
     logger.info("NAP 変換開始: %s → %s", nap, out)
 
+    target_pid: Optional[int] = None
     try:
-        # [1] SNAP 起動
+        # [1] SNAP 起動 (必ず新規プロセスを起こし PID を記録)
         app = Application(backend="uia").start(
             f'"{exe}" "{nap}"', wait_for_idle=False,
         )
+        try:
+            target_pid = int(app.process) if app.process else None
+        except Exception:
+            target_pid = None
+        logger.debug("変換用 SNAP PID=%s", target_pid)
 
-        # [2] メインウィンドウ検出
+        # [2] メインウィンドウ検出 (PID で絞り込み、既存の他 SNAP は無視)
         main = None
         hwnd: Optional[int] = None
         deadline = time.time() + load_timeout
         while time.time() < deadline:
             for w in Desktop(backend="uia").windows():
                 try:
-                    if w.class_name() == "SNAPV8_MainFrame":
-                        main = w
-                        hwnd = w.handle
-                        break
+                    if w.class_name() != "SNAPV8_MainFrame":
+                        continue
+                    w_hwnd = w.handle
+                    if target_pid is not None:
+                        if _window_pid(w_hwnd) != target_pid:
+                            # 既存の別 SNAP インスタンス — 触らない
+                            continue
+                    main = w
+                    hwnd = w_hwnd
+                    break
                 except Exception:
                     continue
             if main:
@@ -164,7 +195,7 @@ def convert_nap_to_s8i(
             time.sleep(0.5)
         if not main or hwnd is None:
             raise NapConversionError("SNAP メインウィンドウが見つかりません")
-        logger.debug("main HWND=0x%X", hwnd)
+        logger.debug("main HWND=0x%X (PID=%s)", hwnd, target_pid)
 
         # [3] NAP 読み込み待機 + フォアグラウンド化
         time.sleep(nap_load_wait)
@@ -259,7 +290,7 @@ def convert_nap_to_s8i(
 
     finally:
         time.sleep(0.5)
-        _kill_snap()
+        _kill_snap(target_pid)
 
 
 def _find_owned_dialog(main_hwnd: int, win32gui, win32con) -> Optional[int]:
