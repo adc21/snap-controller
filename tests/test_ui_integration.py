@@ -569,6 +569,109 @@ class TestDialogInstantiation:
         assert not warning_calls, f"ピーク変動しているのに警告: {warning_calls}"
         dlg.close()
 
+    def test_nontf_post_optimization_stagnation_warning(
+        self, qapp, monkeypatch
+    ):
+        """非 TF (max_drift) で全候補が同一値なら事後警告が出る
+        (bug 2026-04-22: TF だけでなく通常最適化でも no-op 停滞を検知)。"""
+        from app.services.optimizer import OptimizationCandidate
+        from app.ui.unified_optimizer_dialog import UnifiedOptimizerDialog
+        from PySide6.QtWidgets import QMessageBox
+
+        dlg = UnifiedOptimizerDialog()
+        # max_drift を目的関数に
+        for i in range(dlg._obj1_combo.count()):
+            if dlg._obj1_combo.itemData(i) == "max_drift":
+                dlg._obj1_combo.setCurrentIndex(i)
+                break
+        assert dlg._obj1_combo.currentData() == "max_drift"
+
+        # 3 候補すべて同一値 0.003 rad (相対差 0、絶対差 0)
+        for i in range(3):
+            dlg._candidates.append(OptimizationCandidate(
+                params={"field_8": 10.0 + i}, objective_value=0.003,
+                response_values={"max_drift": 0.003},
+                is_feasible=True, iteration=i,
+            ))
+
+        warning_calls: list[tuple[str, str]] = []
+        monkeypatch.setattr(
+            QMessageBox, "warning",
+            lambda *a, **k: warning_calls.append((a[1], a[2]))
+        )
+        dlg._maybe_warn_stagnation()
+        assert warning_calls, "全候補 max_drift が同値なのに警告なし"
+        title, msg = warning_calls[0]
+        assert "no-op" in title.lower() or "no-op" in msg
+        assert "変動係数" in msg or "疲労曲線" in msg
+        # dB 文字列が含まれないこと (非 TF なので単位の決め打ちはしない)
+        assert "dB" not in msg
+        dlg.close()
+
+    def test_nontf_post_optimization_no_warning_when_varying(
+        self, qapp, monkeypatch
+    ):
+        """非 TF で max_drift が通常に変動するなら警告なし (0.1% 超の変動)。"""
+        from app.services.optimizer import OptimizationCandidate
+        from app.ui.unified_optimizer_dialog import UnifiedOptimizerDialog
+        from PySide6.QtWidgets import QMessageBox
+
+        dlg = UnifiedOptimizerDialog()
+        for i in range(dlg._obj1_combo.count()):
+            if dlg._obj1_combo.itemData(i) == "max_drift":
+                dlg._obj1_combo.setCurrentIndex(i)
+                break
+
+        # 0.003 → 0.0033 → 0.0028 (相対差 ≈ 16%)
+        for i, d in enumerate([0.003, 0.0033, 0.0028]):
+            dlg._candidates.append(OptimizationCandidate(
+                params={"field_8": 10.0 + i}, objective_value=d,
+                response_values={"max_drift": d},
+                is_feasible=True, iteration=i,
+            ))
+
+        warning_calls: list[tuple[str, str]] = []
+        monkeypatch.setattr(
+            QMessageBox, "warning",
+            lambda *a, **k: warning_calls.append((a[1], a[2]))
+        )
+        dlg._maybe_warn_stagnation()
+        assert not warning_calls, f"変動しているのに警告: {warning_calls}"
+        dlg.close()
+
+    def test_nontf_post_optimization_warning_within_rel_tol(
+        self, qapp, monkeypatch
+    ):
+        """非 TF で相対差 < 1e-4 なら警告 (スケール独立判定)。"""
+        from app.services.optimizer import OptimizationCandidate
+        from app.ui.unified_optimizer_dialog import UnifiedOptimizerDialog
+        from PySide6.QtWidgets import QMessageBox
+
+        dlg = UnifiedOptimizerDialog()
+        for i in range(dlg._obj1_combo.count()):
+            if dlg._obj1_combo.itemData(i) == "max_drift":
+                dlg._obj1_combo.setCurrentIndex(i)
+                break
+
+        # 3.000 / 3.00005 / 3.00008 (相対差 ≈ 2.6e-5 < 1e-4)
+        for i, d in enumerate([3.000, 3.00005, 3.00008]):
+            dlg._candidates.append(OptimizationCandidate(
+                params={"field_8": 10.0 + i}, objective_value=d,
+                response_values={"max_drift": d},
+                is_feasible=True, iteration=i,
+            ))
+
+        warning_calls: list[tuple[str, str]] = []
+        monkeypatch.setattr(
+            QMessageBox, "warning",
+            lambda *a, **k: warning_calls.append((a[1], a[2]))
+        )
+        dlg._maybe_warn_stagnation()
+        assert warning_calls, (
+            "相対差 < 1e-4 だが警告なし (rel_tol が効いていない)"
+        )
+        dlg.close()
+
     def test_unified_optimizer_axis_selectors_exist(self, qapp):
         """X/Y軸セレクタが存在し、自動 + 反復番号 + 応答値の選択肢を持つ。"""
         from app.ui.unified_optimizer_dialog import UnifiedOptimizerDialog, _OBJECTIVE_ITEMS

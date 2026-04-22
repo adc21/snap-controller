@@ -779,3 +779,136 @@ class TestCreateUnifiedEvaluator:
         # 基数パラメータがあるのでログに表示
         assert any("基数パラメータ" in msg for msg in log_messages)
         assert any("統合評価モード" in msg for msg in log_messages)
+
+
+# ---------------------------------------------------------------------------
+# 停滞検知 (bug 2026-04-22: TF 以外でも結果が変わらないケースを警告)
+# ---------------------------------------------------------------------------
+
+class TestSnapEvaluatorStagnationDetection:
+    """SnapEvaluator._pick_stagnation_signal と stagnation_detected の検証。
+
+    __call__ の SNAP 実行は不可能なので、_stagnation (StagnationDetector)
+    に直接値を流し込んで挙動を検証する。
+    """
+
+    def _make_evaluator(self, tmp_path):
+        exe = tmp_path / "SNAP.exe"
+        exe.write_bytes(b"dummy")
+        s8i = tmp_path / "m.s8i"
+        s8i.write_bytes(b"dummy")
+        return SnapEvaluator(
+            snap_exe_path=str(exe),
+            base_s8i_path=str(s8i),
+            damper_def_name="",  # group check をスキップ
+        )
+
+    def test_stagnation_detected_false_initially(self, tmp_path):
+        ev = self._make_evaluator(tmp_path)
+        assert ev.stagnation_detected is False
+
+    def test_stagnation_detected_after_identical_drifts(self, tmp_path):
+        ev = self._make_evaluator(tmp_path)
+        ev._stagnation.record("p=1", 0.003)
+        ev._stagnation.record("p=2", 0.003)
+        assert not ev.stagnation_detected
+        ev._stagnation.record("p=3", 0.003)
+        assert ev.stagnation_detected
+
+    def test_stagnation_not_detected_when_drift_varies(self, tmp_path):
+        ev = self._make_evaluator(tmp_path)
+        ev._stagnation.record("p=1", 0.003)
+        ev._stagnation.record("p=2", 0.005)
+        ev._stagnation.record("p=3", 0.004)
+        assert not ev.stagnation_detected
+
+    def test_pick_signal_prefers_max_drift(self):
+        sig = SnapEvaluator._pick_stagnation_signal({
+            "max_drift": 0.003,
+            "max_acc": 2.5,
+            "max_disp": 0.08,
+        })
+        assert sig == pytest.approx(0.003)
+
+    def test_pick_signal_fallback_to_max_acc(self):
+        sig = SnapEvaluator._pick_stagnation_signal({
+            "max_drift": float("inf"),
+            "max_acc": 2.5,
+        })
+        assert sig == pytest.approx(2.5)
+
+    def test_pick_signal_returns_none_if_all_inf(self):
+        sig = SnapEvaluator._pick_stagnation_signal({
+            "max_drift": float("inf"),
+            "max_acc": float("nan"),
+        })
+        assert sig is None
+
+    def test_pick_signal_returns_none_if_empty(self):
+        assert SnapEvaluator._pick_stagnation_signal({}) is None
+
+
+class TestSnapEvaluatorDamperGroupCheckIntegration:
+    """__init__ でダンパーグループの整合性警告が出ることを確認。"""
+
+    def test_warns_when_group_missing_in_all_cases(self, tmp_path):
+        exe = tmp_path / "SNAP.exe"
+        exe.write_bytes(b"dummy")
+        s8i = tmp_path / "m.s8i"
+        content = (
+            "DVOD / IOD,0,0,0,,3,100,0,14,0,0,0,0,0,0,0,0,0,0,0,1,0,1\n"
+            "RD / IOD,1,2,1,IOD,0,0,0,0,0,1,0,0,1,,0,1,1,0,1\n"
+            "DYC / C1,1,2,0,0,,0,0,,D1,1,10,0,1,0,0,1,DL+LL,,WV,1\n"
+        )
+        s8i.write_text(content, encoding="shift_jis")
+
+        msgs = []
+        SnapEvaluator(
+            snap_exe_path=str(exe),
+            base_s8i_path=str(s8i),
+            damper_def_name="IOD",
+            log_callback=msgs.append,
+        )
+        warns = [m for m in msgs if "[WARN]" in m]
+        assert warns, f"damper group warn missing: {msgs}"
+        assert "IOD" in warns[0]
+
+    def test_info_when_group_matches(self, tmp_path):
+        exe = tmp_path / "SNAP.exe"
+        exe.write_bytes(b"dummy")
+        s8i = tmp_path / "m.s8i"
+        content = (
+            "DVOD / IOD,0,0,0,,3,100,0,14,0,0,0,0,0,0,0,0,0,0,0,1,0,1\n"
+            "RD / IOD,1,2,1,IOD,0,0,0,0,0,1,0,0,1,,0,1,1,0,1\n"
+            "DYC / C1,1,2,0,0,IOD,0,0,,D1,1,10,0,1,0,0,1,DL+LL,,WV,1\n"
+        )
+        s8i.write_text(content, encoding="shift_jis")
+
+        msgs = []
+        SnapEvaluator(
+            snap_exe_path=str(exe),
+            base_s8i_path=str(s8i),
+            damper_def_name="IOD",
+            log_callback=msgs.append,
+        )
+        warns = [m for m in msgs if "[WARN]" in m]
+        infos = [m for m in msgs if "[INFO]" in m and "整合性 OK" in m]
+        assert not warns, f"unexpected warn: {warns}"
+        assert infos, f"info missing: {msgs}"
+
+    def test_skip_when_no_damper_def_name(self, tmp_path):
+        """damper_def_name が空文字ならチェックスキップ。"""
+        exe = tmp_path / "SNAP.exe"
+        exe.write_bytes(b"dummy")
+        s8i = tmp_path / "m.s8i"
+        s8i.write_bytes(b"dummy")
+
+        msgs = []
+        SnapEvaluator(
+            snap_exe_path=str(exe),
+            base_s8i_path=str(s8i),
+            damper_def_name="",
+            log_callback=msgs.append,
+        )
+        group_msgs = [m for m in msgs if "装置グループ" in m]
+        assert not group_msgs, f"unexpected group message: {group_msgs}"

@@ -28,10 +28,25 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
 from app.models.s8i_parser import parse_s8i
+from app.services.damper_group_check import (
+    StagnationDetector,
+    warn_if_damper_group_mismatch,
+)
 from controller.result import Result
 from controller.snap_exec import snap_exec
 
 logger = logging.getLogger(__name__)
+
+#: 非TF最適化で停滞警告に使うメッセージ (f-string ではなく {n} プレースホルダ)
+_NONTF_STAGNATION_MSG = (
+    "  [WARN] 停滞検知: 異なるパラメータで {n} 回評価しても、"
+    "目的関数値がほぼ変動していません (相対差 < 1e-4 かつ絶対差 < 1e-8)。"
+    " 選択した最適化変数が動的応答に効いていない可能性があります"
+    " (例: 温度変動係数 / 疲労曲線 / 頻度解析フィールド、"
+    " 閾値未満で不活性な Fc、狭すぎる探索範囲)。"
+    " ベースケースの装置グループ設定と、動的応答に直接影響する"
+    " フィールド (C0 / α / K / Fy 等) が選択されているかを確認してください。"
+)
 
 
 class SnapEvaluator:
@@ -98,11 +113,35 @@ class SnapEvaluator:
         # キャッシュ（同一パラメータの再計算を回避）
         self._cache: Dict[str, Dict[str, float]] = {}
 
+        # 停滞検知 (bug 2026-04-22: TF 以外でもパラメータ無効化等で
+        # 結果が変わらないケースを警告する)
+        self._stagnation = StagnationDetector(
+            log_callback=self.log_callback,
+            min_evals=3,
+            abs_tol=1e-8,
+            rel_tol=1e-4,
+            warn_message=_NONTF_STAGNATION_MSG,
+        )
+
         # ベースファイルの検証
         if not Path(self.base_s8i_path).exists():
             raise FileNotFoundError(f"ベース .s8i ファイルが見つかりません: {self.base_s8i_path}")
         if not Path(self.snap_exe_path).exists():
             raise FileNotFoundError(f"SNAP.exe が見つかりません: {self.snap_exe_path}")
+
+        # 装置グループ整合性の事前チェック（警告のみ、ブロックしない）
+        # run_flag=1 の全ケースを横断的に見て、どの一つにも damper_def が
+        # 含まれていなければ「パラメータ変更は応答に反映されない」警告。
+        if self.damper_def_name:
+            try:
+                warn_if_damper_group_mismatch(
+                    base_s8i_path=self.base_s8i_path,
+                    damper_def_name=self.damper_def_name,
+                    target_case_no=None,
+                    log_callback=self.log_callback,
+                )
+            except Exception:
+                logger.debug("damper group check failed", exc_info=True)
 
     def __call__(self, params: Dict[str, float]) -> Dict[str, float]:
         """
@@ -139,6 +178,11 @@ class SnapEvaluator:
                 response["total_damper_count"] = float(total)
             self._success_count += 1
             self._cache[cache_key] = response
+            # 停滞検知用のシグナル: max_drift を代表値として記録する
+            # (多目的でも1つあれば十分。inf/NaN は除外)
+            signal = self._pick_stagnation_signal(response)
+            if signal is not None:
+                self._stagnation.record(cache_key, signal)
             return response
         except Exception as e:
             self._error_count += 1
@@ -347,6 +391,28 @@ class SnapEvaluator:
             "max_otm": float("inf"),
             "max_story_disp": float("inf"),
         }
+
+    @staticmethod
+    def _pick_stagnation_signal(response: Dict[str, float]) -> Optional[float]:
+        """応答値辞書から停滞検知に使う代表値を1つ選ぶ。
+
+        max_drift を最優先（構造設計で最も監視される動的応答）。
+        無ければ max_acc → max_disp の順でフォールバック。
+        全て inf/NaN の場合は None を返して記録をスキップする。
+        """
+        import math
+        for key in ("max_drift", "max_acc", "max_disp", "max_vel", "max_otm"):
+            v = response.get(key)
+            if v is None:
+                continue
+            if isinstance(v, (int, float)) and math.isfinite(v):
+                return float(v)
+        return None
+
+    @property
+    def stagnation_detected(self) -> bool:
+        """停滞（no-op 最適化）が検出されたかどうか。UI 側の事後警告で使う。"""
+        return self._stagnation.detected
 
     @staticmethod
     def _make_cache_key(params: Dict[str, float]) -> str:

@@ -1326,10 +1326,13 @@ class UnifiedOptimizerDialog(QDialog):
         self._maybe_warn_stagnation()
 
     def _maybe_warn_stagnation(self) -> None:
-        """TF 最適化で目的関数値が変化していない場合に原因ヒント付き警告を出す。"""
-        # TF モードのみ
-        if self._obj1_combo.currentData() != _TF_OBJECTIVE_KEY:
-            return
+        """TF/非 TF 最適化で目的関数値が変化していない場合に原因ヒント付き警告を出す。
+
+        bug 2026-04-22: TF だけでなく max_drift/max_acc/max_disp 等の通常
+        最適化でも、装置グループ不整合や非動的フィールド選択により反復
+        を重ねても結果が変わらないケースがある。どちらのモードでも停滞を
+        検知してユーザに原因ヒントを提示する。
+        """
         feasible = [
             c for c in self._candidates
             if c.is_feasible and c.objective_value != float("inf")
@@ -1337,16 +1340,30 @@ class UnifiedOptimizerDialog(QDialog):
         if len(feasible) < 3:
             return
         objs = [c.objective_value for c in feasible]
-        spread = max(objs) - min(objs)
-        # 0.01 dB 以内を実質的な停滞とみなす
-        if spread > 0.01:
-            return
+        lo, hi = min(objs), max(objs)
+        spread = hi - lo
+        # TF (dB) は絶対 0.01 dB、その他は相対 1e-4 で判定 (スケール独立)
+        is_tf = self._obj1_combo.currentData() == _TF_OBJECTIVE_KEY
+        if is_tf:
+            if spread > 0.01:
+                return
+            obj_label = "伝達関数ピーク"
+            spread_text = f"{spread:.4f} dB"
+        else:
+            scale = max(abs(lo), abs(hi))
+            if spread > 1e-8 and (scale == 0 or spread / scale > 1e-4):
+                return
+            obj_label = self._obj1_combo.currentText() or "目的関数"
+            spread_text = (
+                f"{spread:.4g} (相対 {spread/scale:.2e})"
+                if scale > 0 else f"{spread:.4g}"
+            )
         # evaluator 側でも検知されていれば追加情報として示す
         ev = getattr(self, "_active_evaluator", None)
         evaluator_flagged = bool(getattr(ev, "stagnation_detected", False))
         msg = (
             f"{len(feasible)} 候補を評価しましたが、目的関数値 "
-            f"(伝達関数ピーク) が {spread:.4f} dB しか変動していません。\n\n"
+            f"({obj_label}) が {spread_text} しか変動していません。\n\n"
             "考えられる原因:\n"
             "1. 選択した最適化変数が動的応答に効いていない\n"
             "   (例: 温度変動係数、疲労曲線の P1/P2、頻度解析刻み幅)\n"
