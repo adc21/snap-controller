@@ -307,6 +307,101 @@ class TestDamperGroupMismatchWarning:
 
 
 # ---------------------------------------------------------------------------
+# 停滞 (no-op 最適化) 検知
+# ---------------------------------------------------------------------------
+
+class TestStagnationDetector:
+    """異なるパラメータで同じピークが返り続ける場合に、
+    evaluator が停滞を検知して警告ログを出すことを保証する。
+
+    これは「温度変動係数や疲労曲線フィールドを最適化対象に選んでしまい
+    ピークが変化しない」ユーザ問題の事後検出 (bug fix 2026-04-22)。"""
+
+    def _build_cfg(self, tmp_path, fake_snap_exe):
+        s8i = tmp_path / "m.s8i"
+        s8i.write_bytes(b"dummy")
+        return TransferFunctionEvalConfig(
+            snap_exe_path=str(fake_snap_exe),
+            base_s8i_path=str(s8i),
+            snap_work_dir=str(tmp_path / "work"),
+            snap_wave_dir=str(tmp_path / "wave"),
+            target_case_no=1,
+        )
+
+    def test_stagnation_warn_after_three_identical_peaks(
+        self, tmp_path, fake_snap_exe,
+    ):
+        cfg = self._build_cfg(tmp_path, fake_snap_exe)
+        messages: list[str] = []
+        ev = TransferFunctionEvaluator(cfg, log_callback=messages.append)
+
+        # 3 個の異なる cache_key を仕込み、全て同じピーク
+        ev._record_peak_and_maybe_warn("p=1", 62.87)
+        assert not ev.stagnation_detected, "2 個目で警告されてはいけない"
+        ev._record_peak_and_maybe_warn("p=2", 62.87)
+        assert not ev.stagnation_detected
+        ev._record_peak_and_maybe_warn("p=3", 62.87)
+
+        assert ev.stagnation_detected, "3 個目で警告されるはず"
+        warns = [m for m in messages if "[WARN]" in m and "停滞検知" in m]
+        assert warns, f"停滞検知 警告が出ていない: {messages}"
+
+    def test_no_warn_when_peaks_vary(self, tmp_path, fake_snap_exe):
+        cfg = self._build_cfg(tmp_path, fake_snap_exe)
+        messages: list[str] = []
+        ev = TransferFunctionEvaluator(cfg, log_callback=messages.append)
+
+        ev._record_peak_and_maybe_warn("p=1", 62.87)
+        ev._record_peak_and_maybe_warn("p=2", 60.20)
+        ev._record_peak_and_maybe_warn("p=3", 58.50)
+
+        assert not ev.stagnation_detected
+        warns = [m for m in messages if "[WARN]" in m and "停滞検知" in m]
+        assert not warns, f"変動しているのに警告が出た: {warns}"
+
+    def test_warn_only_once(self, tmp_path, fake_snap_exe):
+        """停滞検知警告は一度だけ。連続呼び出しで多重警告されない。"""
+        cfg = self._build_cfg(tmp_path, fake_snap_exe)
+        messages: list[str] = []
+        ev = TransferFunctionEvaluator(cfg, log_callback=messages.append)
+
+        for i in range(6):
+            ev._record_peak_and_maybe_warn(f"p={i}", 62.87)
+
+        warns = [m for m in messages if "[WARN]" in m and "停滞検知" in m]
+        assert len(warns) == 1, f"警告が重複した: {warns}"
+
+    def test_same_cache_key_not_counted(self, tmp_path, fake_snap_exe):
+        """同じ cache_key は1回だけ記録される (キャッシュヒット相当)。"""
+        cfg = self._build_cfg(tmp_path, fake_snap_exe)
+        messages: list[str] = []
+        ev = TransferFunctionEvaluator(cfg, log_callback=messages.append)
+
+        # 同じキーを5回 → distinct 1 個分 → 警告でない
+        for _ in range(5):
+            ev._record_peak_and_maybe_warn("p=same", 62.87)
+        assert not ev.stagnation_detected
+
+    def test_tolerance_respected(self, tmp_path, fake_snap_exe):
+        """許容差 (デフォルト 0.01 dB) 以内なら停滞とみなす。"""
+        cfg = self._build_cfg(tmp_path, fake_snap_exe)
+        messages: list[str] = []
+        ev = TransferFunctionEvaluator(cfg, log_callback=messages.append)
+
+        ev._record_peak_and_maybe_warn("p=1", 62.870)
+        ev._record_peak_and_maybe_warn("p=2", 62.875)  # +0.005 dB
+        ev._record_peak_and_maybe_warn("p=3", 62.872)  # +0.002 dB
+        assert ev.stagnation_detected, "許容差以内だが検知されず"
+
+        # 別の evaluator: 0.05 dB 超の変動なら検知されない
+        ev2 = TransferFunctionEvaluator(cfg, log_callback=lambda m: None)
+        ev2._record_peak_and_maybe_warn("p=1", 62.87)
+        ev2._record_peak_and_maybe_warn("p=2", 62.95)  # +0.08 dB
+        ev2._record_peak_and_maybe_warn("p=3", 62.87)
+        assert not ev2.stagnation_detected
+
+
+# ---------------------------------------------------------------------------
 # Support file copy
 # ---------------------------------------------------------------------------
 

@@ -398,10 +398,17 @@ class UnifiedOptimizerDialog(QDialog):
         self._refresh_axis_combos()
 
     # 種別・番号・コード・フラグ系は最適化対象外
+    #
+    # また以下のフィールド群は動的解析 (TF/時刻歴) に影響せず、
+    # これらを最適化変数にしてしまうとピーク値が一切変化しない
+    # 「無言の no-op」になるため除外する (bug 2026-04-22):
+    # - "変動係数": 温度依存バラツキ係数（TF 評価は標準条件）
+    # - "疲労曲線", "頻度解析": 疲労損傷評価用（時刻歴応答計算には不要）
     _PARAM_SKIP_KEYWORDS = (
         "種別", "k-DB", "番号", "型番", "モデル",
         "考慮", "初期解析", "疲労損傷", "重量種別",
         "計算", "しない", "する",
+        "変動係数", "疲労曲線", "頻度解析",
     )
 
     @classmethod
@@ -1244,6 +1251,10 @@ class UnifiedOptimizerDialog(QDialog):
             )
             return
 
+        # 最適化完了時の停滞検知に使うため、evaluator 参照を保持する
+        # (bug 2026-04-22: ピーク値が変化しないケースを事後検知)
+        self._active_evaluator = evaluator
+
         # UI 状態リセット
         self._candidates.clear()
         self._selected_candidate: Optional[OptimizationCandidate] = None
@@ -1308,6 +1319,51 @@ class UnifiedOptimizerDialog(QDialog):
             f"実行可能 {feasible_count}, "
             f"{self._format_duration(elapsed)})"
         )
+
+        # 停滞検知 — TF 最適化で「ピーク値が変わらない」状態を事後警告する
+        # (bug 2026-04-22: 非動的フィールドやグループ不整合などで no-op に
+        # なった場合、プロットが平坦になるので原因を明示する)
+        self._maybe_warn_stagnation()
+
+    def _maybe_warn_stagnation(self) -> None:
+        """TF 最適化で目的関数値が変化していない場合に原因ヒント付き警告を出す。"""
+        # TF モードのみ
+        if self._obj1_combo.currentData() != _TF_OBJECTIVE_KEY:
+            return
+        feasible = [
+            c for c in self._candidates
+            if c.is_feasible and c.objective_value != float("inf")
+        ]
+        if len(feasible) < 3:
+            return
+        objs = [c.objective_value for c in feasible]
+        spread = max(objs) - min(objs)
+        # 0.01 dB 以内を実質的な停滞とみなす
+        if spread > 0.01:
+            return
+        # evaluator 側でも検知されていれば追加情報として示す
+        ev = getattr(self, "_active_evaluator", None)
+        evaluator_flagged = bool(getattr(ev, "stagnation_detected", False))
+        msg = (
+            f"{len(feasible)} 候補を評価しましたが、目的関数値 "
+            f"(伝達関数ピーク) が {spread:.4f} dB しか変動していません。\n\n"
+            "考えられる原因:\n"
+            "1. 選択した最適化変数が動的応答に効いていない\n"
+            "   (例: 温度変動係数、疲労曲線の P1/P2、頻度解析刻み幅)\n"
+            "2. ベースケースの装置グループが空／不整合で、ダンパーが\n"
+            "   解析に含まれていない\n"
+            "3. 閾値型パラメータ (Fc, Fy 等) が応答範囲外で不活性\n"
+            "4. 変数の探索範囲が狭すぎて感度が極小\n\n"
+            "対策:\n"
+            " - C0 (DVOD 8) / α (DVOD 12) / K0 (DSD 7) / Fy (DSD 9) 等、\n"
+            "   動的応答に直接効くフィールドを選択してください\n"
+            " - 変数の上下限を広げる (例: 現在値の 0.5〜5.0 倍)\n"
+            " - ベースケース末尾のグループ表示が [ダンパーなし] でない\n"
+            "   ことを確認してください"
+        )
+        if evaluator_flagged:
+            msg += "\n\n(評価器側でも同様の停滞を検知済み)"
+        QMessageBox.warning(self, "最適化が no-op になっています", msg)
 
     def _populate_result_table(self, result: OptimizationResult) -> None:
         """結果テーブルを上位20候補で更新。
