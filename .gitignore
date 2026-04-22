@@ -26,8 +26,10 @@ work/
 *.s8i
 *.GEM
 *.NAP
-!example_shear/*.s8i
-!example_3D/*.s8i
+# 例として同梱するモデルは例外 (テストからも参照される)
+# iRDT/インパルス出力等の派生ファイルは追跡しないため、カノニカル名のみ許可
+!example_model/example_shear/example_shear.s8i
+!example_model/example_3D/example_3D.s8i
 
 # ===== Reference (potentially copyrighted PDFs) =====
 reference/*.pdf
