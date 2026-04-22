@@ -237,6 +237,66 @@ class TestDialogInstantiation:
         dlg._obj2_enabled.setChecked(True)
         assert dlg._method_combo.currentData() == "nsga2"
 
+    def test_unified_optimizer_tf_mode_toggles_ui(self, qapp):
+        """伝達関数目的を選択するとTFパネルが表示され、obj2と制約が無効化される。"""
+        from app.ui.unified_optimizer_dialog import (
+            UnifiedOptimizerDialog,
+            _TF_OBJECTIVE_KEY,
+        )
+        dlg = UnifiedOptimizerDialog()
+
+        # 初期状態: 通常モード
+        assert not dlg._tf_group.isVisible()
+        assert dlg._obj2_enabled.isEnabled()
+        assert dlg._constraints_group.isEnabled()
+
+        # 伝達関数モードに切り替え
+        tf_idx = -1
+        for i in range(dlg._obj1_combo.count()):
+            if dlg._obj1_combo.itemData(i) == _TF_OBJECTIVE_KEY:
+                tf_idx = i
+                break
+        assert tf_idx >= 0, "_TF_OBJECTIVE_KEY が obj1 コンボに含まれていない"
+        dlg._obj1_combo.setCurrentIndex(tf_idx)
+
+        qapp.processEvents()
+        dlg.show()
+        qapp.processEvents()
+
+        # TF モード中は TF パネルが表示され、obj2 と制約は無効
+        assert dlg._tf_group.isVisible()
+        assert not dlg._obj2_enabled.isEnabled()
+        assert not dlg._constraints_group.isEnabled()
+
+        # 通常モードに戻すと元の状態に戻る
+        dlg._obj1_combo.setCurrentIndex(0)
+        qapp.processEvents()
+        assert not dlg._tf_group.isVisible()
+        assert dlg._obj2_enabled.isEnabled()
+        assert dlg._constraints_group.isEnabled()
+
+        dlg.close()
+
+    def test_unified_optimizer_tf_mode_build_config(self, qapp):
+        """TFモードの _build_config は criteria=None, constraints={} を返す。"""
+        from app.ui.unified_optimizer_dialog import (
+            UnifiedOptimizerDialog,
+            _TF_OBJECTIVE_KEY,
+        )
+        dlg = UnifiedOptimizerDialog()
+
+        for i in range(dlg._obj1_combo.count()):
+            if dlg._obj1_combo.itemData(i) == _TF_OBJECTIVE_KEY:
+                dlg._obj1_combo.setCurrentIndex(i)
+                break
+
+        qapp.processEvents()
+
+        config = dlg._build_config([])
+        assert config.objective_key == _TF_OBJECTIVE_KEY
+        assert config.constraints == {}
+        assert config.criteria is None
+
     def test_unified_optimizer_axis_selectors_exist(self, qapp):
         """X/Y軸セレクタが存在し、自動 + 反復番号 + 応答値の選択肢を持つ。"""
         from app.ui.unified_optimizer_dialog import UnifiedOptimizerDialog, _OBJECTIVE_ITEMS
@@ -290,7 +350,7 @@ class TestDialogInstantiation:
         lo_spin = QDoubleSpinBox()
         hi_spin = QDoubleSpinBox()
         dlg._field_rows = [{
-            "cb": cb, "val_idx_0based": 8, "label": "C0 (減衰係数)",
+            "cb": cb, "val_idx_1based": 8, "label": "C0 (減衰係数)",
             "current": 500.0, "lo_spin": lo_spin, "hi_spin": hi_spin,
             "unit": "kN·s/mm",
         }]
@@ -326,7 +386,7 @@ class TestDialogInstantiation:
         cb = QCheckBox()
         cb.setChecked(True)
         dlg._field_rows = [{
-            "cb": cb, "val_idx_0based": 8, "label": "C0",
+            "cb": cb, "val_idx_1based": 8, "label": "C0",
             "current": 500.0,
             "lo_spin": QDoubleSpinBox(), "hi_spin": QDoubleSpinBox(),
             "unit": "kN·s/mm",
@@ -593,7 +653,7 @@ class TestDialogInstantiation:
         hi_spin = QDoubleSpinBox()
         hi_spin.setValue(50.0)  # lo > hi
         dlg._field_rows.append({
-            "cb": cb, "field_idx_1based": 8, "val_idx_0based": 8,
+            "cb": cb, "field_idx_1based": 8, "val_idx_1based": 8,
             "label": "テストC0", "current": 75.0,
             "lo_spin": lo_spin, "hi_spin": hi_spin, "unit": "kN",
         })
@@ -612,7 +672,7 @@ class TestDialogInstantiation:
         assert rd == {}
 
     def test_unified_optimizer_build_case_overrides_physical(self, qapp):
-        """物理パラメータが damper_params 形式 (1-indexed) に変換される。"""
+        """物理パラメータが damper_params 形式に変換される。キー "N" = values[N]。"""
         from app.ui.unified_optimizer_dialog import UnifiedOptimizerDialog
         from app.services.optimizer import OptimizationCandidate, OptimizationResult, OptimizationConfig, ParameterRange
         dlg = UnifiedOptimizerDialog()
@@ -639,10 +699,10 @@ class TestDialogInstantiation:
         )
         dlg._result = OptimizationResult(config=config, all_candidates=[cand], best=cand)
         dp, rd = dlg.build_case_overrides()
-        # field_7 → 1-indexed "8", field_12 → 1-indexed "13"
+        # field_7 → キー "7" (= values[7]), field_12 → キー "12" (= values[12])
         assert "C1" in dp
-        assert dp["C1"]["8"] == "500.0"
-        assert dp["C1"]["13"] == "0.8"
+        assert dp["C1"]["7"] == "500.0"
+        assert dp["C1"]["12"] == "0.8"
         assert rd == {}
 
     def test_unified_optimizer_build_case_overrides_floor_count(self, qapp):
@@ -703,7 +763,8 @@ class TestDialogInstantiation:
         )
         dlg._result = OptimizationResult(config=config, all_candidates=[cand], best=cand)
         dp, rd = dlg.build_case_overrides()
-        assert dp["OD"]["9"] == "850"
+        # field_8 → キー "8" (= values[8])
+        assert dp["OD"]["8"] == "850"
         assert rd["5"]["quantity"] == 4
 
     def test_damper_injector_dialog(self, qapp):
@@ -741,6 +802,67 @@ class TestDialogInstantiation:
         from app.ui.transfer_function_widget import TransferFunctionWidget
         w = TransferFunctionWidget()
         assert w is not None
+
+    def test_transfer_function_widget_axis_controls(self, qapp):
+        """軸範囲コントロール (X/Y min/max, ログ切替) が存在する。"""
+        from app.ui.transfer_function_widget import TransferFunctionWidget
+        w = TransferFunctionWidget()
+        assert hasattr(w, "_xmin_spin")
+        assert hasattr(w, "_xmax_spin")
+        assert hasattr(w, "_ymin_spin")
+        assert hasattr(w, "_ymax_spin")
+        assert hasattr(w, "_xlog_check")
+        assert hasattr(w, "_log_check")
+        assert hasattr(w, "_auto_range_check")
+        assert hasattr(w, "_btn_impulse_tf")
+        # 初期状態: 自動範囲 ON, 手動スピンは無効
+        assert w._auto_range_check.isChecked()
+        assert not w._xmin_spin.isEnabled()
+        assert not w._xmax_spin.isEnabled()
+
+    def test_transfer_function_widget_manual_range_enables_spins(self, qapp):
+        """自動範囲OFFで手動スピンボックスが有効になる。"""
+        from app.ui.transfer_function_widget import TransferFunctionWidget
+        w = TransferFunctionWidget()
+        w._auto_range_check.setChecked(False)
+        assert w._xmin_spin.isEnabled()
+        assert w._xmax_spin.isEnabled()
+        assert w._ymin_spin.isEnabled()
+        assert w._ymax_spin.isEnabled()
+
+    def test_impulse_response_dialog_instantiation(self, qapp):
+        """ImpulseResponseDialog が Project からインスタンス化できる。"""
+        from app.models import Project
+        from app.ui.impulse_response_dialog import ImpulseResponseDialog
+        proj = Project(name="Test")
+        dlg = ImpulseResponseDialog(project=proj)
+        assert dlg is not None
+        assert dlg._base_case_combo.count() == 0  # ケースなし
+
+    def test_impulse_response_dialog_with_cases(self, qapp):
+        """プロジェクトにケースがあれば base_case_combo に表示される。"""
+        import tempfile, shutil
+        from pathlib import Path
+        from app.models import Project, AnalysisCase
+        from app.ui.impulse_response_dialog import ImpulseResponseDialog
+
+        example_s8i = (Path(__file__).parent.parent / "example_model"
+                       / "example_3D" / "example_3D.s8i")
+        tmpdir = Path(tempfile.mkdtemp())
+        try:
+            local = tmpdir / "example_3D.s8i"
+            shutil.copy(example_s8i, local)
+
+            proj = Project(name="Test")
+            case = AnalysisCase(name="base", model_path=str(local))
+            proj.cases.append(case)
+
+            dlg = ImpulseResponseDialog(project=proj)
+            assert dlg._base_case_combo.count() == 1
+            # DYC コンボが populate されている
+            assert dlg._dyc_case_combo.count() > 0
+        finally:
+            shutil.rmtree(tmpdir, ignore_errors=True)
 
     def test_hysteresis_widget(self, qapp):
         from app.ui.hysteresis_widget import HysteresisWidget

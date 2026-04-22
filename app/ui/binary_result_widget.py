@@ -93,15 +93,108 @@ _STORY_QUANTITIES: List[tuple] = [
     ("転倒モーメント", 9, "kN·m"),
 ]
 
-_DAMPER_FIELDS = {
-    "荷重 F": 0,
-    "変位 D": 1,
-}
+# ---------------------------------------------------------------------------
+# ダンパー部材フィールド定義 (SNAP ツリー構造に基づく)
+#   制振ブレース → 質量(主/付加) → ダッシュポット(主/付加1/2)
+#   → スプリング(Voigt/Maxwell/Maxwell付加1/2/全体)
+# ---------------------------------------------------------------------------
+_DAMPER_FIELD_MAP: List[Tuple[int, str, str]] = [
+    # 制振ブレース（取付け部）
+    (0, "ブレース/応力", "kN"),
+    (1, "ブレース/変形", "m"),
+    (2, "ブレース/エネルギー", "kN·m"),
+    # 質量（主）
+    (3, "質量(主)/応力", "kN"),
+    (4, "質量(主)/加速度", "m/s²"),
+    (5, "質量(主)/エネルギー", "kN·m"),
+    # 質量（付加）
+    (6, "質量(付加)/応力", "kN"),
+    (7, "質量(付加)/加速度", "m/s²"),
+    (8, "質量(付加)/エネルギー", "kN·m"),
+    # ダッシュポット（主）
+    (9, "ダッシュポット(主)/応力", "kN"),
+    (10, "ダッシュポット(主)/速度", "m/s"),
+    (11, "ダッシュポット(主)/変形", "m"),
+    (12, "ダッシュポット(主)/エネルギー", "kN·m"),
+    # ダッシュポット（付加1）
+    (13, "ダッシュポット(付加1)/応力", "kN"),
+    (14, "ダッシュポット(付加1)/速度", "m/s"),
+    (15, "ダッシュポット(付加1)/エネルギー", "kN·m"),
+    # ダッシュポット（付加2）
+    (16, "ダッシュポット(付加2)/応力", "kN"),
+    (17, "ダッシュポット(付加2)/速度", "m/s"),
+    (18, "ダッシュポット(付加2)/エネルギー", "kN·m"),
+    # スプリング（Voigt）
+    (19, "スプリング(Voigt)/応力", "kN"),
+    (20, "スプリング(Voigt)/変形", "m"),
+    (21, "スプリング(Voigt)/塑性率", ""),
+    (22, "スプリング(Voigt)/累積塑性変形倍率", ""),
+    (23, "スプリング(Voigt)/エネルギー", "kN·m"),
+    (24, "スプリング(Voigt)/歪振幅頻度分布", ""),
+    # スプリング（Maxwell）
+    (25, "スプリング(Maxwell)/応力", "kN"),
+    (26, "スプリング(Maxwell)/変形", "m"),
+    (27, "スプリング(Maxwell)/エネルギー", "kN·m"),
+    # スプリング（Maxwell付加1）
+    (28, "スプリング(Maxwell付加1)/応力", "kN"),
+    (29, "スプリング(Maxwell付加1)/変形", "m"),
+    (30, "スプリング(Maxwell付加1)/エネルギー", "kN·m"),
+    # スプリング（Maxwell付加2）
+    (31, "スプリング(Maxwell付加2)/応力", "kN"),
+    (32, "スプリング(Maxwell付加2)/変形", "m"),
+    (33, "スプリング(Maxwell付加2)/エネルギー", "kN·m"),
+    # スプリング（全体）
+    (34, "スプリング(全体)/応力", "kN"),
+    (35, "スプリング(全体)/変形", "m"),
+    (36, "スプリング(全体)/エネルギー", "kN·m"),
+]
 
-_SPRING_FIELDS = {
-    "荷重 F": 0,
-    "変位 D": 1,
-}
+_DAMPER_LOOP_PAIRS: List[Tuple[int, int, str]] = [
+    # (x_field, y_field, label) — x=変形/速度/加速度, y=応力
+    (1, 0, "ブレース 応力–変形"),
+    (4, 3, "質量(主) 応力–加速度"),
+    (7, 6, "質量(付加) 応力–加速度"),
+    (10, 9, "ダッシュポット(主) 応力–速度"),
+    (14, 13, "ダッシュポット(付加1) 応力–速度"),
+    (17, 16, "ダッシュポット(付加2) 応力–速度"),
+    (20, 19, "スプリング(Voigt) 応力–変形"),
+    (26, 25, "スプリング(Maxwell) 応力–変形"),
+    (29, 28, "スプリング(Maxwell付加1) 応力–変形"),
+    (32, 31, "スプリング(Maxwell付加2) 応力–変形"),
+    (35, 34, "スプリング(全体) 応力–変形"),
+]
+
+# ---------------------------------------------------------------------------
+# スプリング部材フィールド定義
+# ---------------------------------------------------------------------------
+_SPRING_FIELD_MAP: List[Tuple[int, str, str]] = [
+    (0, "Voigt/応力", "kN"),
+    (1, "Voigt/変形", "m"),
+    (2, "Voigt/塑性率", ""),
+    (3, "Voigt/累積塑性変形倍率", ""),
+    (4, "Voigt/エネルギー", "kN·m"),
+    (5, "Voigt/歪振幅頻度分布", ""),
+    (6, "Maxwell/応力", "kN"),
+    (7, "Maxwell/変形", "m"),
+    (8, "Maxwell/エネルギー", "kN·m"),
+    (9, "Maxwell付加1/応力", "kN"),
+    (10, "Maxwell付加1/変形", "m"),
+    (11, "Maxwell付加1/エネルギー", "kN·m"),
+    (12, "Maxwell付加2/応力", "kN"),
+    (13, "Maxwell付加2/変形", "m"),
+    (14, "Maxwell付加2/エネルギー", "kN·m"),
+    (15, "全体/応力", "kN"),
+    (16, "全体/変形", "m"),
+    (17, "全体/エネルギー", "kN·m"),
+]
+
+_SPRING_LOOP_PAIRS: List[Tuple[int, int, str]] = [
+    (1, 0, "Voigt 応力–変形"),
+    (7, 6, "Maxwell 応力–変形"),
+    (10, 9, "Maxwell付加1 応力–変形"),
+    (13, 12, "Maxwell付加2 応力–変形"),
+    (16, 15, "全体 応力–変形"),
+]
 
 _NODE_QUANTITIES: List[tuple] = [
     ("変位", 0, "m"),
@@ -113,10 +206,17 @@ _NODE_QUANTITIES: List[tuple] = [
     ("加速度", 6, "m/s²"),
 ]
 
-_MEMBER_FIELDS = {
-    "荷重 F": 0,
-    "変位 D": 1,
-}
+# ---------------------------------------------------------------------------
+# はり・柱・トラス（単純部材）フィールド定義
+# ---------------------------------------------------------------------------
+_MEMBER_FIELD_MAP: List[Tuple[int, str, str]] = [
+    (0, "荷重 F", "kN"),
+    (1, "変位 D", "m"),
+]
+
+_MEMBER_LOOP_PAIRS: List[Tuple[int, int, str]] = [
+    (1, 0, "荷重–変位"),
+]
 
 
 # ---------------------------------------------------------------------------
@@ -268,14 +368,16 @@ class BinaryResultWidget(QWidget):
 
         self._damper_content, self._damper_widgets = self._build_hysteresis_tab(
             record_label="ダンパー",
-            fields=_DAMPER_FIELDS,
+            field_map=_DAMPER_FIELD_MAP,
+            loop_pairs=_DAMPER_LOOP_PAIRS,
         )
         self._tab_stacks["damper"] = self._make_stack(self._damper_content)
         self._tabs.addTab(self._tab_stacks["damper"], "🛡 ダンパー履歴")
 
         self._spring_content, self._spring_widgets = self._build_hysteresis_tab(
             record_label="バネ",
-            fields=_SPRING_FIELDS,
+            field_map=_SPRING_FIELD_MAP,
+            loop_pairs=_SPRING_LOOP_PAIRS,
         )
         self._tab_stacks["spring"] = self._make_stack(self._spring_content)
         self._tabs.addTab(self._tab_stacks["spring"], "🧩 バネ履歴")
@@ -291,21 +393,24 @@ class BinaryResultWidget(QWidget):
 
         self._beam_content, self._beam_widgets = self._build_hysteresis_tab(
             record_label="はり",
-            fields=_MEMBER_FIELDS,
+            field_map=_MEMBER_FIELD_MAP,
+            loop_pairs=_MEMBER_LOOP_PAIRS,
         )
         self._tab_stacks["beam"] = self._make_stack(self._beam_content)
         self._tabs.addTab(self._tab_stacks["beam"], "🔗 はり応答")
 
         self._column_content, self._column_widgets = self._build_hysteresis_tab(
             record_label="柱",
-            fields=_MEMBER_FIELDS,
+            field_map=_MEMBER_FIELD_MAP,
+            loop_pairs=_MEMBER_LOOP_PAIRS,
         )
         self._tab_stacks["column"] = self._make_stack(self._column_content)
         self._tabs.addTab(self._tab_stacks["column"], "🏛 柱応答")
 
         self._truss_content, self._truss_widgets = self._build_hysteresis_tab(
             record_label="トラス",
-            fields=_MEMBER_FIELDS,
+            field_map=_MEMBER_FIELD_MAP,
+            loop_pairs=_MEMBER_LOOP_PAIRS,
         )
         self._tab_stacks["truss"] = self._make_stack(self._truss_content)
         self._tabs.addTab(self._tab_stacks["truss"], "⚙ トラス応答")
@@ -495,10 +600,12 @@ class BinaryResultWidget(QWidget):
         )
         return w, widgets
 
-    def _build_hysteresis_tab(self, *, record_label: str, fields: dict) -> tuple:
+    def _build_hysteresis_tab(self, *, record_label: str,
+                              field_map: List[Tuple[int, str, str]] = None,
+                              loop_pairs: List[Tuple[int, int, str]] = None) -> tuple:
         w = QWidget()
         lay = QVBoxLayout(w)
-        lab = QLabel(f"{record_label} の荷重–変形履歴ループおよび時刻歴")
+        lab = QLabel(f"{record_label} の応答履歴")
         lab.setStyleSheet("color:#555; padding:2px;")
         lay.addWidget(lab)
 
@@ -511,11 +618,15 @@ class BinaryResultWidget(QWidget):
         ctrl.addSpacing(12)
         ctrl.addWidget(QLabel("表示:"))
         mode_combo = QComboBox()
-        mode_combo.addItem("履歴ループ (F–D)", "loop")
-        mode_combo.addItem("荷重 時刻歴", "force_time")
-        mode_combo.addItem("変位 時刻歴", "disp_time")
-        mode_combo.addItem("累積エネルギー 時刻歴", "energy_time")
+        mode_combo.addItem("履歴ループ", "loop")
+        mode_combo.addItem("時刻歴", "time")
         ctrl.addWidget(mode_combo)
+
+        ctrl.addSpacing(8)
+        qty_combo = QComboBox()
+        qty_combo.setMinimumWidth(220)
+        ctrl.addWidget(qty_combo)
+
         ctrl.addStretch(1)
         lay.addLayout(ctrl)
 
@@ -532,15 +643,21 @@ class BinaryResultWidget(QWidget):
         widgets = {
             "rec_combo": rec_combo,
             "mode_combo": mode_combo,
+            "qty_combo": qty_combo,
             "canvas": canvas,
             "info_label": info_label,
-            "fields": fields,
-            "category_name": None,  # Damper / Spring
+            "field_map": field_map or [],
+            "loop_pairs": loop_pairs or [(1, 0, "荷重–変位")],
+            "category_name": None,
+            "_fpr": 0,  # fields_per_record cache
         }
         rec_combo.currentIndexChanged.connect(
             lambda *_: self._redraw_hysteresis(widgets)
         )
         mode_combo.currentIndexChanged.connect(
+            lambda *_: self._on_hysteresis_mode_changed(widgets)
+        )
+        qty_combo.currentIndexChanged.connect(
             lambda *_: self._redraw_hysteresis(widgets)
         )
         return w, widgets
@@ -1169,6 +1286,7 @@ class BinaryResultWidget(QWidget):
 
         self._set_tab_state(key, True)
 
+        # rec_combo 更新
         rec_combo: QComboBox = widgets["rec_combo"]
         prev = rec_combo.currentData()
         rec_combo.blockSignals(True)
@@ -1181,12 +1299,65 @@ class BinaryResultWidget(QWidget):
         elif n > 0:
             rec_combo.setCurrentIndex(0)
         rec_combo.blockSignals(False)
+
+        # fields_per_record を取得して qty_combo を動的更新
+        fpr = first.hst.header.fields_per_record if first.hst and first.hst.header else 2
+        widgets["_fpr"] = fpr
+        self._populate_qty_combo(widgets)
         self._redraw_hysteresis(widgets)
+
+    # ------------------------------------------------------------------
+    # qty_combo 動的更新
+    # ------------------------------------------------------------------
+
+    def _on_hysteresis_mode_changed(self, widgets: dict) -> None:
+        """表示モード (履歴ループ/時刻歴) が変更されたとき qty_combo を再構築する。"""
+        self._populate_qty_combo(widgets)
+        self._redraw_hysteresis(widgets)
+
+    def _populate_qty_combo(self, widgets: dict) -> None:
+        """現在のモードと fields_per_record に基づいて応答量コンボを構築する。"""
+        mode = widgets["mode_combo"].currentData()
+        qty: QComboBox = widgets["qty_combo"]
+        fpr = widgets.get("_fpr", 2)
+        field_map: List[Tuple[int, str, str]] = widgets.get("field_map", [])
+        loop_pairs: List[Tuple[int, int, str]] = widgets.get("loop_pairs", [])
+
+        qty.blockSignals(True)
+        prev = qty.currentData()
+        qty.clear()
+
+        if mode == "loop":
+            for x_idx, y_idx, label in loop_pairs:
+                if x_idx < fpr and y_idx < fpr:
+                    qty.addItem(label, ("loop", x_idx, y_idx))
+            # フォールバック: 既知ループペアが無い場合、f0–f1 を追加
+            if qty.count() == 0 and fpr >= 2:
+                qty.addItem("f1–f0", ("loop", 1, 0))
+        else:
+            # 時刻歴: 全フィールドを列挙
+            label_dict = {idx: (lbl, unit) for idx, lbl, unit in field_map}
+            for i in range(fpr):
+                lbl, unit = label_dict.get(i, (f"f{i}", ""))
+                display = f"{lbl}" + (f" [{unit}]" if unit else "")
+                qty.addItem(display, ("time", i))
+
+        # 以前の選択を復元
+        if prev is not None:
+            for i in range(qty.count()):
+                if qty.itemData(i) == prev:
+                    qty.setCurrentIndex(i)
+                    break
+
+        qty.blockSignals(False)
+
+    # ------------------------------------------------------------------
+    # 履歴描画
+    # ------------------------------------------------------------------
 
     def _redraw_hysteresis(self, widgets: dict) -> None:
         canvas: _MplCanvas = widgets["canvas"]
         info_label: QLabel = widgets["info_label"]
-        fields: dict = widgets["fields"]
         cat_name = widgets["category_name"]
 
         if not self._active_entries or cat_name is None:
@@ -1197,130 +1368,148 @@ class BinaryResultWidget(QWidget):
         rec_idx = widgets["rec_combo"].currentData()
         if rec_idx is None:
             return
-        mode = widgets["mode_combo"].currentData() or "loop"
+
+        qty_data = widgets["qty_combo"].currentData()
+        if qty_data is None:
+            return
 
         ax = canvas.ax
         ax.clear()
         dt = float(self._dt_spin.value())
+        field_map: List[Tuple[int, str, str]] = widgets.get("field_map", [])
+        label_dict = {idx: (lbl, unit) for idx, lbl, unit in field_map}
 
-        plotted, summaries, loop_x, loop_y, time_y = self._draw_hysteresis_entries(
-            ax, cat_name, rec_idx, mode, fields, dt
-        )
+        mode_type = qty_data[0]  # "loop" or "time"
 
-        if plotted == 0:
-            self._show_hysteresis_empty(canvas, info_label, summaries)
-            return
-
-        first_bc = self._first_category(cat_name)
-        rec_name = first_bc.record_name(rec_idx) if first_bc else f"rec{rec_idx}"
-        if mode == "loop":
-            self._apply_hysteresis_loop_axes(ax, rec_name, loop_x, loop_y)
+        if mode_type == "loop":
+            _, x_idx, y_idx = qty_data
+            plotted, summaries, all_x, all_y = self._draw_loop_entries(
+                ax, cat_name, rec_idx, x_idx, y_idx, dt
+            )
+            if plotted == 0:
+                self._show_hysteresis_empty(canvas, info_label, summaries)
+                return
+            first_bc = self._first_category(cat_name)
+            rec_name = first_bc.record_name(rec_idx) if first_bc else f"rec{rec_idx}"
+            x_lbl, x_unit = label_dict.get(x_idx, (f"f{x_idx}", ""))
+            y_lbl, y_unit = label_dict.get(y_idx, (f"f{y_idx}", ""))
+            ax.set_xlabel(f"{x_lbl}" + (f" [{x_unit}]" if x_unit else ""))
+            ax.set_ylabel(f"{y_lbl}" + (f" [{y_unit}]" if y_unit else ""))
+            ax.set_title(f"{rec_name}  {y_lbl}–{x_lbl}")
+            ax.axhline(0, color="#888", linewidth=0.5)
+            ax.axvline(0, color="#888", linewidth=0.5)
+            if all_x and all_y:
+                _set_tight_ylim(ax, np.concatenate(all_y))
+                dx = np.concatenate(all_x)
+                dx_range = float(dx.max() - dx.min())
+                m = dx_range * 0.1 if dx_range > 1e-15 else max(
+                    abs(float(dx.max())) * 0.2, 1e-6
+                )
+                ax.set_xlim(float(dx.min()) - m, float(dx.max()) + m)
         else:
-            self._apply_hysteresis_time_axes(ax, rec_name, time_y)
+            _, field_idx = qty_data
+            plotted, summaries, all_y = self._draw_time_entries(
+                ax, cat_name, rec_idx, field_idx, dt
+            )
+            if plotted == 0:
+                self._show_hysteresis_empty(canvas, info_label, summaries)
+                return
+            first_bc = self._first_category(cat_name)
+            rec_name = first_bc.record_name(rec_idx) if first_bc else f"rec{rec_idx}"
+            f_lbl, f_unit = label_dict.get(field_idx, (f"f{field_idx}", ""))
+            ax.set_xlabel("時間 [s]")
+            ax.set_ylabel(f"{f_lbl}" + (f" [{f_unit}]" if f_unit else ""))
+            ax.set_title(f"{rec_name} / {f_lbl}")
+            ax.grid(True, linestyle=":", alpha=0.5)
+            if all_y:
+                _set_tight_ylim(ax, np.concatenate(all_y))
+
         if plotted > 1:
             ax.legend(loc="best", fontsize=8)
         canvas.fig.tight_layout()
         canvas.draw()
         info_label.setText("  |  ".join(summaries))
 
-    def _draw_hysteresis_entries(
+    def _draw_loop_entries(
         self,
         ax,
         cat_name: str,
         rec_idx: int,
-        mode: str,
-        fields: dict,
+        x_idx: int,
+        y_idx: int,
         dt: float,
-    ) -> Tuple[int, List[str], List[np.ndarray], List[np.ndarray], List[np.ndarray]]:
+    ) -> Tuple[int, List[str], List[np.ndarray], List[np.ndarray]]:
+        """各ケースの履歴ループを描画する。"""
         plotted = 0
         summaries: List[str] = []
-        loop_x: List[np.ndarray] = []
-        loop_y: List[np.ndarray] = []
-        time_y: List[np.ndarray] = []
+        all_x: List[np.ndarray] = []
+        all_y: List[np.ndarray] = []
         for e in self._active_entries:
             bc = e.loader.get(cat_name)
             if not bc or not bc.hst or bc.hst.header is None:
                 continue
             if rec_idx >= bc.hst.header.num_records:
                 continue
+            if max(x_idx, y_idx) >= bc.hst.header.fields_per_record:
+                continue
             try:
                 bc.hst.dt = dt
-                t = bc.hst.times()
-                F = bc.hst.time_series(rec_idx, fields["荷重 F"])
-                D = bc.hst.time_series(rec_idx, fields["変位 D"])
+                x = bc.hst.time_series(rec_idx, x_idx)
+                y = bc.hst.time_series(rec_idx, y_idx)
             except Exception as ex:
                 summaries.append(f"{e.name}: 読み取りエラー — {ex}")
                 continue
-
-            if mode == "loop":
-                self._plot_hysteresis_loop(ax, e.name, D, F, loop_x, loop_y, summaries)
-                plotted += 1
-            else:
-                ok = self._plot_hysteresis_time(
-                    ax, e, bc, rec_idx, cat_name, mode, t, F, D, time_y, summaries
-                )
-                if ok:
-                    plotted += 1
-        return plotted, summaries, loop_x, loop_y, time_y
-
-    @staticmethod
-    def _plot_hysteresis_loop(
-        ax,
-        name: str,
-        D: np.ndarray,
-        F: np.ndarray,
-        loop_x: List[np.ndarray],
-        loop_y: List[np.ndarray],
-        summaries: List[str],
-    ) -> None:
-        ax.plot(D, F, linewidth=0.7, label=name)
-        loop_x.append(D)
-        loop_y.append(F)
-        try:
-            e_abs = float(np.trapz(F, D))
-        except Exception:
-            logger.debug("エネルギー積分計算失敗: %s", name)
-            e_abs = 0.0
-        summaries.append(
-            f"{name}: |F|max={float(np.max(np.abs(F))):.4g}, "
-            f"|D|max={float(np.max(np.abs(D))):.4g}, ∮FdD≈{e_abs:.4g}"
-        )
-
-    @staticmethod
-    def _plot_hysteresis_time(
-        ax,
-        e,
-        bc,
-        rec_idx: int,
-        cat_name: str,
-        mode: str,
-        t: np.ndarray,
-        F: np.ndarray,
-        D: np.ndarray,
-        time_y: List[np.ndarray],
-        summaries: List[str],
-    ) -> bool:
-        if mode == "force_time":
-            y = F
-        elif mode == "disp_time":
-            y = D
-        else:
+            ax.plot(x, y, linewidth=0.7, label=e.name)
+            all_x.append(x)
+            all_y.append(y)
+            plotted += 1
             try:
-                e_idx = energy_field_index(
-                    cat_name, bc.hst.header.fields_per_record
-                )
-                y = bc.hst.time_series(rec_idx, e_idx)
+                e_abs = float(np.trapz(y, x))
             except Exception:
-                logger.debug("累積エネルギー読込失敗: %s", e.name)
-                return False
-        ax.plot(t, y, linewidth=0.9, label=e.name)
-        if y.size:
-            time_y.append(y)
-            p = int(np.argmax(np.abs(y)))
+                e_abs = 0.0
             summaries.append(
-                f"{e.name}: max={float(y[p]):+.4g} @ t={float(t[p]):.2f}s"
+                f"{e.name}: |Y|max={float(np.max(np.abs(y))):.4g}, "
+                f"|X|max={float(np.max(np.abs(x))):.4g}, "
+                f"\u222eFdX\u2248{e_abs:.4g}"
             )
-        return True
+        return plotted, summaries, all_x, all_y
+
+    def _draw_time_entries(
+        self,
+        ax,
+        cat_name: str,
+        rec_idx: int,
+        field_idx: int,
+        dt: float,
+    ) -> Tuple[int, List[str], List[np.ndarray]]:
+        """各ケースの時刻歴を描画する。"""
+        plotted = 0
+        summaries: List[str] = []
+        all_y: List[np.ndarray] = []
+        for e in self._active_entries:
+            bc = e.loader.get(cat_name)
+            if not bc or not bc.hst or bc.hst.header is None:
+                continue
+            if rec_idx >= bc.hst.header.num_records:
+                continue
+            if field_idx >= bc.hst.header.fields_per_record:
+                continue
+            try:
+                bc.hst.dt = dt
+                t = bc.hst.times()
+                y = bc.hst.time_series(rec_idx, field_idx)
+            except Exception as ex:
+                summaries.append(f"{e.name}: 読み取りエラー — {ex}")
+                continue
+            ax.plot(t, y, linewidth=0.9, label=e.name)
+            plotted += 1
+            if y.size:
+                all_y.append(y)
+                p = int(np.argmax(np.abs(y)))
+                summaries.append(
+                    f"{e.name}: max={float(y[p]):+.4g} @ t={float(t[p]):.2f}s"
+                )
+        return plotted, summaries, all_y
 
     @staticmethod
     def _show_hysteresis_empty(canvas, info_label: QLabel, summaries: List[str]) -> None:
@@ -1331,37 +1520,6 @@ class BinaryResultWidget(QWidget):
             color="red" if err_detail else "gray",
         )
         info_label.setText(err_detail)
-
-    @staticmethod
-    def _apply_hysteresis_loop_axes(
-        ax,
-        rec_name: str,
-        loop_x: List[np.ndarray],
-        loop_y: List[np.ndarray],
-    ) -> None:
-        ax.set_xlabel("変位 D")
-        ax.set_ylabel("荷重 F")
-        ax.set_title(f"{rec_name} 履歴ループ")
-        ax.axhline(0, color="#888", linewidth=0.5)
-        ax.axvline(0, color="#888", linewidth=0.5)
-        if loop_x and loop_y:
-            _set_tight_ylim(ax, np.concatenate(loop_y))
-            dx = np.concatenate(loop_x)
-            dx_range = float(dx.max() - dx.min())
-            m = dx_range * 0.1 if dx_range > 1e-15 else max(abs(float(dx.max())) * 0.2, 1e-6)
-            ax.set_xlim(float(dx.min()) - m, float(dx.max()) + m)
-
-    @staticmethod
-    def _apply_hysteresis_time_axes(
-        ax,
-        rec_name: str,
-        time_y: List[np.ndarray],
-    ) -> None:
-        ax.set_xlabel("時間 [s]")
-        ax.set_title(f"{rec_name}")
-        ax.grid(True, linestyle=":", alpha=0.5)
-        if time_y:
-            _set_tight_ylim(ax, np.concatenate(time_y))
 
     # ------------------------------------------------------------------
     # 最大値 (.xbn)

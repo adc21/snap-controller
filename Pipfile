@@ -13,6 +13,9 @@ pyqtdarktheme = ">=2.1.0"
 qtawesome = ">=1.2.0"
 openpyxl = ">=3.1.0"
 scipy = ">=1.10.0"
+# NAP→s8i 変換 (SNAP.exe GUI 自動操作) 用 — Windows 限定
+pywinauto = {version = ">=0.6.8", markers = "sys_platform == 'win32'"}
+pywin32 = {version = ">=306", markers = "sys_platform == 'win32'"}
 
 [dev-packages]
 pyinstaller = ">=5.13.0"

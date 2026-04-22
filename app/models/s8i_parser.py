@@ -559,6 +559,87 @@ class S8iModel:
 
         return True
 
+    # ------------------------------------------------------------------
+    # 伝達関数最適化 — インパルスケース設定
+    # ------------------------------------------------------------------
+
+    def apply_impulse_mode(
+        self,
+        target_case_no: int,
+        impulse_wave_name: str,
+        wave_scale: float = 1.0,
+    ) -> Optional[DycCase]:
+        """指定 DYC ケースをインパルス入力モードに切り替えます。
+
+        伝達関数最適化では、ユーザが選んだ既存ケースを「インパルス波入力で
+        解析するケース」に差し替えます。本メソッドは:
+
+        1. ``target_case_no`` のケースの加力方向波形名称 (index 19) を
+           ``impulse_wave_name`` に、run_flag (index 1) を 1 に設定します。
+        2. 他のすべての DYC ケースの run_flag を 0 に設定します。
+
+        元の .s8i を破壊しないよう、**一時コピーされたモデル** に対して
+        呼び出してから :meth:`write` してください。
+
+        Parameters
+        ----------
+        target_case_no : int
+            インパルス化するケース番号 (1-indexed, D{N} のN)。
+        impulse_wave_name : str
+            加力方向波形として設定する名称 (.wv ファイル stem)。
+        wave_scale : float
+            加力方向倍率 (index 20)。省略時 1.0。
+
+        Returns
+        -------
+        DycCase or None
+            設定したケース。``target_case_no`` が見つからない場合 None。
+        """
+        target = next(
+            (c for c in self.dyc_cases if c.case_no == target_case_no), None
+        )
+        if target is None:
+            return None
+
+        # 他ケースを run_flag=0 に
+        for c in self.dyc_cases:
+            if c.case_no == target_case_no:
+                continue
+            c.run_flag = 0
+            while len(c.values) <= _DYC_RUN_FLAG_IDX:
+                c.values.append("")
+            c.values[_DYC_RUN_FLAG_IDX] = "0"
+
+        # 対象ケースを run_flag=1 + 波形名称変更
+        target.run_flag = 1
+        while len(target.values) <= _DYC_WAVE_SCALE_IDX:
+            target.values.append("")
+        target.values[_DYC_RUN_FLAG_IDX] = "1"
+        target.values[_DYC_WAVE_NAME_IDX] = impulse_wave_name
+        # 倍率が 0 のままだと入力が無効になるため、1.0 相当を保証
+        try:
+            current_scale = float(target.values[_DYC_WAVE_SCALE_IDX])
+        except (TypeError, ValueError):
+            current_scale = 0.0
+        if current_scale == 0.0:
+            target.values[_DYC_WAVE_SCALE_IDX] = f"{wave_scale}"
+        return target
+
+
+# ---------------------------------------------------------------------------
+# DYC フィールド定数
+# ---------------------------------------------------------------------------
+
+#: DYC レコードの「加力方向 名称」(X方向波形名称) フィールド index (0-based)
+#: PDF (応答解析ケース p.195) のフィールド 20 = 0-indexed 19 に対応。
+_DYC_WAVE_NAME_IDX: int = 19
+
+#: DYC レコードの「加力方向 倍率」フィールド index (0-based)
+_DYC_WAVE_SCALE_IDX: int = 20
+
+#: DYC レコードの「解析」(run_flag) フィールド index (0-based)
+_DYC_RUN_FLAG_IDX: int = 1
+
 
 # ---------------------------------------------------------------------------
 # RD 種別ラベル

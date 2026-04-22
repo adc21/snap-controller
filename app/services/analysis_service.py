@@ -151,14 +151,14 @@ class _AnalysisWorker(QThread):
                 continue
             for idx_str, new_val in overrides.items():
                 try:
-                    idx = int(idx_str) - 1  # damper_params は 1-indexed
+                    idx = int(idx_str)  # damper_params キー "N" = values[N]（values[0]=名前）
                 except (ValueError, TypeError):
                     continue  # 非数値キー（iRDTメタデータ等）はスキップ
-                if 0 <= idx < len(ddef.values):
+                if 1 <= idx < len(ddef.values):
                     old_val = ddef.values[idx]
                     ddef.values[idx] = str(new_val)
                     self.log_emitted.emit(
-                        f"  {def_name}[{idx + 1}]: {old_val} → {new_val}"
+                        f"  {def_name}[{idx}]: {old_val} → {new_val}"
                     )
 
     def _apply_extra_defs(self, case: AnalysisCase, model) -> None:

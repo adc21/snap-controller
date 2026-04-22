@@ -213,11 +213,14 @@ class ModelInfoWidget(QWidget):
 
     def _build_header(self) -> QHBoxLayout:
         header = QHBoxLayout()
-        header.addWidget(QLabel("<b>入力モデル (.s8i)</b>"))
+        header.addWidget(QLabel("<b>入力モデル (.s8i / .NAP)</b>"))
         header.addStretch()
-        self._load_btn = QPushButton("📂 .s8i ファイルを読み込む…")
+        self._load_btn = QPushButton("📂 入力ファイルを読み込む… (.s8i / .NAP)")
         self._load_btn.setToolTip(
-            "SNAP の解析入力ファイル (.s8i) を読み込みます。\n"
+            "SNAP の解析入力ファイルを読み込みます。\n"
+            "対応形式:\n"
+            "  ・.s8i (テキスト入力ファイル) — そのまま読み込み\n"
+            "  ・.NAP (SNAP バイナリ) — SNAP.exe 経由で自動的に .s8i へ変換 (約 20-30 秒)\n"
             "モデルの節点・層・ダンパー定義などの構造情報が読み取られ、\n"
             "STEP2 でのケース設定・STEP3 での解析実行が可能になります。"
         )
@@ -227,7 +230,7 @@ class ModelInfoWidget(QWidget):
         self._recent_btn = QToolButton()
         self._recent_btn.setText("▼ 履歴")
         self._recent_btn.setToolTip(
-            "最近使ったs8iファイルから素早く読み込みます\n"
+            "最近使った入力ファイル (.s8i / .NAP) から素早く読み込みます\n"
             "（最大8件を保持。ファイルダイアログを開かずに再読込可能）"
         )
         self._recent_btn.setPopupMode(QToolButton.InstantPopup)
@@ -309,7 +312,7 @@ class ModelInfoWidget(QWidget):
         empty_icon.setAlignment(Qt.AlignCenter)
         empty_card_layout.addWidget(empty_icon)
 
-        empty_msg = QLabel("SNAP入力ファイル (.s8i) を読み込んでください")
+        empty_msg = QLabel("SNAP 入力ファイル (.s8i または .NAP) を読み込んでください")
         empty_msg.setAlignment(Qt.AlignCenter)
         msg_font = QFont()
         msg_font.setPointSize(10)
@@ -318,7 +321,9 @@ class ModelInfoWidget(QWidget):
         empty_card_layout.addWidget(empty_msg)
 
         empty_hint = QLabel(
-            "SNAP の解析入力ファイル (.s8i) を読み込みます。\n"
+            "SNAP の解析入力ファイルを読み込みます。\n"
+            "・.s8i → そのまま読み込み\n"
+            "・.NAP → SNAP.exe 経由で .s8i へ自動変換（約 20-30 秒）\n"
             "モデル情報・ダンパー定義が表示され、STEP2 でのケース作成が可能になります。\n\n"
             "過去の作業を再開するには、メニュー「ファイル → プロジェクトを開く (.snapproj)」を使用してください。"
         )
@@ -397,18 +402,20 @@ class ModelInfoWidget(QWidget):
                 self._floor_chart_area.hide()
             if hasattr(self, '_toggle_btn'): self._toggle_btn.hide()
             if hasattr(self, '_load_btn'):
-                self._load_btn.setText("📂 .s8i ファイルを読み込む…")
+                self._load_btn.setText("📂 入力ファイルを読み込む… (.s8i / .NAP)")
                 self._load_btn.setToolTip(
-                    "SNAP の解析入力ファイル (.s8i) を読み込みます。\n"
+                    "SNAP の解析入力ファイルを読み込みます。\n"
+                    "対応形式: .s8i (テキスト) / .NAP (バイナリ — 自動変換、約 20-30 秒)\n"
                     "モデルの節点・層・ダンパー定義などの構造情報が読み取られ、\n"
                     "STEP2 でのケース設定・STEP3 での解析実行が可能になります。"
                 )
             return
         self._info_stack.setCurrentIndex(1)  # モデル情報を表示
         if hasattr(self, '_load_btn'):
-            self._load_btn.setText("🔄 .s8i ファイルを変更…")
+            self._load_btn.setText("🔄 入力ファイルを変更… (.s8i / .NAP)")
             self._load_btn.setToolTip(
-                "現在読み込んでいる .s8i ファイルを別のファイルに変更します。\n"
+                "現在読み込んでいる入力ファイルを別のファイルに変更します。\n"
+                "対応形式: .s8i (テキスト) / .NAP (バイナリ — 自動変換)\n"
                 "モデルの節点・層・ダンパー定義などの構造情報が再読み取りされます。"
             )
 
@@ -721,11 +728,14 @@ class ModelInfoWidget(QWidget):
     # ------------------------------------------------------------------
 
     def dragEnterEvent(self, event: QDragEnterEvent) -> None:  # type: ignore[override]
-        """ドラッグがパネル上に入ったとき: .s8i ファイルのみ受け入れます。"""
+        """ドラッグがパネル上に入ったとき: .s8i / .NAP ファイルを受け入れます。"""
         mime = event.mimeData()
         if mime.hasUrls():
             urls = mime.urls()
-            if any(url.toLocalFile().lower().endswith(".s8i") for url in urls):
+            if any(
+                url.toLocalFile().lower().endswith((".s8i", ".nap"))
+                for url in urls
+            ):
                 event.acceptProposedAction()
                 # ビジュアルフィードバック: 枠線を青くハイライト
                 self.setStyleSheet(
@@ -740,13 +750,13 @@ class ModelInfoWidget(QWidget):
         super().dragLeaveEvent(event)
 
     def dropEvent(self, event: QDropEvent) -> None:  # type: ignore[override]
-        """ドロップ時: .s8i ファイルのパスを fileDropped シグナルで通知します。"""
+        """ドロップ時: .s8i / .NAP ファイルのパスを fileDropped シグナルで通知します。"""
         self.setStyleSheet("")  # ハイライト解除
         mime = event.mimeData()
         if mime.hasUrls():
             for url in mime.urls():
                 path = url.toLocalFile()
-                if path.lower().endswith(".s8i"):
+                if path.lower().endswith((".s8i", ".nap")):
                     self.fileDropped.emit(path)
                     event.acceptProposedAction()
                     return

@@ -293,8 +293,8 @@ class CaseTableWidget(QWidget):
         if not self._model_loaded:
             QMessageBox.information(
                 self,
-                "s8iモデルを先に読み込んでください",
-                "解析ケースを追加する前に、\nSTEP1 でSNAP入力ファイル (.s8i) を読み込んでください。\n\n"
+                "入力モデルを先に読み込んでください",
+                "解析ケースを追加する前に、\nSTEP1 で SNAP 入力ファイル (.s8i / .NAP) を読み込んでください。\n\n"
                 "モデルを読み込むと、ダンパー定義や配置情報を参照しながら\nケースを設定できるようになります。",
             )
             return
@@ -380,7 +380,7 @@ class CaseTableWidget(QWidget):
                 self._btn_add_header.setToolTip("新しい解析ケースを追加します")
             else:
                 self._btn_add_header.setToolTip(
-                    "STEP1でs8iファイルを読み込むと有効になります"
+                    "STEP1 で入力ファイル (.s8i / .NAP) を読み込むと有効になります"
                 )
         # 空状態の「最初のケースを追加する」ボタン
         if hasattr(self, '_empty_add_btn'):
@@ -391,7 +391,8 @@ class CaseTableWidget(QWidget):
             else:
                 self._empty_add_btn.setText("⬅ STEP1でモデルを読み込んでください")
                 self._empty_add_btn.setToolTip(
-                    "STEP1（モデル設定）でs8iファイルを読み込むと、\nここからケースを追加できるようになります。"
+                    "STEP1（モデル設定）で入力ファイル (.s8i / .NAP) を読み込むと、\n"
+                    "ここからケースを追加できるようになります。"
                 )
 
     # ------------------------------------------------------------------

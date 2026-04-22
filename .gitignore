@@ -39,6 +39,7 @@ run.bat
 error.txt
 build_log.txt
 *.log
+tmp/
 
 # ===== snap-controller project files (user data) =====
 *.snapproj

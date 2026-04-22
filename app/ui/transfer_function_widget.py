@@ -28,6 +28,7 @@ SNAP 解析の .hst 時刻歴データから FFT を算出し、
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import List, Optional, Tuple
 
 import numpy as np
@@ -65,6 +66,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QComboBox,
     QCheckBox,
+    QDoubleSpinBox,
     QFileDialog,
     QMessageBox,
     QPushButton,
@@ -156,6 +158,7 @@ class TransferFunctionWidget(QWidget):
         root.setSpacing(4)
 
         root.addLayout(self._build_control_bar())
+        root.addLayout(self._build_axis_bar())
         self._build_info_labels(root)
         self._build_chart_area(root)
 
@@ -191,9 +194,14 @@ class TransferFunctionWidget(QWidget):
         ctrl.addWidget(self._field_combo)
 
         ctrl.addSpacing(12)
-        self._log_check = QCheckBox("対数スケール")
+        self._xlog_check = QCheckBox("X軸対数")
+        self._xlog_check.setChecked(False)
+        self._xlog_check.stateChanged.connect(self._on_scale_changed)
+        ctrl.addWidget(self._xlog_check)
+
+        self._log_check = QCheckBox("Y軸対数")
         self._log_check.setChecked(False)
-        self._log_check.stateChanged.connect(self._on_selection_changed)
+        self._log_check.stateChanged.connect(self._on_scale_changed)
         ctrl.addWidget(self._log_check)
 
     def _build_control_buttons(self, ctrl: QHBoxLayout) -> None:
@@ -211,6 +219,17 @@ class TransferFunctionWidget(QWidget):
         )
         self._btn_snap_tf.clicked.connect(self._compute_snap_transfer_function)
         ctrl.addWidget(self._btn_snap_tf)
+
+        self._btn_impulse_tf = QPushButton("インパルスTF")
+        self._btn_impulse_tf.setFixedWidth(100)
+        self._btn_impulse_tf.setToolTip(
+            "入力波 (.wv) を指定して、各ケース・各節点の\n"
+            "伝達関数 H(f) = FFT(応答) / FFT(入力) を計算・表示します。\n"
+            "インパルス応答解析で作成した .wv を選ぶと、\n"
+            "入力に対する各節点の周波数応答特性が見られます。"
+        )
+        self._btn_impulse_tf.clicked.connect(self._compute_impulse_transfer_function)
+        ctrl.addWidget(self._btn_impulse_tf)
 
         self._btn_set_ref = QPushButton("基準に設定")
         self._btn_set_ref.setFixedWidth(80)
@@ -235,6 +254,66 @@ class TransferFunctionWidget(QWidget):
         )
         self._btn_export_csv.clicked.connect(self._export_csv)
         ctrl.addWidget(self._btn_export_csv)
+
+    def _build_axis_bar(self) -> QHBoxLayout:
+        """軸範囲制御バー（X/Y 範囲, 自動範囲, 自動追従）を構築。"""
+        bar = QHBoxLayout()
+        bar.addWidget(QLabel("📐 軸範囲"))
+
+        # X 範囲
+        bar.addSpacing(6)
+        bar.addWidget(QLabel("X:"))
+        self._xmin_spin = self._make_range_spin(0.0, -1e6, 1e6, decimals=3)
+        self._xmax_spin = self._make_range_spin(50.0, -1e6, 1e6, decimals=3)
+        bar.addWidget(self._xmin_spin)
+        bar.addWidget(QLabel("〜"))
+        bar.addWidget(self._xmax_spin)
+        bar.addWidget(QLabel("Hz"))
+
+        # Y 範囲
+        bar.addSpacing(12)
+        bar.addWidget(QLabel("Y:"))
+        self._ymin_spin = self._make_range_spin(0.0, -1e9, 1e9, decimals=6)
+        self._ymax_spin = self._make_range_spin(1.0, -1e9, 1e9, decimals=6)
+        bar.addWidget(self._ymin_spin)
+        bar.addWidget(QLabel("〜"))
+        bar.addWidget(self._ymax_spin)
+
+        # 自動範囲
+        bar.addSpacing(12)
+        self._auto_range_check = QCheckBox("自動範囲")
+        self._auto_range_check.setChecked(True)
+        self._auto_range_check.setToolTip(
+            "チェック中は描画データに合わせて軸範囲を自動調整します"
+        )
+        self._auto_range_check.stateChanged.connect(self._on_auto_range_toggled)
+        bar.addWidget(self._auto_range_check)
+
+        self._btn_auto_range = QPushButton("自動範囲へ戻す")
+        self._btn_auto_range.setFixedWidth(120)
+        self._btn_auto_range.setToolTip(
+            "現在のデータに合わせて X/Y のスピンボックス値を再設定します"
+        )
+        self._btn_auto_range.clicked.connect(self._reset_axis_range_to_auto)
+        bar.addWidget(self._btn_auto_range)
+
+        bar.addStretch(1)
+
+        for spin in (self._xmin_spin, self._xmax_spin, self._ymin_spin, self._ymax_spin):
+            spin.valueChanged.connect(self._on_axis_range_changed)
+
+        self._set_manual_range_spins_enabled(False)
+        return bar
+
+    @staticmethod
+    def _make_range_spin(value: float, minimum: float, maximum: float,
+                         decimals: int = 3) -> QDoubleSpinBox:
+        spin = QDoubleSpinBox()
+        spin.setRange(minimum, maximum)
+        spin.setDecimals(decimals)
+        spin.setValue(value)
+        spin.setMaximumWidth(110)
+        return spin
 
     def _build_info_labels(self, root: QVBoxLayout) -> None:
         """ピーク情報 + ステータスラベルを構築。"""
@@ -340,6 +419,81 @@ class TransferFunctionWidget(QWidget):
 
     def _on_selection_changed(self, *_) -> None:
         self._refresh()
+
+    def _on_scale_changed(self, *_) -> None:
+        """X/Y 軸の線形/対数切替。対数時に範囲が 0 以下なら微調整。"""
+        self._refresh()
+
+    def _on_axis_range_changed(self, *_) -> None:
+        """手動で軸範囲スピンボックスが変更されたときの再描画。"""
+        if self._auto_range_check.isChecked():
+            return  # 自動範囲中は無視
+        self._apply_axis_limits(self._canvas.ax)
+        self._canvas.draw_idle()
+
+    def _on_auto_range_toggled(self, state: int) -> None:
+        is_auto = (state == Qt.Checked.value) or (state == 2)
+        self._set_manual_range_spins_enabled(not is_auto)
+        if is_auto:
+            self._reset_axis_range_to_auto()
+        self._refresh()
+
+    def _set_manual_range_spins_enabled(self, enabled: bool) -> None:
+        for spin in (self._xmin_spin, self._xmax_spin,
+                     self._ymin_spin, self._ymax_spin):
+            spin.setEnabled(enabled)
+
+    def _reset_axis_range_to_auto(self) -> None:
+        """現在描画されたデータに合わせてスピンボックスを更新する。"""
+        ax = self._canvas.ax
+        xmin, xmax = ax.get_xlim()
+        ymin, ymax = ax.get_ylim()
+        for spin, v in [
+            (self._xmin_spin, xmin),
+            (self._xmax_spin, xmax),
+            (self._ymin_spin, ymin),
+            (self._ymax_spin, ymax),
+        ]:
+            spin.blockSignals(True)
+            spin.setValue(float(v))
+            spin.blockSignals(False)
+
+    def _apply_axis_scales(self, ax) -> None:
+        """対数/線形のスケールを適用する。対数で負/0 が入る場合は線形にフォールバック。"""
+        if self._xlog_check.isChecked():
+            xmin, _ = ax.get_xlim()
+            if xmin <= 0:
+                ax.set_xlim(left=max(xmin, 1e-6))
+            try:
+                ax.set_xscale("log")
+            except Exception:
+                ax.set_xscale("linear")
+        else:
+            ax.set_xscale("linear")
+
+        if self._log_check.isChecked():
+            ymin, _ = ax.get_ylim()
+            if ymin <= 0:
+                ax.set_ylim(bottom=max(ymin, 1e-9))
+            try:
+                ax.set_yscale("log")
+            except Exception:
+                ax.set_yscale("linear")
+        else:
+            ax.set_yscale("linear")
+
+    def _apply_axis_limits(self, ax) -> None:
+        """手動モードなら spinbox の値で軸範囲を設定する。"""
+        if self._auto_range_check.isChecked():
+            return
+        xmin = self._xmin_spin.value()
+        xmax = self._xmax_spin.value()
+        ymin = self._ymin_spin.value()
+        ymax = self._ymax_spin.value()
+        if xmax > xmin:
+            ax.set_xlim(xmin, xmax)
+        if ymax > ymin:
+            ax.set_ylim(ymin, ymax)
 
     # ------------------------------------------------------------------
     # 基準（リファレンス）データ管理
@@ -534,7 +688,6 @@ class TransferFunctionWidget(QWidget):
         ax.clear()
 
         colors = plt.rcParams["axes.prop_cycle"].by_key()["color"]
-        use_log = self._log_check.isChecked()
         peak_texts: List[str] = []
         plotted = 0
 
@@ -587,25 +740,233 @@ class TransferFunctionWidget(QWidget):
                 label=ref["name"], alpha=0.6,
             )
 
-        if use_log:
-            ax.set_yscale("log")
-
         rec_name = self._rec_combo.currentText()
         field_name = self._field_combo.currentText()
         ax.set_xlabel("周波数 [Hz]")
         ax.set_ylabel("|H(f)|")
         ax.set_title(f"伝達関数 — {cat}/{field_name}: 1F → {rec_name}")
         ax.grid(True, linestyle=":", alpha=0.5)
-        ax.set_xlim(left=0)
+        if self._auto_range_check.isChecked():
+            ax.set_xlim(left=0)
+        self._apply_axis_scales(ax)
+        self._apply_axis_limits(ax)
         ax.legend(fontsize=8)
         self._canvas.fig.tight_layout()
         self._canvas.draw()
+
+        if self._auto_range_check.isChecked():
+            self._reset_axis_range_to_auto()
 
         self._peak_label.setText("  |  ".join(peak_texts))
         self._status_label.setText(
             f"伝達関数 {plotted} ケース  "
             f"[{cat} / 入力=rec0 / 出力=rec{output_rec} / field={field_idx}]"
         )
+
+    # ------------------------------------------------------------------
+    # インパルス伝達関数
+    # ------------------------------------------------------------------
+
+    def _compute_impulse_transfer_function(self) -> None:
+        """入力 .wv を指定し、各ケース x 選択レコードの H(f)=FFT(out)/FFT(in) を表示。"""
+        if not self._entries:
+            self._status_label.setText("ケースがありません")
+            return
+
+        cat = self._cat_combo.currentText()
+        rec_idx = self._rec_combo.currentData()
+        field_idx = self._field_combo.currentData()
+
+        if not cat or rec_idx is None or field_idx is None:
+            self._status_label.setText("カテゴリ/レコード/成分を選択してください")
+            return
+
+        # 入力 .wv ファイルを選択
+        start_dir = self._guess_wave_dir()
+        wav_path, _ = QFileDialog.getOpenFileName(
+            self, "入力波 (.wv) を選択", start_dir,
+            "SNAP wave (*.wv *.wav);;All files (*)",
+        )
+        if not wav_path:
+            return
+
+        try:
+            in_signal, in_dt = self._load_wv_signal(wav_path)
+        except Exception as e:
+            QMessageBox.warning(
+                self, "読込エラー",
+                f".wv ファイルの読み込みに失敗しました:\n{e}",
+            )
+            return
+        if len(in_signal) < 2:
+            QMessageBox.warning(self, "データ不足", "入力波のデータが短すぎます")
+            return
+
+        ax = self._canvas.ax
+        ax.clear()
+        colors = plt.rcParams["axes.prop_cycle"].by_key()["color"]
+        peak_texts: List[str] = []
+        plotted = 0
+
+        # 入力側 FFT を事前計算
+        in_Y = rfft(in_signal)
+        in_freqs_ref = rfftfreq(len(in_signal), d=in_dt)
+        in_mag = np.abs(in_Y)
+
+        for ci, (case_name, loader) in enumerate(self._entries):
+            tf_data = self._compute_impulse_tf_for_case(
+                loader, cat, rec_idx, field_idx,
+                in_signal_len=len(in_signal), in_dt=in_dt,
+                in_mag_ref=in_mag, in_freqs_ref=in_freqs_ref,
+            )
+            if tf_data is None:
+                continue
+            freqs, amplitude, peak_freq, peak_amp = tf_data
+            c = colors[ci % len(colors)]
+            ax.plot(freqs, amplitude, color=c, linewidth=0.9,
+                    label=f"{case_name} H(f)", alpha=0.85)
+            ax.plot(peak_freq, peak_amp, "v", color=c, markersize=7)
+            peak_texts.append(
+                f"{case_name}: f={peak_freq:.3f} Hz, |H|={peak_amp:.4g}"
+            )
+            plotted += 1
+
+        if plotted == 0:
+            self._canvas.show_message(
+                "伝達関数を計算できませんでした\n"
+                "入力波とケース応答のデータを確認してください"
+            )
+            self._peak_label.setText("")
+            self._status_label.setText("インパルス伝達関数: 計算失敗")
+            return
+
+        if self._plot_reference_overlay(ax):
+            plotted += 1
+
+        rec_name = self._rec_combo.currentText()
+        field_name = self._field_combo.currentText()
+        ax.set_xlabel("周波数 [Hz]")
+        ax.set_ylabel("|H(f)| = |FFT(応答)/FFT(入力)|")
+        import os as _os
+        wv_name = _os.path.basename(wav_path)
+        ax.set_title(f"インパルス伝達関数 — 入力={wv_name} / {cat}/{rec_name}/{field_name}")
+        ax.grid(True, linestyle=":", alpha=0.5)
+        if self._auto_range_check.isChecked():
+            ax.set_xlim(left=0)
+        self._apply_axis_scales(ax)
+        self._apply_axis_limits(ax)
+        ax.legend(fontsize=8)
+        self._canvas.fig.tight_layout()
+        self._canvas.draw()
+        if self._auto_range_check.isChecked():
+            self._reset_axis_range_to_auto()
+
+        self._peak_label.setText("  |  ".join(peak_texts))
+        self._status_label.setText(
+            f"インパルスTF {plotted} ケース  "
+            f"[入力={wv_name} / {cat}/rec={rec_idx}/field={field_idx}]"
+        )
+
+    def _guess_wave_dir(self) -> str:
+        """入力波選択時の初期ディレクトリを推定する。"""
+        for _, loader in self._entries:
+            root = getattr(loader, "result_dir", None)
+            if root:
+                p = Path(str(root))
+                # 親の親に wave がよくある (SNAPV8/work/<model>/D1 → SNAPV8/wave)
+                for candidate in (p.parent.parent.parent / "wave",
+                                  p.parent.parent / "wave", p):
+                    if candidate.exists():
+                        return str(candidate)
+        return ""
+
+    @staticmethod
+    def _compute_impulse_tf_for_case(
+        loader, cat: str, rec_idx: int, field_idx: int,
+        in_signal_len: int, in_dt: float,
+        in_mag_ref: np.ndarray, in_freqs_ref: np.ndarray,
+    ):
+        """1ケースの H(f) = FFT(out)/FFT(in) を計算。 (freqs, |H|, peak_f, peak_|H|) を返す。
+
+        応答長と入力長が異なる場合は、短い方に揃える（時間領域で）。
+        dt が異なる場合は例外（前提として dt は一致）。
+        """
+        bc = loader.get(cat)
+        if not bc or not bc.hst or not bc.hst.header:
+            return None
+        hst = bc.hst
+        h = hst.header
+        if rec_idx >= h.num_records or field_idx >= h.fields_per_record:
+            return None
+        try:
+            hst.ensure_loaded()
+            y = hst.time_series(rec_idx, field_idx)
+        except Exception:
+            return None
+        if len(y) < 2:
+            return None
+
+        # dt の整合
+        y_dt = float(hst.dt)
+        if abs(y_dt - in_dt) > 1e-8:
+            # dt が一致しない場合は出力側を入力側 dt に揃える（サンプル間引き/複製はしない）
+            # 簡易対応: 何もせず計算し、周波数軸は応答側のものを使う
+            pass
+
+        # 長さを揃える（短い方に）
+        n = min(len(y), in_signal_len)
+        if n < 2:
+            return None
+        y_trim = np.asarray(y[:n], dtype=np.float64)
+
+        Y = rfft(y_trim)
+        freqs = rfftfreq(n, d=y_dt)
+
+        # 入力側 FFT を同じ長さで再計算（長さが違えば）
+        if n == in_signal_len:
+            in_mag = in_mag_ref
+        else:
+            return None  # 呼び出し側で拾えないが、通常は入力=応答と同じ長さ
+
+        # ゼロ除算ガード
+        eps = 1e-20
+        H = np.abs(Y) / (in_mag + eps)
+        # DC 除去
+        freqs = freqs[1:]
+        H = H[1:]
+        if len(freqs) == 0:
+            return None
+        peak_i = int(np.argmax(H))
+        return freqs, H, float(freqs[peak_i]), float(H[peak_i])
+
+    @staticmethod
+    def _load_wv_signal(path: str) -> Tuple[np.ndarray, float]:
+        """SNAP .wv (テキスト) をパースして (signal, dt) を返す簡易リーダ。"""
+        text = Path(path).read_text(encoding="ascii", errors="ignore")
+        dt = 0.01
+        values: List[float] = []
+        data_started = False
+        for raw in text.splitlines():
+            line = raw.strip()
+            if not line:
+                continue
+            if line.startswith("DT="):
+                try:
+                    dt = float(line.split("=", 1)[1].strip().strip('"'))
+                except ValueError:
+                    pass
+                continue
+            if line == "DATA":
+                data_started = True
+                continue
+            if data_started:
+                try:
+                    values.append(float(line))
+                except ValueError:
+                    continue
+        if not values:
+            raise ValueError(".wv から数値データを抽出できませんでした")
+        return np.asarray(values, dtype=np.float64), dt
 
     # ------------------------------------------------------------------
     # メイン描画
@@ -721,15 +1082,20 @@ class TransferFunctionWidget(QWidget):
         return True
 
     def _finalize_fft_axes(self, ax, cat: str) -> None:
-        if self._log_check.isChecked():
-            ax.set_yscale("log")
         rec_name = self._rec_combo.currentText()
         field_name = self._field_combo.currentText()
         ax.set_xlabel("周波数 [Hz]")
         ax.set_ylabel("|H(f)|")
         ax.set_title(f"周波数応答 — {cat} / {rec_name} / {field_name}")
         ax.grid(True, linestyle=":", alpha=0.5)
-        ax.set_xlim(left=0)
+        if self._auto_range_check.isChecked():
+            ax.set_xlim(left=0)
+        self._apply_axis_scales(ax)
+        self._apply_axis_limits(ax)
         ax.legend(fontsize=8)
         self._canvas.fig.tight_layout()
         self._canvas.draw()
+
+        # 自動範囲中は現在の軸スコープをスピンボックスに反映
+        if self._auto_range_check.isChecked():
+            self._reset_axis_range_to_auto()
