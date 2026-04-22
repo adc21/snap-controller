@@ -628,7 +628,10 @@ class UnifiedOptimizerDialog(QDialog):
         self._populate_tf_base_case_combo()
         self._tf_base_case_combo.setToolTip(
             "インパルス波に差し替える対象の DYC ケース。"
-            "他のケースは実行しない（run_flag=0）に設定されます。"
+            "他のケースは実行しない（run_flag=0）に設定されます。\n"
+            "末尾の [...] はそのケースで有効な装置グループ。"
+            "[ダンパーなし] のケースを選ぶと DVOD/DSD 値を変更しても"
+            "応答は変わらないため、最適化開始時にエラーを出します。"
         )
         gl.addRow("ベースケース:", self._tf_base_case_combo)
 
@@ -693,12 +696,25 @@ class UnifiedOptimizerDialog(QDialog):
         layout.addWidget(self._tf_group)
 
     def _populate_tf_base_case_combo(self) -> None:
-        """ベース DYC ケース一覧を更新。"""
+        """ベース DYC ケース一覧を更新。
+
+        ラベルに装置グループ名を併記する。装置グループ (DYC values[5]) は
+        SNAP でそのケースに含める RD 装置を絞る識別子で、空欄だと装置が
+        一切含まれない。空欄ケースを選んで DVOD/DSD を変化させても応答は
+        変わらないため、一目でわかるように [グループ名] / [ダンパーなし] を
+        表示する (bug fix 2026-04-22: TF peak never changes)。
+        """
         self._tf_base_case_combo.clear()
         if self._project is None or self._project.s8i_model is None:
             return
-        for c in self._project.s8i_model.dyc_cases:
-            label = f"D{c.case_no}: {c.name}"
+        model = self._project.s8i_model
+        for c in model.dyc_cases:
+            grp = c.damper_group
+            if grp:
+                grp_part = f" [{grp}]"
+            else:
+                grp_part = " [ダンパーなし]"
+            label = f"D{c.case_no}: {c.name}{grp_part}"
             self._tf_base_case_combo.addItem(label, c.case_no)
 
     def _on_browse_wave_dir(self) -> None:
@@ -1701,6 +1717,39 @@ class UnifiedOptimizerDialog(QDialog):
                 "SNAP.exe またはモデルファイルパスが未設定です。"
             )
             return None
+
+        # --- 装置グループ整合チェック ----------------------------------
+        # SNAP では DYC.values[5] (ダンパーグループ名) と RD.values[0] が
+        # 一致する装置のみが当該ケースで有効。グループが空のケースを
+        # 選ぶとどんな DVOD/DSD 値変更も応答に反映されず、最適化が
+        # 「ピークが変わらない」という無言の no-op になる (bug 2026-04-22)。
+        if self._project is not None and self._project.s8i_model is not None:
+            model = self._project.s8i_model
+            case = model.get_dyc_case(int(target_case_no))
+            active_defs = model.active_damper_defs_for_case(int(target_case_no))
+            case_name = case.name if case else f"D{target_case_no}"
+            grp = case.damper_group if case else ""
+            if damper_def_name and not grp:
+                QMessageBox.critical(
+                    self,
+                    "装置グループ未設定",
+                    f"選択したケース「D{target_case_no}: {case_name}」は装置グループが\n"
+                    f"空欄のため、ダンパーがどれも解析に含まれません。\n\n"
+                    f"DVOD/DSD のパラメータを最適化しても応答は一切変わりません。\n"
+                    f"装置グループを設定済みのケース（例: 末尾が -OD / -IOD / -MIX 等）を\n"
+                    f"選び直してください。",
+                )
+                return None
+            if damper_def_name and active_defs and damper_def_name not in active_defs:
+                QMessageBox.critical(
+                    self,
+                    "装置グループ不整合",
+                    f"選択したケース「D{target_case_no}: {case_name}」の装置グループ\n"
+                    f"「{grp}」には装置「{damper_def_name}」が含まれません。\n\n"
+                    f"このケースで有効な装置: {', '.join(active_defs)}\n\n"
+                    f"最適化対象の装置を含むケースを選ぶか、装置を変更してください。",
+                )
+                return None
 
         phys_ranges = [pr for pr in params if not pr.is_floor_count]
         count_ranges = [pr for pr in params if pr.is_floor_count]

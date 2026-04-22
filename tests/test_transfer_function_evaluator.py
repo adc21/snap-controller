@@ -219,6 +219,94 @@ class TestCallErrorHandling:
 
 
 # ---------------------------------------------------------------------------
+# 装置グループ整合性の事前検査 (regression: 2026-04-22 peak-never-changes bug)
+# ---------------------------------------------------------------------------
+
+class TestDamperGroupMismatchWarning:
+    """DYC.values[5] の装置グループと damper_def_name が不整合な場合に
+    警告をログに出すことを保証するテスト。
+
+    この警告は「DVOD 値を変えてもピークが変わらない」という無言 no-op の
+    早期検出を目的とする (bug fix 2026-04-22)。"""
+
+    def _build_s8i_with_dampers(self, tmp_path, dyc_group: str) -> Path:
+        """ダンパー IOD を持つ最小モデルを書き出す。
+
+        dyc_group を ``"IOD"`` にすれば整合、``""`` や ``"OD"`` にすれば不整合。
+        """
+        p = tmp_path / "model.s8i"
+        content = (
+            "DVOD / IOD,0,0,0,,3,100,0,14,0,0,0,0,0,0,0,0,0,0,0,1,0,1\n"
+            "RD / IOD,1,2,1,IOD,0,0,0,0,0,1,0,0,1,,0,1,1,0,1\n"
+            f"DYC / CASE,1,2,0,0,{dyc_group},0,0,,D1,1,10,0,1,0,0,1,DL+LL,,WV,1\n"
+        )
+        p.write_text(content, encoding="shift_jis")
+        return p
+
+    def _cfg_for(
+        self, s8i: Path, tmp_path, fake_snap_exe,
+    ) -> TransferFunctionEvalConfig:
+        return TransferFunctionEvalConfig(
+            snap_exe_path=str(fake_snap_exe),
+            base_s8i_path=str(s8i),
+            snap_work_dir=str(tmp_path / "work"),
+            snap_wave_dir=str(tmp_path / "wave"),
+            target_case_no=1,
+            damper_def_name="IOD",
+            param_field_map={"field_8": 8},
+        )
+
+    def test_warns_when_group_is_empty(self, tmp_path, fake_snap_exe):
+        """装置グループ空欄のケースに対して警告が出る。"""
+        s8i = self._build_s8i_with_dampers(tmp_path, dyc_group="")
+        cfg = self._cfg_for(s8i, tmp_path, fake_snap_exe)
+        messages: list[str] = []
+        TransferFunctionEvaluator(cfg, log_callback=messages.append)
+        warn_msgs = [m for m in messages if "[WARN]" in m and "装置グループ" in m]
+        assert warn_msgs, f"[WARN] 装置グループ の警告が出ていない: {messages}"
+        assert "空欄" in warn_msgs[0] or "含まれません" in warn_msgs[0]
+
+    def test_warns_when_def_not_in_group(self, tmp_path, fake_snap_exe):
+        """装置グループに damper_def_name が含まれない場合に警告が出る。"""
+        s8i = self._build_s8i_with_dampers(tmp_path, dyc_group="OD")
+        cfg = self._cfg_for(s8i, tmp_path, fake_snap_exe)
+        messages: list[str] = []
+        TransferFunctionEvaluator(cfg, log_callback=messages.append)
+        warn_msgs = [m for m in messages if "[WARN]" in m and "装置グループ" in m]
+        assert warn_msgs, f"[WARN] 装置グループ の警告が出ていない: {messages}"
+        assert "'IOD'" in warn_msgs[0]
+
+    def test_no_warning_when_group_matches(self, tmp_path, fake_snap_exe):
+        """整合ケースでは [INFO] 装置グループ整合性 OK が出て、警告は出ない。"""
+        s8i = self._build_s8i_with_dampers(tmp_path, dyc_group="IOD")
+        cfg = self._cfg_for(s8i, tmp_path, fake_snap_exe)
+        messages: list[str] = []
+        TransferFunctionEvaluator(cfg, log_callback=messages.append)
+        warn_msgs = [m for m in messages if "[WARN]" in m and "装置グループ" in m]
+        info_msgs = [m for m in messages if "整合性 OK" in m]
+        assert not warn_msgs, f"予期せぬ警告: {warn_msgs}"
+        assert info_msgs, f"整合性 OK が出ていない: {messages}"
+
+    def test_no_warning_when_no_damper_def_configured(
+        self, tmp_path, fake_snap_exe,
+    ):
+        """damper_def_name が未設定なら検査自体スキップ (床面ダンパー基数のみ最適化の場合)。"""
+        s8i = self._build_s8i_with_dampers(tmp_path, dyc_group="")
+        cfg = TransferFunctionEvalConfig(
+            snap_exe_path=str(fake_snap_exe),
+            base_s8i_path=str(s8i),
+            snap_work_dir=str(tmp_path / "work"),
+            snap_wave_dir=str(tmp_path / "wave"),
+            target_case_no=1,
+            # damper_def_name 未設定
+        )
+        messages: list[str] = []
+        TransferFunctionEvaluator(cfg, log_callback=messages.append)
+        group_msgs = [m for m in messages if "装置グループ" in m]
+        assert not group_msgs, f"damper_def_name 未設定なのに検査された: {group_msgs}"
+
+
+# ---------------------------------------------------------------------------
 # Support file copy
 # ---------------------------------------------------------------------------
 

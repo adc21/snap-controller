@@ -130,6 +130,11 @@ class TransferFunctionEvaluator:
         self._error_count: int = 0
         self._cache: Dict[str, Dict[str, float]] = {}
 
+        # 装置グループ整合性の事前チェック（警告のみ、ブロックしない）
+        # UI 側でもチェックしているが、スクリプト実行やテストから直接
+        # 呼ばれた場合でも問題が見えるようにログに残す。
+        self._warn_if_damper_group_mismatch()
+
         # インパルス波を wave フォルダに生成（1回のみ）
         self._impulse_filename = (
             config.impulse_filename_override
@@ -144,6 +149,51 @@ class TransferFunctionEvaluator:
         # 最新結果の保持（UI プロット用）
         self.last_result: Optional[TransferFunctionResult] = None
         self.last_T1: Optional[float] = None
+
+    def _warn_if_damper_group_mismatch(self) -> None:
+        """対象ケースの装置グループと damper_def_name の整合性を検査して
+        不整合ならログに警告を出す。
+
+        SNAP では DYC.values[5] (ダンパーグループ名) と RD.values[0] が一致
+        する装置のみが当該ケースで有効。グループが空、または ``damper_def_name``
+        がグループ内の RD に出現しない場合は、どんなに DVOD/DSD 値を
+        変更しても応答に反映されないため、最適化が無言で no-op になる。
+        """
+        if not self.config.damper_def_name:
+            return
+        try:
+            model = parse_s8i(self.config.base_s8i_path)
+        except Exception:
+            logger.debug("装置グループ検査の為の parse_s8i に失敗", exc_info=True)
+            return
+        case = model.get_dyc_case(self.config.target_case_no)
+        if case is None:
+            self.log_callback(
+                f"  [WARN] ケース D{self.config.target_case_no} が .s8i に存在しません。"
+            )
+            return
+        group = case.damper_group
+        active_defs = model.active_damper_defs_for_case(self.config.target_case_no)
+        if not group:
+            self.log_callback(
+                f"  [WARN] ケース D{self.config.target_case_no} ({case.name}) の"
+                f" 装置グループが空欄です。装置 '{self.config.damper_def_name}' の"
+                f" パラメータを変更しても応答に反映されません (SNAP: 装置未選択)。"
+            )
+            return
+        if self.config.damper_def_name not in active_defs:
+            self.log_callback(
+                f"  [WARN] ケース D{self.config.target_case_no} ({case.name}) の"
+                f" 装置グループ '{group}' には装置 '{self.config.damper_def_name}'"
+                f" が含まれません。パラメータ変更は応答に反映されません。"
+                f" このケースで有効な装置: {active_defs}"
+            )
+            return
+        self.log_callback(
+            f"  [INFO] 装置グループ整合性 OK: ケース D{self.config.target_case_no}"
+            f" ({case.name}), グループ '{group}', 有効装置 {active_defs},"
+            f" 最適化対象 '{self.config.damper_def_name}'"
+        )
 
     # ------------------------------------------------------------------
     # Public
