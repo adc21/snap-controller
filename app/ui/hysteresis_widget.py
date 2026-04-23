@@ -6,19 +6,23 @@ app/ui/hysteresis_widget.py
 
 Damper.hst または Spring.hst から時刻歴を読み込み、
 
-  * 力–変位（F–D）ループ
-  * 力–速度（F–V）ループ
+  * 主ループ（サブ要素に応じた F–D / F–A / F–V ループ）
+  * F–V ループ（副ループ）
 
-の 2 種類の履歴ループをタブ切り替えで表示する。
-複数のダンパーを重ね描きして比較できる。
+の履歴ループをタブ切り替えで表示する。複数のダンパーを重ね描きして比較できる。
 
-主な機能
---------
-- F–D ループ（Force vs Displacement）
-- F–V ループ（Force vs Velocity）  ← 既存タブにはなかった新機能
-- 複数ダンパー（レコード）の重ね描き
-- ピーク一覧テーブル（最大荷重・変位・速度・エネルギー）
-- 複数ケース対応（ケース別に色分け）
+iOD（複合制振装置）対応
+-----------------------
+iOD ダンパーは fpr=4 の「全体」レコードと fpr=11 の「サブ要素パック」
+レコードを両方出力する。サブ要素セレクターで以下を選択できる:
+
+- 自動: レコードの fpr から推定（fpr=4→全体 F-D, fpr=11→スプリング F-D）
+- 全体: 主スプリング成分の F-D (fpr=4 なら全体 F-D, fpr=11 なら f1/f2)
+- スプリング: F-D 線形（fpr=11 のみ）
+- 質量: F-A 線形（fpr=11 のみ, F = m·A）
+- ダッシュポット: F-V ヒステリシス（fpr=11 のみ）
+
+非 iOD ファイルではサブ要素セレクターを自動/全体に固定する。
 
 使い方
 ------
@@ -88,9 +92,29 @@ from controller.binary.hysteresis_analysis import (
     FIELD_DISP,
     FIELD_VEL,
     FIELD_ENERGY,
+    SUB_ELEMENT_AUTO,
+    SUB_ELEMENT_WHOLE,
+    SUB_ELEMENT_MASS,
+    SUB_ELEMENT_DASHPOT,
+    SUB_ELEMENT_LABELS,
+    SUB_ELEMENT_PRIMARY_KIND,
     fetch_hysteresis_data,
     compute_peak_stats,
+    is_iod_layout,
 )
+
+
+# 単位換算（SNAP 内部は SI、表示は mm/mm/s/mm/s² で統一）
+_MM_SCALE = 1000.0
+_FORCE_SCALE = 1.0  # SNAP の力は既に kN 相当想定
+
+# サブ要素ごとの主軸ラベル
+_PRIMARY_AXIS_LABELS: Dict[str, Tuple[str, str]] = {
+    # sub_element: (axis_name, unit_label)
+    SUB_ELEMENT_WHOLE: ("変位", "mm"),
+    SUB_ELEMENT_MASS: ("加速度", "mm/s²"),
+    SUB_ELEMENT_DASHPOT: ("速度", "mm/s"),
+}
 
 
 # ---------------------------------------------------------------------------
@@ -136,31 +160,43 @@ def _set_tight_axis(ax, x_arr: np.ndarray, y_arr: np.ndarray,
         setter(lo - m, hi + m)
 
 
-# ---------------------------------------------------------------------------
-# データ取得ヘルパー
-# ---------------------------------------------------------------------------
+def _primary_array(data: Dict[str, np.ndarray]) -> np.ndarray:
+    """サブ要素の主軸変数 (D / A / V) を mm 単位に変換して返す。"""
+    x_kind = data.get("x_kind", "D")
+    arr = data.get(x_kind, np.zeros(0))
+    return arr * _MM_SCALE
+
+
+def _velocity_array(data: Dict[str, np.ndarray]) -> np.ndarray:
+    """F-V 補助ループ用の V 配列 (mm/s) を返す。"""
+    return data.get("V", np.zeros(0)) * _MM_SCALE
+
+
+def _primary_label(sub_element: str) -> Tuple[str, str]:
+    """(軸名, 単位) を返す。"""
+    return _PRIMARY_AXIS_LABELS.get(sub_element, ("変位", "mm"))
+
 
 # ---------------------------------------------------------------------------
 # メインウィジェット
 # ---------------------------------------------------------------------------
 
 class HysteresisWidget(QWidget):
-    """ダンパー・バネ履歴ループウィジェット。
-
-    F–D ループと F–V ループをタブ切り替えで表示し、
-    ピーク統計テーブルも提供する。
-
-    使い方::
-
-        w = HysteresisWidget()
-        w.set_entries([("ケース名", snap_result_loader)])
-    """
+    """ダンパー・バネ履歴ループウィジェット。"""
 
     _CATEGORIES = ["Damper", "Spring"]
+    _SUB_ELEMENTS_ALL = [
+        SUB_ELEMENT_AUTO,
+        SUB_ELEMENT_WHOLE,
+        SUB_ELEMENT_MASS,
+        SUB_ELEMENT_DASHPOT,
+    ]
+    _SUB_ELEMENTS_NON_IOD = [SUB_ELEMENT_AUTO, SUB_ELEMENT_WHOLE]
 
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
         self._entries: List[Tuple[str, SnapResultLoader]] = []
+        self._iod_detected = False
         self._setup_ui()
 
     # ------------------------------------------------------------------
@@ -168,17 +204,10 @@ class HysteresisWidget(QWidget):
     # ------------------------------------------------------------------
 
     def set_entries(self, entries: List[Tuple[str, SnapResultLoader]]) -> None:
-        """ケース名とローダーのリストを設定してリフレッシュする。
-
-        Parameters
-        ----------
-        entries : list of (name, SnapResultLoader)
-        """
         self._entries = list(entries) if entries else []
         self._refresh()
 
     def set_dyc_selections(self, selections: list) -> None:
-        """CaseDycSelectorWidget からの DycSelection リストを受け取って表示する。"""
         from pathlib import Path
         entries: List[Tuple[str, SnapResultLoader]] = []
         for sel in selections or []:
@@ -223,7 +252,15 @@ class HysteresisWidget(QWidget):
         self._cat_combo.currentIndexChanged.connect(self._on_category_changed)
         ctrl.addWidget(self._cat_combo)
 
-        ctrl.addSpacing(12)
+        ctrl.addSpacing(8)
+        ctrl.addWidget(QLabel("サブ要素:"))
+        self._sub_combo = QComboBox()
+        self._sub_combo.setMinimumWidth(130)
+        self._populate_sub_combo(iod=False)
+        self._sub_combo.currentIndexChanged.connect(self._on_sub_element_changed)
+        ctrl.addWidget(self._sub_combo)
+
+        ctrl.addSpacing(8)
         ctrl.addWidget(QLabel("dt [s]:"))
         self._dt_spin = QDoubleSpinBox()
         self._dt_spin.setRange(0.00001, 1.0)
@@ -240,6 +277,19 @@ class HysteresisWidget(QWidget):
         ctrl.addWidget(btn_refresh)
         return ctrl
 
+    def _populate_sub_combo(self, iod: bool) -> None:
+        """iOD 判定に応じてサブ要素セレクターの項目を更新する。"""
+        items = self._SUB_ELEMENTS_ALL if iod else self._SUB_ELEMENTS_NON_IOD
+        current = self._sub_combo.currentData() if self._sub_combo.count() else SUB_ELEMENT_AUTO
+        self._sub_combo.blockSignals(True)
+        self._sub_combo.clear()
+        for key in items:
+            self._sub_combo.addItem(SUB_ELEMENT_LABELS[key], key)
+        # 元の選択を保持（項目が無くなった場合は auto に戻る）
+        idx = self._sub_combo.findData(current)
+        self._sub_combo.setCurrentIndex(idx if idx >= 0 else 0)
+        self._sub_combo.blockSignals(False)
+
     def _build_status_label(self) -> QLabel:
         self._status_label = QLabel("")
         self._status_label.setStyleSheet("color:#666; font-size:11px; padding:2px 4px;")
@@ -250,8 +300,8 @@ class HysteresisWidget(QWidget):
         left.addWidget(QLabel("ダンパー / バネ（複数選択可）:"))
         self._record_list = QListWidget()
         self._record_list.setSelectionMode(QAbstractItemView.ExtendedSelection)
-        self._record_list.setMinimumWidth(150)
-        self._record_list.setMaximumWidth(220)
+        self._record_list.setMinimumWidth(180)
+        self._record_list.setMaximumWidth(260)
         self._record_list.itemSelectionChanged.connect(self._on_selection_changed)
         left.addWidget(self._record_list, stretch=1)
 
@@ -268,37 +318,37 @@ class HysteresisWidget(QWidget):
     def _build_chart_tabs(self) -> QTabWidget:
         self._chart_tabs = QTabWidget()
         self._chart_tabs.setDocumentMode(True)
-        self._chart_tabs.addTab(self._build_fd_tab(), "F–D ループ（力–変位）")
-        self._chart_tabs.addTab(self._build_fv_tab(), "F–V ループ（力–速度）")
+        self._chart_tabs.addTab(self._build_main_tab(), "主ループ（サブ要素依存）")
+        self._chart_tabs.addTab(self._build_fv_tab(), "F–V ループ（速度）")
         self._chart_tabs.addTab(self._build_peak_tab(), "ピーク一覧")
         self._chart_tabs.currentChanged.connect(self._on_tab_changed)
         return self._chart_tabs
 
-    def _build_fd_tab(self) -> QWidget:
-        w_fd = QWidget()
-        lay_fd = QVBoxLayout(w_fd)
-        lay_fd.setContentsMargins(2, 2, 2, 2)
-        self._fd_canvas = _MplCanvas()
-        lay_fd.addWidget(NavigationToolbar(self._fd_canvas, w_fd))
-        lay_fd.addWidget(self._fd_canvas, stretch=1)
-        self._fd_info = QLabel("")
-        self._fd_info.setWordWrap(True)
-        self._fd_info.setStyleSheet("color:#444; font-size:11px; padding:4px;")
-        lay_fd.addWidget(self._fd_info)
-        return w_fd
+    def _build_main_tab(self) -> QWidget:
+        w = QWidget()
+        lay = QVBoxLayout(w)
+        lay.setContentsMargins(2, 2, 2, 2)
+        self._main_canvas = _MplCanvas()
+        lay.addWidget(NavigationToolbar(self._main_canvas, w))
+        lay.addWidget(self._main_canvas, stretch=1)
+        self._main_info = QLabel("")
+        self._main_info.setWordWrap(True)
+        self._main_info.setStyleSheet("color:#444; font-size:11px; padding:4px;")
+        lay.addWidget(self._main_info)
+        return w
 
     def _build_fv_tab(self) -> QWidget:
-        w_fv = QWidget()
-        lay_fv = QVBoxLayout(w_fv)
-        lay_fv.setContentsMargins(2, 2, 2, 2)
+        w = QWidget()
+        lay = QVBoxLayout(w)
+        lay.setContentsMargins(2, 2, 2, 2)
         self._fv_canvas = _MplCanvas()
-        lay_fv.addWidget(NavigationToolbar(self._fv_canvas, w_fv))
-        lay_fv.addWidget(self._fv_canvas, stretch=1)
+        lay.addWidget(NavigationToolbar(self._fv_canvas, w))
+        lay.addWidget(self._fv_canvas, stretch=1)
         self._fv_info = QLabel("")
         self._fv_info.setWordWrap(True)
         self._fv_info.setStyleSheet("color:#444; font-size:11px; padding:4px;")
-        lay_fv.addWidget(self._fv_info)
-        return w_fv
+        lay.addWidget(self._fv_info)
+        return w
 
     def _build_peak_tab(self) -> QWidget:
         w_peak = QWidget()
@@ -319,6 +369,9 @@ class HysteresisWidget(QWidget):
     def _on_category_changed(self, *_) -> None:
         self._refresh()
 
+    def _on_sub_element_changed(self, *_) -> None:
+        self._redraw_all()
+
     def _on_dt_changed(self, *_) -> None:
         self._redraw_all()
 
@@ -326,9 +379,8 @@ class HysteresisWidget(QWidget):
         self._redraw_all()
 
     def _on_tab_changed(self, idx: int) -> None:
-        """タブ切り替え時に対応グラフを再描画する。"""
         if idx == 0:
-            self._draw_fd_loop()
+            self._draw_main_loop()
         elif idx == 1:
             self._draw_fv_loop()
         elif idx == 2:
@@ -346,17 +398,17 @@ class HysteresisWidget(QWidget):
     # ------------------------------------------------------------------
 
     def _refresh(self) -> None:
-        """カテゴリ変更時などに全体を更新する。"""
         cat = self._cat_combo.currentData() or "Damper"
 
         if not self._entries:
             self._record_list.clear()
-            self._fd_canvas.show_message("ケースが選択されていません")
+            self._main_canvas.show_message("ケースが選択されていません")
             self._fv_canvas.show_message("ケースが選択されていません")
             self._status_label.setText("")
+            self._iod_detected = False
+            self._populate_sub_combo(iod=False)
             return
 
-        # 最初の有効ケースからレコード名一覧を取得
         first_bc: Optional[BinaryCategory] = None
         for _, loader in self._entries:
             bc = loader.get(cat)
@@ -366,26 +418,42 @@ class HysteresisWidget(QWidget):
 
         if first_bc is None:
             self._record_list.clear()
-            self._fd_canvas.show_message(
+            self._main_canvas.show_message(
                 f"{cat}.hst が見つかりません\n"
                 "解析を実行してダンパー / バネの履歴出力を有効にしてください"
             )
             self._fv_canvas.show_message(f"{cat}.hst なし")
             self._status_label.setText(f"{cat}.hst なし")
+            self._iod_detected = False
+            self._populate_sub_combo(iod=False)
             return
 
+        # iOD 判定
+        per_record_fpr = getattr(first_bc.hst.header, "per_record_fpr", None)
+        self._iod_detected = (cat == "Damper") and is_iod_layout(per_record_fpr)
+        self._populate_sub_combo(iod=self._iod_detected)
+
         n_rec = first_bc.num_records
+        fpr_counts: Dict[int, int] = {}
+        if per_record_fpr:
+            for f in per_record_fpr:
+                fpr_counts[int(f)] = fpr_counts.get(int(f), 0) + 1
+        fpr_summary = ", ".join(f"fpr={k}×{v}" for k, v in sorted(fpr_counts.items())) \
+            if fpr_counts else f"fpr={first_bc.hst.header.fields_per_record}"
+        iod_tag = " [iOD 混在]" if self._iod_detected else ""
         self._status_label.setText(
-            f"{cat}.hst: {n_rec} レコード / "
-            f"step_size={first_bc.hst.header.step_size}"
+            f"{cat}.hst: {n_rec} レコード / {fpr_summary}{iod_tag}"
         )
 
-        # レコードリスト更新
         self._record_list.blockSignals(True)
         self._record_list.clear()
         for i in range(n_rec):
             name = first_bc.record_name(i)
-            item = QListWidgetItem(name)
+            # fpr 情報をラベルに付加
+            fpr_i = int(per_record_fpr[i]) if per_record_fpr and i < len(per_record_fpr) \
+                else first_bc.hst.header.fields_per_record
+            suffix = f"  [fpr={fpr_i}]" if self._iod_detected else ""
+            item = QListWidgetItem(f"{name}{suffix}")
             item.setData(Qt.UserRole, i)
             self._record_list.addItem(item)
         if n_rec > 0:
@@ -395,77 +463,109 @@ class HysteresisWidget(QWidget):
         self._redraw_all()
 
     def _redraw_all(self) -> None:
-        """現在のタブに応じて再描画する。"""
         tab = self._chart_tabs.currentIndex()
         if tab == 0:
-            self._draw_fd_loop()
+            self._draw_main_loop()
         elif tab == 1:
             self._draw_fv_loop()
         elif tab == 2:
             self._draw_peak_table()
 
     # ------------------------------------------------------------------
-    # グラフ描画: F–D ループ
+    # グラフ描画: 主ループ（サブ要素依存）
     # ------------------------------------------------------------------
 
-    def _draw_fd_loop(self) -> None:
-        """力–変位（F–D）履歴ループを描画する。"""
-        ax = self._fd_canvas.ax
+    def _draw_main_loop(self) -> None:
+        """サブ要素に応じた主履歴ループを描画する。
+
+        全体/スプリング → F-D, 質量 → F-A, ダッシュポット → F-V
+        """
+        ax = self._main_canvas.ax
         ax.clear()
 
         data_list = self._collect_selected_data()
-        if not data_list:
-            self._fd_canvas.show_message("データがありません")
-            self._fd_info.setText("")
+        sub = self._sub_combo.currentData() or SUB_ELEMENT_AUTO
+
+        applied_data = [(lbl, d) for lbl, d in data_list if d.get("applies", True)]
+        if not applied_data:
+            if data_list:
+                self._main_canvas.show_message(
+                    "選択レコードにはこのサブ要素のデータがありません\n"
+                    "（fpr=4 レコードは全体/自動のみ, fpr=11 のみが質量/ダッシュポット対応）",
+                    color="orange",
+                )
+            else:
+                self._main_canvas.show_message("データがありません")
+            self._main_info.setText("")
             return
 
         colors = plt.rcParams["axes.prop_cycle"].by_key()["color"]
-        all_D: List[np.ndarray] = []
+        all_x: List[np.ndarray] = []
         all_F: List[np.ndarray] = []
         summaries: List[str] = []
+        ref_sub = applied_data[0][1].get("sub_element", sub)
+        axis_name, unit = _primary_label(ref_sub)
 
-        for ci, (label, data) in enumerate(data_list):
+        for ci, (label, data) in enumerate(applied_data):
             c = colors[ci % len(colors)]
-            ax.plot(data["D"], data["F"], linewidth=0.8, color=c,
-                    label=label, alpha=0.85)
-            all_D.append(data["D"])
-            all_F.append(data["F"])
+            x_arr = _primary_array(data)
+            F = data["F"]
+            if x_arr.size == 0:
+                continue
+            ax.plot(x_arr, F, linewidth=0.8, color=c, label=label, alpha=0.85)
+            all_x.append(x_arr)
+            all_F.append(F)
+
             stats = compute_peak_stats(data)
+            x_kind = data.get("x_kind", "D")
+            x_peak = stats.get(f"max_{x_kind}", 0.0) * _MM_SCALE
             summaries.append(
-                f"{label}: |F|max={stats['max_F']:.4g},  "
-                f"|D|max={stats['max_D']:.4g},  ∮FdD≈{stats['work']:.4g}"
+                f"{label}: |F|max={stats['max_F']:.4g} kN,  "
+                f"|{axis_name}|max={x_peak:.4g} {unit}"
             )
+
+        if not all_x:
+            self._main_canvas.show_message("データがありません")
+            self._main_info.setText("\n".join(summaries))
+            return
 
         ax.axhline(0, color="#888", linewidth=0.6)
         ax.axvline(0, color="#888", linewidth=0.6)
-        ax.set_xlabel("変位 D")
-        ax.set_ylabel("荷重 F")
-        ax.set_title("力–変位（F–D）履歴ループ")
+        ax.set_xlabel(f"{axis_name} [{unit}]")
+        ax.set_ylabel("荷重 F [kN]")
+        title_map = {
+            SUB_ELEMENT_WHOLE: "全体 応力-変形（F-D ループ）",
+            SUB_ELEMENT_MASS: "質量 応力-加速度（F-A, F = m·A）",
+            SUB_ELEMENT_DASHPOT: "ダッシュポット 応力-速度（F-V ループ）",
+        }
+        ax.set_title(title_map.get(ref_sub, "履歴ループ"))
         ax.grid(True, linestyle=":", alpha=0.4)
-        if all_D:
-            _set_tight_axis(ax, np.concatenate(all_D), np.concatenate(all_F))
-        if len(data_list) > 1:
+        _set_tight_axis(ax, np.concatenate(all_x), np.concatenate(all_F))
+        if len(applied_data) > 1:
             ax.legend(fontsize=7, ncol=2)
-        self._fd_canvas.fig.tight_layout()
-        self._fd_canvas.draw()
-        self._fd_info.setText("\n".join(summaries))
+        self._main_canvas.fig.tight_layout()
+        self._main_canvas.draw()
+        self._main_info.setText("\n".join(summaries))
 
     # ------------------------------------------------------------------
-    # グラフ描画: F–V ループ（新機能）
+    # グラフ描画: F–V ループ（副ループ）
     # ------------------------------------------------------------------
 
     def _draw_fv_loop(self) -> None:
-        """力–速度（F–V）履歴ループを描画する。
-
-        粘性ダンパーでは F ∝ V^α（速度依存型）の特性が現れるため、
-        この図は減衰係数 C や速度指数 α の視覚的確認に利用できる。
-        """
+        """力–速度（F–V）履歴ループを描画する（副ループ）。"""
         ax = self._fv_canvas.ax
         ax.clear()
 
         data_list = self._collect_selected_data()
-        if not data_list:
-            self._fv_canvas.show_message("データがありません")
+        applied_data = [(lbl, d) for lbl, d in data_list if d.get("applies", True)]
+        if not applied_data:
+            if data_list:
+                self._fv_canvas.show_message(
+                    "選択レコードにはこのサブ要素のデータがありません",
+                    color="orange",
+                )
+            else:
+                self._fv_canvas.show_message("データがありません")
             self._fv_info.setText("")
             return
 
@@ -475,11 +575,11 @@ class HysteresisWidget(QWidget):
         summaries: List[str] = []
         any_derived = False
 
-        for ci, (label, data) in enumerate(data_list):
-            V = data["V"]
+        for ci, (label, data) in enumerate(applied_data):
+            V = _velocity_array(data)
             F = data["F"]
             if V.size == 0 or np.all(V == 0):
-                summaries.append(f"{label}: 速度データなし（SNAP 出力設定を確認）")
+                summaries.append(f"{label}: 速度データなし")
                 continue
 
             c = colors[ci % len(colors)]
@@ -487,18 +587,18 @@ class HysteresisWidget(QWidget):
             all_V.append(V)
             all_F.append(F)
             stats = compute_peak_stats(data)
+            v_peak = stats["max_V"] * _MM_SCALE
             derived = bool(data.get("v_derived"))
             any_derived = any_derived or derived
             tag = "  ※V=dD/dt" if derived else ""
             summaries.append(
-                f"{label}: |F|max={stats['max_F']:.4g},  "
-                f"|V|max={stats['max_V']:.4g}{tag}"
+                f"{label}: |F|max={stats['max_F']:.4g} kN,  "
+                f"|V|max={v_peak:.4g} mm/s{tag}"
             )
 
         if not all_V:
             self._fv_canvas.show_message(
-                "速度データが取得できませんでした\n"
-                "（SNAP の出力設定で速度成分を有効にしてください）",
+                "速度データが取得できませんでした",
                 color="orange",
             )
             self._fv_info.setText("\n".join(summaries))
@@ -506,15 +606,15 @@ class HysteresisWidget(QWidget):
 
         ax.axhline(0, color="#888", linewidth=0.6)
         ax.axvline(0, color="#888", linewidth=0.6)
-        ax.set_xlabel("速度 V  [m/s 等]")
-        ax.set_ylabel("荷重 F")
+        ax.set_xlabel("速度 V [mm/s]")
+        ax.set_ylabel("荷重 F [kN]")
         title = "力–速度（F–V）履歴ループ"
         if any_derived:
             title += "（V は変位の数値微分）"
         ax.set_title(title)
         ax.grid(True, linestyle=":", alpha=0.4)
         _set_tight_axis(ax, np.concatenate(all_V), np.concatenate(all_F))
-        if len(data_list) > 1:
+        if len(applied_data) > 1:
             ax.legend(fontsize=7, ncol=2)
         self._fv_canvas.fig.tight_layout()
         self._fv_canvas.draw()
@@ -525,35 +625,34 @@ class HysteresisWidget(QWidget):
     # ------------------------------------------------------------------
 
     def _draw_peak_table(self) -> None:
-        """各レコード × ケースのピーク統計テーブルを更新する。"""
         cat = self._cat_combo.currentData() or "Damper"
         dt = float(self._dt_spin.value())
-        headers = ["ケース", "レコード",
-                   "max |F|", "max |D|", "max |V|", "max |E|", "仕事量 ∮FdD"]
+        sub = self._sub_combo.currentData() or SUB_ELEMENT_AUTO
+        headers = ["ケース", "レコード", "サブ要素",
+                   "max |F| [kN]", "max |D| [mm]",
+                   "max |V| [mm/s]", "max |A| [mm/s²]",
+                   "max |E|", "仕事量 ∮FdD"]
 
         rows: List[List[str]] = []
-        n_rec_max = max(
-            (loader.get(cat).num_records
-             for _, loader in self._entries
-             if loader.get(cat) and loader.get(cat).hst),
-            default=0,
-        )
         for case_name, loader in self._entries:
             bc = loader.get(cat)
             if not bc or not bc.hst or bc.hst.header is None:
                 continue
             n_rec = bc.hst.header.num_records
             for ri in range(n_rec):
-                data = fetch_hysteresis_data(loader, cat, ri, dt)
-                if data is None:
+                data = fetch_hysteresis_data(loader, cat, ri, dt, sub_element=sub)
+                if data is None or not data.get("applies", True):
                     continue
                 stats = compute_peak_stats(data)
+                sub_label = SUB_ELEMENT_LABELS.get(data.get("sub_element", sub), "")
                 rows.append([
                     case_name,
                     bc.record_name(ri),
+                    sub_label,
                     f"{stats['max_F']:.4g}",
-                    f"{stats['max_D']:.4g}",
-                    f"{stats['max_V']:.4g}",
+                    f"{stats['max_D']*_MM_SCALE:.4g}",
+                    f"{stats['max_V']*_MM_SCALE:.4g}",
+                    f"{stats['max_A']*_MM_SCALE:.4g}",
                     f"{stats['max_E']:.4g}",
                     f"{stats['work']:.4g}",
                 ])
@@ -573,16 +672,9 @@ class HysteresisWidget(QWidget):
     # ------------------------------------------------------------------
 
     def _collect_selected_data(self) -> List[Tuple[str, Dict[str, np.ndarray]]]:
-        """選択中のレコード × ケースのデータを収集して返す。
-
-        Returns
-        -------
-        list of (label, data_dict)
-            label: "ケース名 / レコード名"
-            data_dict: {"t", "F", "D", "V", "E"}
-        """
         cat = self._cat_combo.currentData() or "Damper"
         dt = float(self._dt_spin.value())
+        sub = self._sub_combo.currentData() or SUB_ELEMENT_AUTO
 
         selected_items = self._record_list.selectedItems()
         if not selected_items:
@@ -598,7 +690,7 @@ class HysteresisWidget(QWidget):
             if not bc:
                 continue
             for ri in rec_indices:
-                data = fetch_hysteresis_data(loader, cat, ri, dt)
+                data = fetch_hysteresis_data(loader, cat, ri, dt, sub_element=sub)
                 if data is None:
                     continue
                 rec_label = bc.record_name(ri) if bc else f"rec{ri}"

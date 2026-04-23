@@ -478,17 +478,19 @@ class TestMixedFprLayout:
         np.testing.assert_array_equal(d0["E"], [2, 1002, 2002, 3002, 4002])
         assert d0["v_derived"] is False  # V field exists at fpr=4
 
-        # rec 5 は fpr=11: F@1, D@2, V@4, E@9
+        # rec 5 は fpr=11 (iOD whole サブ要素): F@1, D@2, E@9, V=d(D)/dt
+        # mixed fpr=4+fpr=11 なので is_iod_layout=True → 自動で全体を返す
         d5 = fetch_hysteresis_data(loader, "Damper", 5, 0.005)
         assert d5 is not None
         # rec 5 field 1 = step*1000 + 5*100 + 1
         np.testing.assert_array_equal(d5["F"], [501, 1501, 2501, 3501, 4501])
         # D = field 2 = step*1000 + 5*100 + 2
         np.testing.assert_array_equal(d5["D"], [502, 1502, 2502, 3502, 4502])
-        # V = field 4 = step*1000 + 5*100 + 4
-        np.testing.assert_array_equal(d5["V"], [504, 1504, 2504, 3504, 4504])
         # E = field 9 = step*1000 + 5*100 + 9
         np.testing.assert_array_equal(d5["E"], [509, 1509, 2509, 3509, 4509])
+        # V は D を dt=0.005 で数値微分 → ΔD=1000 で一定 → V=200000
+        assert d5["v_derived"] is True
+        assert np.allclose(d5["V"], 200000.0)
 
     def test_uniform_fpr_still_works(self, tmp_path):
         """単一 fpr ファイル（非混在）は従来どおり per_record_fpr=None。"""
@@ -511,6 +513,185 @@ class TestMixedFprLayout:
         assert r.header is not None
         assert r.header.fields_per_record == 4
         assert r.header.per_record_fpr is None  # 一律 fpr なので None
+
+
+class TestIodSubElement:
+    """iOD (Inerter Output Damper) サブ要素マッピングのテスト。
+
+    iOD fpr=11 は単一レコードに複数サブ要素 (全体/質量/ダッシュポット) を
+    packing する。SNAP 参照図と f1=f4+f7 恒等式から確定したレイアウト::
+
+      whole   : F=f1, D=f2, E=f9
+      mass    : F=f4, A=f5, E=f9   (F = m·A)
+      dashpot : F=f7, V=f8, E=f9   (ヒステリシス)
+    """
+
+    def test_is_iod_layout_mixed_fpr(self):
+        from controller.binary.hysteresis_analysis import is_iod_layout
+        assert is_iod_layout([4, 4, 4, 11, 11, 11]) is True
+        assert is_iod_layout([11, 4, 11, 4]) is True
+
+    def test_is_iod_layout_uniform_fpr11_false(self):
+        """iRDT 一様 fpr=11 は iOD ではない。"""
+        from controller.binary.hysteresis_analysis import is_iod_layout
+        assert is_iod_layout([11, 11, 11]) is False
+        assert is_iod_layout([4, 4, 4]) is False
+
+    def test_is_iod_layout_none_or_empty(self):
+        from controller.binary.hysteresis_analysis import is_iod_layout
+        assert is_iod_layout(None) is False
+        assert is_iod_layout([]) is False
+
+    def test_sub_element_map_whole(self):
+        from controller.binary.hysteresis_analysis import (
+            iod_fpr11_sub_element_map, SUB_ELEMENT_WHOLE,
+        )
+        m = iod_fpr11_sub_element_map(SUB_ELEMENT_WHOLE)
+        assert m["F"] == 1
+        assert m["D"] == 2
+        assert m["E"] == 9
+
+    def test_sub_element_map_mass(self):
+        from controller.binary.hysteresis_analysis import (
+            iod_fpr11_sub_element_map, SUB_ELEMENT_MASS,
+        )
+        m = iod_fpr11_sub_element_map(SUB_ELEMENT_MASS)
+        assert m["F"] == 4
+        assert m["A"] == 5
+        assert m["E"] == 9
+        assert "D" not in m  # 質量要素は変位なし
+        assert "V" not in m
+
+    def test_sub_element_map_dashpot(self):
+        from controller.binary.hysteresis_analysis import (
+            iod_fpr11_sub_element_map, SUB_ELEMENT_DASHPOT,
+        )
+        m = iod_fpr11_sub_element_map(SUB_ELEMENT_DASHPOT)
+        assert m["F"] == 7
+        assert m["V"] == 8
+        assert m["E"] == 9
+        assert "D" not in m
+        assert "A" not in m
+
+    def test_sub_element_primary_kind(self):
+        """主グラフの横軸 kind (whole→D, mass→A, dashpot→V)。"""
+        from controller.binary.hysteresis_analysis import (
+            SUB_ELEMENT_PRIMARY_KIND,
+            SUB_ELEMENT_WHOLE, SUB_ELEMENT_MASS, SUB_ELEMENT_DASHPOT,
+        )
+        assert SUB_ELEMENT_PRIMARY_KIND[SUB_ELEMENT_WHOLE] == "D"
+        assert SUB_ELEMENT_PRIMARY_KIND[SUB_ELEMENT_MASS] == "A"
+        assert SUB_ELEMENT_PRIMARY_KIND[SUB_ELEMENT_DASHPOT] == "V"
+
+    def test_sub_element_labels_has_three_options(self):
+        """SNAP 参照図と一致する 3 サブ要素のみラベルを持つ。"""
+        from controller.binary.hysteresis_analysis import (
+            SUB_ELEMENT_LABELS, SUB_ELEMENT_AUTO,
+            SUB_ELEMENT_WHOLE, SUB_ELEMENT_MASS, SUB_ELEMENT_DASHPOT,
+        )
+        assert SUB_ELEMENT_AUTO in SUB_ELEMENT_LABELS
+        assert SUB_ELEMENT_WHOLE in SUB_ELEMENT_LABELS
+        assert SUB_ELEMENT_MASS in SUB_ELEMENT_LABELS
+        assert SUB_ELEMENT_DASHPOT in SUB_ELEMENT_LABELS
+        # スプリングは SNAP で独立サブ要素として扱われない
+        assert len(SUB_ELEMENT_LABELS) == 4  # auto + 3
+
+    def test_fetch_iod_fpr11_whole(self, tmp_path):
+        """iOD whole: F=f1, D=f2, E=f9 を読み取り、V は D から数値微分。"""
+        from controller.binary.hysteresis_analysis import (
+            fetch_hysteresis_data, SUB_ELEMENT_WHOLE,
+        )
+        from unittest.mock import MagicMock
+        p = TestMixedFprLayout()._build_mixed_hst(tmp_path)
+        from controller.binary.hst_reader import HstReader
+        reader = HstReader(p, dt=0.005, lazy=False)
+
+        mock_bc = MagicMock()
+        mock_bc.hst = reader
+        loader = MagicMock()
+        loader.get.return_value = mock_bc
+
+        d = fetch_hysteresis_data(
+            loader, "Damper", 5, 0.005, sub_element=SUB_ELEMENT_WHOLE
+        )
+        assert d is not None
+        assert d["sub_element"] == SUB_ELEMENT_WHOLE
+        assert d["x_kind"] == "D"
+        # F = field 1, D = field 2, E = field 9
+        np.testing.assert_array_equal(d["F"], [501, 1501, 2501, 3501, 4501])
+        np.testing.assert_array_equal(d["D"], [502, 1502, 2502, 3502, 4502])
+        np.testing.assert_array_equal(d["E"], [509, 1509, 2509, 3509, 4509])
+        assert d["v_derived"] is True
+
+    def test_fetch_iod_fpr11_mass(self, tmp_path):
+        """iOD mass: F=f4, A=f5 を読み取り x_kind=A。"""
+        from controller.binary.hysteresis_analysis import (
+            fetch_hysteresis_data, SUB_ELEMENT_MASS,
+        )
+        from unittest.mock import MagicMock
+        p = TestMixedFprLayout()._build_mixed_hst(tmp_path)
+        from controller.binary.hst_reader import HstReader
+        reader = HstReader(p, dt=0.005, lazy=False)
+
+        mock_bc = MagicMock()
+        mock_bc.hst = reader
+        loader = MagicMock()
+        loader.get.return_value = mock_bc
+
+        d = fetch_hysteresis_data(
+            loader, "Damper", 5, 0.005, sub_element=SUB_ELEMENT_MASS
+        )
+        assert d is not None
+        assert d["sub_element"] == SUB_ELEMENT_MASS
+        assert d["x_kind"] == "A"
+        np.testing.assert_array_equal(d["F"], [504, 1504, 2504, 3504, 4504])
+        np.testing.assert_array_equal(d["A"], [505, 1505, 2505, 3505, 4505])
+
+    def test_fetch_iod_fpr11_dashpot(self, tmp_path):
+        """iOD dashpot: F=f7, V=f8 を読み取り x_kind=V。"""
+        from controller.binary.hysteresis_analysis import (
+            fetch_hysteresis_data, SUB_ELEMENT_DASHPOT,
+        )
+        from unittest.mock import MagicMock
+        p = TestMixedFprLayout()._build_mixed_hst(tmp_path)
+        from controller.binary.hst_reader import HstReader
+        reader = HstReader(p, dt=0.005, lazy=False)
+
+        mock_bc = MagicMock()
+        mock_bc.hst = reader
+        loader = MagicMock()
+        loader.get.return_value = mock_bc
+
+        d = fetch_hysteresis_data(
+            loader, "Damper", 5, 0.005, sub_element=SUB_ELEMENT_DASHPOT
+        )
+        assert d is not None
+        assert d["sub_element"] == SUB_ELEMENT_DASHPOT
+        assert d["x_kind"] == "V"
+        np.testing.assert_array_equal(d["F"], [507, 1507, 2507, 3507, 4507])
+        np.testing.assert_array_equal(d["V"], [508, 1508, 2508, 3508, 4508])
+
+    def test_sub_element_not_applicable_on_fpr4(self, tmp_path):
+        """iOD fpr=4 レコードに mass サブ要素を指定すると applies=False を返す。"""
+        from controller.binary.hysteresis_analysis import (
+            fetch_hysteresis_data, SUB_ELEMENT_MASS,
+        )
+        from unittest.mock import MagicMock
+        p = TestMixedFprLayout()._build_mixed_hst(tmp_path)
+        from controller.binary.hst_reader import HstReader
+        reader = HstReader(p, dt=0.005, lazy=False)
+
+        mock_bc = MagicMock()
+        mock_bc.hst = reader
+        loader = MagicMock()
+        loader.get.return_value = mock_bc
+
+        # rec 0 は fpr=4 (iOD 全体レコード) → mass/dashpot は適用不可
+        d = fetch_hysteresis_data(
+            loader, "Damper", 0, 0.005, sub_element=SUB_ELEMENT_MASS
+        )
+        assert d is not None
+        assert d["applies"] is False
 
 
 class TestFieldConstants:
@@ -613,11 +794,12 @@ class TestHysteresisWidgetInstantiation:
     def test_ui_widgets_created(self):
         from app.ui.hysteresis_widget import HysteresisWidget
         w = HysteresisWidget()
-        assert hasattr(w, "_fd_canvas")
+        assert hasattr(w, "_main_canvas")
         assert hasattr(w, "_fv_canvas")
         assert hasattr(w, "_peak_table")
         assert hasattr(w, "_record_list")
         assert hasattr(w, "_cat_combo")
+        assert hasattr(w, "_sub_combo")
 
     def test_category_combo_has_damper_spring(self):
         from app.ui.hysteresis_widget import HysteresisWidget
@@ -643,7 +825,7 @@ class TestHysteresisWidgetInstantiation:
         from app.ui.hysteresis_widget import HysteresisWidget
         w = HysteresisWidget()
         w._record_list.clearSelection()
-        w._draw_fd_loop()
+        w._draw_main_loop()
 
     def test_draw_fv_no_selection_no_crash(self):
         from app.ui.hysteresis_widget import HysteresisWidget
