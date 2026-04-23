@@ -48,37 +48,25 @@ _SETTINGS_APP = "snap-controller"
 
 # 各ステップのヒントテキスト定義
 _STEP_HINTS = [
-    # STEP1 (index=0)
     {
         "icon": "💡",
-        "text": (
-            "STEP1: まず「ファイルを読み込む…」ボタンか、ドラッグ&ドロップで "
-            ".s8i ファイルを読み込みましょう。読み込むとSTEP2でケース追加ができるようになります。"
-        ),
+        "text": "STEP1: .s8i ファイルを読み込む（ドラッグ&ドロップ可）",
         "color": "#1976d2",
         "bg": "#e3f2fd",
         "bg_dark": "#0d2e52",
         "key": "hint_shown_step1",
     },
-    # STEP2 (index=1)
     {
         "icon": "💡",
-        "text": (
-            "STEP2: 「＋ 追加」ボタンまたは下のテンプレートカードで解析ケースを追加します。"
-            "「ベースライン」（ダンパーなし）から始めると基準値の把握に役立ちます。"
-        ),
+        "text": "STEP2: 「＋ 追加」またはテンプレートからケースを追加",
         "color": "#7b1fa2",
         "bg": "#f3e5f5",
         "bg_dark": "#2e1540",
         "key": "hint_shown_step2",
     },
-    # STEP3 (index=2)
     {
         "icon": "💡",
-        "text": (
-            "STEP3: 上部チェックリストが全て ✅ になると実行ボタンが有効化されます。"
-            "実行するケースにチェックを入れて「🚀 X件を解析する」を押してください。"
-        ),
+        "text": "STEP3: チェックリストが揃ったら実行ボタンを押す",
         "color": "#f57c00",
         "bg": "#fff3e0",
         "bg_dark": "#3e2000",
@@ -191,7 +179,7 @@ class StepHintBanner(QWidget):
             f"}}"
             f"QPushButton:hover {{ background-color: {color}; color: white; }}"
         )
-        ok_btn.setToolTip("このヒントを閉じます。次回以降は表示されません。")
+        ok_btn.setToolTip("閉じる（次回以降非表示）")
         ok_btn.clicked.connect(self._on_dismiss)
         layout.addWidget(ok_btn)
 
@@ -200,17 +188,8 @@ class StepHintBanner(QWidget):
     # ------------------------------------------------------------------
 
     def show_if_first_visit(self) -> None:
-        """
-        初回訪問時のみバナーを表示します。
-
-        QSettings に既読フラグが記録されていない場合のみ表示します。
-        """
-        if self._hint is None:
-            return
-        key = self._hint["key"]
-        already_shown = self._settings.value(key, False, type=bool)
-        if not already_shown:
-            self.show()
+        """誘導ヒントは常時非表示（フィードバックにより無効化）。"""
+        return
 
     def reset_hint(self) -> None:
         """

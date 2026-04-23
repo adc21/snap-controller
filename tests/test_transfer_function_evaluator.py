@@ -219,6 +219,189 @@ class TestCallErrorHandling:
 
 
 # ---------------------------------------------------------------------------
+# 装置グループ整合性の事前検査 (regression: 2026-04-22 peak-never-changes bug)
+# ---------------------------------------------------------------------------
+
+class TestDamperGroupMismatchWarning:
+    """DYC.values[5] の装置グループと damper_def_name が不整合な場合に
+    警告をログに出すことを保証するテスト。
+
+    この警告は「DVOD 値を変えてもピークが変わらない」という無言 no-op の
+    早期検出を目的とする (bug fix 2026-04-22)。"""
+
+    def _build_s8i_with_dampers(self, tmp_path, dyc_group: str) -> Path:
+        """ダンパー IOD を持つ最小モデルを書き出す。
+
+        dyc_group を ``"IOD"`` にすれば整合、``""`` や ``"OD"`` にすれば不整合。
+        """
+        p = tmp_path / "model.s8i"
+        content = (
+            "DVOD / IOD,0,0,0,,3,100,0,14,0,0,0,0,0,0,0,0,0,0,0,1,0,1\n"
+            "RD / IOD,1,2,1,IOD,0,0,0,0,0,1,0,0,1,,0,1,1,0,1\n"
+            f"DYC / CASE,1,2,0,0,{dyc_group},0,0,,D1,1,10,0,1,0,0,1,DL+LL,,WV,1\n"
+        )
+        p.write_text(content, encoding="shift_jis")
+        return p
+
+    def _cfg_for(
+        self, s8i: Path, tmp_path, fake_snap_exe,
+    ) -> TransferFunctionEvalConfig:
+        return TransferFunctionEvalConfig(
+            snap_exe_path=str(fake_snap_exe),
+            base_s8i_path=str(s8i),
+            snap_work_dir=str(tmp_path / "work"),
+            snap_wave_dir=str(tmp_path / "wave"),
+            target_case_no=1,
+            damper_def_name="IOD",
+            param_field_map={"field_8": 8},
+        )
+
+    def test_warns_when_group_is_empty(self, tmp_path, fake_snap_exe):
+        """装置グループ空欄のケースに対して警告が出る。"""
+        s8i = self._build_s8i_with_dampers(tmp_path, dyc_group="")
+        cfg = self._cfg_for(s8i, tmp_path, fake_snap_exe)
+        messages: list[str] = []
+        TransferFunctionEvaluator(cfg, log_callback=messages.append)
+        warn_msgs = [m for m in messages if "[WARN]" in m and "装置グループ" in m]
+        assert warn_msgs, f"[WARN] 装置グループ の警告が出ていない: {messages}"
+        assert "空欄" in warn_msgs[0] or "含まれません" in warn_msgs[0]
+
+    def test_warns_when_def_not_in_group(self, tmp_path, fake_snap_exe):
+        """装置グループに damper_def_name が含まれない場合に警告が出る。"""
+        s8i = self._build_s8i_with_dampers(tmp_path, dyc_group="OD")
+        cfg = self._cfg_for(s8i, tmp_path, fake_snap_exe)
+        messages: list[str] = []
+        TransferFunctionEvaluator(cfg, log_callback=messages.append)
+        warn_msgs = [m for m in messages if "[WARN]" in m and "装置グループ" in m]
+        assert warn_msgs, f"[WARN] 装置グループ の警告が出ていない: {messages}"
+        assert "'IOD'" in warn_msgs[0]
+
+    def test_no_warning_when_group_matches(self, tmp_path, fake_snap_exe):
+        """整合ケースでは [INFO] 装置グループ整合性 OK が出て、警告は出ない。"""
+        s8i = self._build_s8i_with_dampers(tmp_path, dyc_group="IOD")
+        cfg = self._cfg_for(s8i, tmp_path, fake_snap_exe)
+        messages: list[str] = []
+        TransferFunctionEvaluator(cfg, log_callback=messages.append)
+        warn_msgs = [m for m in messages if "[WARN]" in m and "装置グループ" in m]
+        info_msgs = [m for m in messages if "整合性 OK" in m]
+        assert not warn_msgs, f"予期せぬ警告: {warn_msgs}"
+        assert info_msgs, f"整合性 OK が出ていない: {messages}"
+
+    def test_no_warning_when_no_damper_def_configured(
+        self, tmp_path, fake_snap_exe,
+    ):
+        """damper_def_name が未設定なら検査自体スキップ (床面ダンパー基数のみ最適化の場合)。"""
+        s8i = self._build_s8i_with_dampers(tmp_path, dyc_group="")
+        cfg = TransferFunctionEvalConfig(
+            snap_exe_path=str(fake_snap_exe),
+            base_s8i_path=str(s8i),
+            snap_work_dir=str(tmp_path / "work"),
+            snap_wave_dir=str(tmp_path / "wave"),
+            target_case_no=1,
+            # damper_def_name 未設定
+        )
+        messages: list[str] = []
+        TransferFunctionEvaluator(cfg, log_callback=messages.append)
+        group_msgs = [m for m in messages if "装置グループ" in m]
+        assert not group_msgs, f"damper_def_name 未設定なのに検査された: {group_msgs}"
+
+
+# ---------------------------------------------------------------------------
+# 停滞 (no-op 最適化) 検知
+# ---------------------------------------------------------------------------
+
+class TestStagnationDetector:
+    """異なるパラメータで同じピークが返り続ける場合に、
+    evaluator が停滞を検知して警告ログを出すことを保証する。
+
+    これは「温度変動係数や疲労曲線フィールドを最適化対象に選んでしまい
+    ピークが変化しない」ユーザ問題の事後検出 (bug fix 2026-04-22)。"""
+
+    def _build_cfg(self, tmp_path, fake_snap_exe):
+        s8i = tmp_path / "m.s8i"
+        s8i.write_bytes(b"dummy")
+        return TransferFunctionEvalConfig(
+            snap_exe_path=str(fake_snap_exe),
+            base_s8i_path=str(s8i),
+            snap_work_dir=str(tmp_path / "work"),
+            snap_wave_dir=str(tmp_path / "wave"),
+            target_case_no=1,
+        )
+
+    def test_stagnation_warn_after_three_identical_peaks(
+        self, tmp_path, fake_snap_exe,
+    ):
+        cfg = self._build_cfg(tmp_path, fake_snap_exe)
+        messages: list[str] = []
+        ev = TransferFunctionEvaluator(cfg, log_callback=messages.append)
+
+        # 3 個の異なる cache_key を仕込み、全て同じピーク
+        ev._record_peak_and_maybe_warn("p=1", 62.87)
+        assert not ev.stagnation_detected, "2 個目で警告されてはいけない"
+        ev._record_peak_and_maybe_warn("p=2", 62.87)
+        assert not ev.stagnation_detected
+        ev._record_peak_and_maybe_warn("p=3", 62.87)
+
+        assert ev.stagnation_detected, "3 個目で警告されるはず"
+        warns = [m for m in messages if "[WARN]" in m and "停滞検知" in m]
+        assert warns, f"停滞検知 警告が出ていない: {messages}"
+
+    def test_no_warn_when_peaks_vary(self, tmp_path, fake_snap_exe):
+        cfg = self._build_cfg(tmp_path, fake_snap_exe)
+        messages: list[str] = []
+        ev = TransferFunctionEvaluator(cfg, log_callback=messages.append)
+
+        ev._record_peak_and_maybe_warn("p=1", 62.87)
+        ev._record_peak_and_maybe_warn("p=2", 60.20)
+        ev._record_peak_and_maybe_warn("p=3", 58.50)
+
+        assert not ev.stagnation_detected
+        warns = [m for m in messages if "[WARN]" in m and "停滞検知" in m]
+        assert not warns, f"変動しているのに警告が出た: {warns}"
+
+    def test_warn_only_once(self, tmp_path, fake_snap_exe):
+        """停滞検知警告は一度だけ。連続呼び出しで多重警告されない。"""
+        cfg = self._build_cfg(tmp_path, fake_snap_exe)
+        messages: list[str] = []
+        ev = TransferFunctionEvaluator(cfg, log_callback=messages.append)
+
+        for i in range(6):
+            ev._record_peak_and_maybe_warn(f"p={i}", 62.87)
+
+        warns = [m for m in messages if "[WARN]" in m and "停滞検知" in m]
+        assert len(warns) == 1, f"警告が重複した: {warns}"
+
+    def test_same_cache_key_not_counted(self, tmp_path, fake_snap_exe):
+        """同じ cache_key は1回だけ記録される (キャッシュヒット相当)。"""
+        cfg = self._build_cfg(tmp_path, fake_snap_exe)
+        messages: list[str] = []
+        ev = TransferFunctionEvaluator(cfg, log_callback=messages.append)
+
+        # 同じキーを5回 → distinct 1 個分 → 警告でない
+        for _ in range(5):
+            ev._record_peak_and_maybe_warn("p=same", 62.87)
+        assert not ev.stagnation_detected
+
+    def test_tolerance_respected(self, tmp_path, fake_snap_exe):
+        """許容差 (デフォルト 0.01 dB) 以内なら停滞とみなす。"""
+        cfg = self._build_cfg(tmp_path, fake_snap_exe)
+        messages: list[str] = []
+        ev = TransferFunctionEvaluator(cfg, log_callback=messages.append)
+
+        ev._record_peak_and_maybe_warn("p=1", 62.870)
+        ev._record_peak_and_maybe_warn("p=2", 62.875)  # +0.005 dB
+        ev._record_peak_and_maybe_warn("p=3", 62.872)  # +0.002 dB
+        assert ev.stagnation_detected, "許容差以内だが検知されず"
+
+        # 別の evaluator: 0.05 dB 超の変動なら検知されない
+        ev2 = TransferFunctionEvaluator(cfg, log_callback=lambda m: None)
+        ev2._record_peak_and_maybe_warn("p=1", 62.87)
+        ev2._record_peak_and_maybe_warn("p=2", 62.95)  # +0.08 dB
+        ev2._record_peak_and_maybe_warn("p=3", 62.87)
+        assert not ev2.stagnation_detected
+
+
+# ---------------------------------------------------------------------------
 # Support file copy
 # ---------------------------------------------------------------------------
 

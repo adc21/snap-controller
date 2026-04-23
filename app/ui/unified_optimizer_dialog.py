@@ -398,10 +398,17 @@ class UnifiedOptimizerDialog(QDialog):
         self._refresh_axis_combos()
 
     # 種別・番号・コード・フラグ系は最適化対象外
+    #
+    # また以下のフィールド群は動的解析 (TF/時刻歴) に影響せず、
+    # これらを最適化変数にしてしまうとピーク値が一切変化しない
+    # 「無言の no-op」になるため除外する (bug 2026-04-22):
+    # - "変動係数": 温度依存バラツキ係数（TF 評価は標準条件）
+    # - "疲労曲線", "頻度解析": 疲労損傷評価用（時刻歴応答計算には不要）
     _PARAM_SKIP_KEYWORDS = (
         "種別", "k-DB", "番号", "型番", "モデル",
         "考慮", "初期解析", "疲労損傷", "重量種別",
         "計算", "しない", "する",
+        "変動係数", "疲労曲線", "頻度解析",
     )
 
     @classmethod
@@ -627,8 +634,9 @@ class UnifiedOptimizerDialog(QDialog):
         self._tf_base_case_combo = QComboBox()
         self._populate_tf_base_case_combo()
         self._tf_base_case_combo.setToolTip(
-            "インパルス波に差し替える対象の DYC ケース。"
-            "他のケースは実行しない（run_flag=0）に設定されます。"
+            "対象DYCケース（他は実行されません）\n"
+            "[...] はケースで有効な装置グループ。[ダンパーなし] のケースを\n"
+            "選ぶと DVOD/DSD 値を変更しても応答は変わりません。"
         )
         gl.addRow("ベースケース:", self._tf_base_case_combo)
 
@@ -642,9 +650,7 @@ class UnifiedOptimizerDialog(QDialog):
         self._tf_floor_spin = QSpinBox()
         self._tf_floor_spin.setRange(-1, 999)
         self._tf_floor_spin.setValue(-1)
-        self._tf_floor_spin.setToolTip(
-            "Floor.hst のレコードインデックス。-1=最上階を自動選択。"
-        )
+        self._tf_floor_spin.setToolTip("Floor.hstの層index（-1=最上階）")
         gl.addRow("応答階インデックス:", self._tf_floor_spin)
 
         # インパルス加速度
@@ -668,10 +674,7 @@ class UnifiedOptimizerDialog(QDialog):
         self._tf_scale_spin.setDecimals(2)
         self._tf_scale_spin.setRange(1.01, 50.0)
         self._tf_scale_spin.setValue(5.0)
-        self._tf_scale_spin.setToolTip(
-            "1次周期 T1 に対する探索周波数範囲の倍率。\n"
-            "範囲は [1/(scale·T1), scale/T1] Hz"
-        )
+        self._tf_scale_spin.setToolTip("範囲 [1/(scale·T1), scale/T1] Hz")
         gl.addRow("周波数範囲倍率 (1次Tx):", self._tf_scale_spin)
 
         # wave ディレクトリ
@@ -693,12 +696,23 @@ class UnifiedOptimizerDialog(QDialog):
         layout.addWidget(self._tf_group)
 
     def _populate_tf_base_case_combo(self) -> None:
-        """ベース DYC ケース一覧を更新。"""
+        """ベース DYC ケース一覧を更新。
+
+        ラベルに装置グループ名を併記して、「ダンパーなし」ケースを選択して
+        DVOD/DSD を変化させても応答が変わらない、というよくあるハマりを
+        視覚的に防ぐ。
+        """
         self._tf_base_case_combo.clear()
         if self._project is None or self._project.s8i_model is None:
             return
-        for c in self._project.s8i_model.dyc_cases:
-            label = f"D{c.case_no}: {c.name}"
+        model = self._project.s8i_model
+        for c in model.dyc_cases:
+            grp = c.damper_group
+            if grp:
+                grp_part = f" [{grp}]"
+            else:
+                grp_part = " [ダンパーなし]"
+            label = f"D{c.case_no}: {c.name}{grp_part}"
             self._tf_base_case_combo.addItem(label, c.case_no)
 
     def _on_browse_wave_dir(self) -> None:
@@ -722,10 +736,7 @@ class UnifiedOptimizerDialog(QDialog):
 
         # 基準設定を編集ボタン
         edit_btn = QPushButton("📋 基準設定を編集...")
-        edit_btn.setToolTip(
-            "性能基準（PerformanceCriteria）の設定画面を開きます。\n"
-            "基準を変更すると、制約条件が自動的に更新されます。"
-        )
+        edit_btn.setToolTip("性能基準を編集（制約条件を自動更新）")
         edit_btn.clicked.connect(self._open_criteria_dialog)
         self._constraints_layout.addRow(edit_btn)
 
@@ -783,10 +794,7 @@ class UnifiedOptimizerDialog(QDialog):
 
         # 編集ボタンを再追加
         edit_btn = QPushButton("📋 基準設定を編集...")
-        edit_btn.setToolTip(
-            "性能基準（PerformanceCriteria）の設定画面を開きます。\n"
-            "基準を変更すると、制約条件が自動的に更新されます。"
-        )
+        edit_btn.setToolTip("性能基準を編集（制約条件を自動更新）")
         edit_btn.clicked.connect(self._open_criteria_dialog)
         self._constraints_layout.addRow(edit_btn)
 
@@ -831,9 +839,7 @@ class UnifiedOptimizerDialog(QDialog):
     def _build_seed_option(self, layout: QVBoxLayout) -> None:
         row = QHBoxLayout()
         self._seed_check = QCheckBox("乱数シード:")
-        self._seed_check.setToolTip(
-            "整数を指定すると再現性のある結果を得られます。"
-        )
+        self._seed_check.setToolTip("固定すると再現性のある結果になる")
         row.addWidget(self._seed_check)
         self._seed_spin = QSpinBox()
         self._seed_spin.setRange(0, 999999)
@@ -852,10 +858,7 @@ class UnifiedOptimizerDialog(QDialog):
         self._parallel_spin.setRange(1, 16)
         self._parallel_spin.setValue(1)
         self._parallel_spin.setFixedWidth(60)
-        self._parallel_spin.setToolTip(
-            "グリッド/ランダム/LHSで複数候補を同時評価。\n"
-            "SNAP解析時は4〜8が目安。"
-        )
+        self._parallel_spin.setToolTip("並列候補数（SNAP: 4〜8推奨）")
         row.addWidget(self._parallel_spin)
         row.addWidget(QLabel("  タイムアウト:"))
         self._timeout_spin = QSpinBox()
@@ -871,9 +874,7 @@ class UnifiedOptimizerDialog(QDialog):
     def _build_checkpoint_option(self, layout: QVBoxLayout) -> None:
         row = QHBoxLayout()
         self._checkpoint_check = QCheckBox("チェックポイント自動保存")
-        self._checkpoint_check.setToolTip(
-            "最適化中に一定間隔で中間結果を自動保存します。"
-        )
+        self._checkpoint_check.setToolTip("中間結果を自動保存（クラッシュ対策）")
         row.addWidget(self._checkpoint_check)
         row.addWidget(QLabel("間隔:"))
         self._checkpoint_interval_spin = QSpinBox()
@@ -888,10 +889,7 @@ class UnifiedOptimizerDialog(QDialog):
     def _build_robust_option(self, layout: QVBoxLayout) -> None:
         row = QHBoxLayout()
         self._robust_check = QCheckBox("ロバスト最適化")
-        self._robust_check.setToolTip(
-            "パラメータ摂動付きで複数回評価し最悪ケースで最適化。\n"
-            "製造誤差に頑健な設計解を探索します。"
-        )
+        self._robust_check.setToolTip("摂動下の最悪ケースで最適化")
         row.addWidget(self._robust_check)
         row.addWidget(QLabel("サンプル数:"))
         self._robust_samples_spin = QSpinBox()
@@ -1228,6 +1226,10 @@ class UnifiedOptimizerDialog(QDialog):
             )
             return
 
+        # 最適化完了時の停滞検知に使うため、evaluator 参照を保持する
+        # (bug 2026-04-22: ピーク値が変化しないケースを事後検知)
+        self._active_evaluator = evaluator
+
         # UI 状態リセット
         self._candidates.clear()
         self._selected_candidate: Optional[OptimizationCandidate] = None
@@ -1292,6 +1294,68 @@ class UnifiedOptimizerDialog(QDialog):
             f"実行可能 {feasible_count}, "
             f"{self._format_duration(elapsed)})"
         )
+
+        # 停滞検知 — TF 最適化で「ピーク値が変わらない」状態を事後警告する
+        # (bug 2026-04-22: 非動的フィールドやグループ不整合などで no-op に
+        # なった場合、プロットが平坦になるので原因を明示する)
+        self._maybe_warn_stagnation()
+
+    def _maybe_warn_stagnation(self) -> None:
+        """TF/非 TF 最適化で目的関数値が変化していない場合に原因ヒント付き警告を出す。
+
+        bug 2026-04-22: TF だけでなく max_drift/max_acc/max_disp 等の通常
+        最適化でも、装置グループ不整合や非動的フィールド選択により反復
+        を重ねても結果が変わらないケースがある。どちらのモードでも停滞を
+        検知してユーザに原因ヒントを提示する。
+        """
+        feasible = [
+            c for c in self._candidates
+            if c.is_feasible and c.objective_value != float("inf")
+        ]
+        if len(feasible) < 3:
+            return
+        objs = [c.objective_value for c in feasible]
+        lo, hi = min(objs), max(objs)
+        spread = hi - lo
+        # TF (dB) は絶対 0.01 dB、その他は相対 1e-4 で判定 (スケール独立)
+        is_tf = self._obj1_combo.currentData() == _TF_OBJECTIVE_KEY
+        if is_tf:
+            if spread > 0.01:
+                return
+            obj_label = "伝達関数ピーク"
+            spread_text = f"{spread:.4f} dB"
+        else:
+            scale = max(abs(lo), abs(hi))
+            if spread > 1e-8 and (scale == 0 or spread / scale > 1e-4):
+                return
+            obj_label = self._obj1_combo.currentText() or "目的関数"
+            spread_text = (
+                f"{spread:.4g} (相対 {spread/scale:.2e})"
+                if scale > 0 else f"{spread:.4g}"
+            )
+        # evaluator 側でも検知されていれば追加情報として示す
+        ev = getattr(self, "_active_evaluator", None)
+        evaluator_flagged = bool(getattr(ev, "stagnation_detected", False))
+        msg = (
+            f"{len(feasible)} 候補を評価しましたが、目的関数値 "
+            f"({obj_label}) が {spread_text} しか変動していません。\n\n"
+            "考えられる原因:\n"
+            "1. 選択した最適化変数が動的応答に効いていない\n"
+            "   (例: 温度変動係数、疲労曲線の P1/P2、頻度解析刻み幅)\n"
+            "2. ベースケースの装置グループが空／不整合で、ダンパーが\n"
+            "   解析に含まれていない\n"
+            "3. 閾値型パラメータ (Fc, Fy 等) が応答範囲外で不活性\n"
+            "4. 変数の探索範囲が狭すぎて感度が極小\n\n"
+            "対策:\n"
+            " - C0 (DVOD 8) / α (DVOD 12) / K0 (DSD 7) / Fy (DSD 9) 等、\n"
+            "   動的応答に直接効くフィールドを選択してください\n"
+            " - 変数の上下限を広げる (例: 現在値の 0.5〜5.0 倍)\n"
+            " - ベースケース末尾のグループ表示が [ダンパーなし] でない\n"
+            "   ことを確認してください"
+        )
+        if evaluator_flagged:
+            msg += "\n\n(評価器側でも同様の停滞を検知済み)"
+        QMessageBox.warning(self, "最適化が no-op になっています", msg)
 
     def _populate_result_table(self, result: OptimizationResult) -> None:
         """結果テーブルを上位20候補で更新。
@@ -1701,6 +1765,39 @@ class UnifiedOptimizerDialog(QDialog):
                 "SNAP.exe またはモデルファイルパスが未設定です。"
             )
             return None
+
+        # --- 装置グループ整合チェック ----------------------------------
+        # SNAP では DYC.values[5] (ダンパーグループ名) と RD.values[0] が
+        # 一致する装置のみが当該ケースで有効。グループが空のケースを
+        # 選ぶとどんな DVOD/DSD 値変更も応答に反映されず、最適化が
+        # 「ピークが変わらない」という無言の no-op になる。
+        if self._project is not None and self._project.s8i_model is not None:
+            model = self._project.s8i_model
+            case = model.get_dyc_case(int(target_case_no))
+            active_defs = model.active_damper_defs_for_case(int(target_case_no))
+            case_name = case.name if case else f"D{target_case_no}"
+            grp = case.damper_group if case else ""
+            if damper_def_name and not grp:
+                QMessageBox.critical(
+                    self,
+                    "装置グループ未設定",
+                    f"選択したケース「D{target_case_no}: {case_name}」は装置グループが\n"
+                    f"空欄のため、ダンパーがどれも解析に含まれません。\n\n"
+                    f"DVOD/DSD のパラメータを最適化しても応答は一切変わりません。\n"
+                    f"装置グループを設定済みのケース（例: 末尾が -OD / -IOD / -MIX 等）を\n"
+                    f"選び直してください。",
+                )
+                return None
+            if damper_def_name and active_defs and damper_def_name not in active_defs:
+                QMessageBox.critical(
+                    self,
+                    "装置グループ不整合",
+                    f"選択したケース「D{target_case_no}: {case_name}」の装置グループ\n"
+                    f"「{grp}」には装置「{damper_def_name}」が含まれません。\n\n"
+                    f"このケースで有効な装置: {', '.join(active_defs)}\n\n"
+                    f"最適化対象の装置を含むケースを選ぶか、装置を変更してください。",
+                )
+                return None
 
         phys_ranges = [pr for pr in params if not pr.is_floor_count]
         count_ranges = [pr for pr in params if pr.is_floor_count]

@@ -216,15 +216,7 @@ class RankingWidget(QWidget):
     def _build_redesign_button_row(self, layout: QVBoxLayout) -> None:
         redesign_row = QHBoxLayout()
         self._btn_use_as_base = QPushButton("🔁  このケースを基点に再設計  (STEP2へ)")
-        self._btn_use_as_base.setToolTip(
-            "選択中のケースを複製し、ケース設計(STEP2)に切り替えます。\n"
-            "最良ケースを出発点として次ラウンドの改善を始めるワークフローに最適です。\n\n"
-            "操作手順:\n"
-            "  1. ランキング表でケースを選択\n"
-            "  2. このボタンをクリック\n"
-            "  3. STEP2 で複製ケースのパラメータを調整\n"
-            "  4. 再度 STEP3 で解析実行"
-        )
+        self._btn_use_as_base.setToolTip("選択ケースを複製してSTEP2へ")
         self._btn_use_as_base.setEnabled(False)
         self._btn_use_as_base.setStyleSheet("""
             QPushButton {

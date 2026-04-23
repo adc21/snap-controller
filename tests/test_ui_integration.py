@@ -297,6 +297,381 @@ class TestDialogInstantiation:
         assert config.constraints == {}
         assert config.criteria is None
 
+    def test_tf_base_case_combo_shows_damper_group(self, qapp, tmp_path):
+        """TF ベースケース combo が装置グループを併記する (bug 2026-04-22)。
+
+        装置グループ空欄のケースを選ぶと、DVOD 値を変えても応答が
+        変わらない、というハマりを防ぐため、ラベルに [グループ名] or
+        [ダンパーなし] を表示する。
+        """
+        from app.models import Project
+        from app.ui.unified_optimizer_dialog import UnifiedOptimizerDialog
+
+        # 装置グループ違いの3ケース + ダンパー定義付きs8iを作成
+        s8i = tmp_path / "tf_test.s8i"
+        s8i.write_text(
+            "DVOD / IOD,0,0,0,,3,100,0,14,0,0,0,0,0,0,0,0,0,0,0,1,0,1\n"
+            "RD / IOD,1,2,1,IOD,0,0,0,0,0,1,0,0,1,,0,1,1,0,1\n"
+            "DYC / BASE,0,2,0,0,,0,0,,D1,1,10,0,1,0,0,1,DL+LL,,WV,1\n"
+            "DYC / WITH_IOD,1,2,0,0,IOD,0,0,,D1,1,10,0,1,0,0,1,DL+LL,,WV,1\n"
+            "DYC / WITH_XYZ,0,2,0,0,XYZ,0,0,,D1,1,10,0,1,0,0,1,DL+LL,,WV,1\n",
+            encoding="shift_jis",
+        )
+        project = Project(name="tfgrp_test")
+        project.load_s8i(str(s8i))
+        dlg = UnifiedOptimizerDialog(project=project)
+
+        combo = dlg._tf_base_case_combo
+        assert combo.count() == 3
+        # D1: 空欄 → [ダンパーなし]
+        assert "D1" in combo.itemText(0)
+        assert "ダンパーなし" in combo.itemText(0)
+        # D2: IOD
+        assert "D2" in combo.itemText(1)
+        assert "[IOD]" in combo.itemText(1)
+        # D3: XYZ (RD にない → ラベルは [XYZ] だが active_defs は空のはず)
+        assert "[XYZ]" in combo.itemText(2)
+
+        # active_damper_defs_for_case の検算
+        assert project.s8i_model.active_damper_defs_for_case(1) == []
+        assert project.s8i_model.active_damper_defs_for_case(2) == ["IOD"]
+        assert project.s8i_model.active_damper_defs_for_case(3) == []
+
+        dlg.close()
+
+    def test_tf_create_evaluator_blocks_empty_group(
+        self, qapp, tmp_path, monkeypatch
+    ):
+        """damper_def_name 指定 & 空グループのケース選択時、 evaluator 作成はブロック。
+
+        この検査が無いと、最適化が「ピーク値不変」の無言 no-op になる (bug 2026-04-22)。
+        """
+        from app.models import AnalysisCase, Project
+        from app.services.optimizer import ParameterRange
+        from app.ui.unified_optimizer_dialog import UnifiedOptimizerDialog
+        from PySide6.QtWidgets import QMessageBox
+
+        s8i = tmp_path / "tf_test.s8i"
+        s8i.write_text(
+            "DVOD / IOD,0,0,0,,3,100,0,14,0,0,0,0,0,0,0,0,0,0,0,1,0,1\n"
+            "RD / IOD,1,2,1,IOD,0,0,0,0,0,1,0,0,1,,0,1,1,0,1\n"
+            "DYC / BASE,1,2,0,0,,0,0,,D1,1,10,0,1,0,0,1,DL+LL,,WV,1\n"
+            "DYC / WITH_IOD,0,2,0,0,IOD,0,0,,D1,1,10,0,1,0,0,1,DL+LL,,WV,1\n",
+            encoding="shift_jis",
+        )
+
+        project = Project(name="tfblock_test")
+        project.load_s8i(str(s8i))
+
+        case = AnalysisCase()
+        case.name = "tfcase"
+        case.model_path = str(s8i)
+        case.snap_exe_path = "C:/fake/SNAP.exe"
+        project.add_case(case)
+
+        # QMessageBox.critical を捕捉 (ダイアログは出さない)
+        critical_calls: list[tuple[str, str]] = []
+        monkeypatch.setattr(
+            QMessageBox, "critical",
+            lambda *a, **k: critical_calls.append((a[1], a[2]))
+        )
+        # warning も念のため
+        monkeypatch.setattr(
+            QMessageBox, "warning",
+            lambda *a, **k: None
+        )
+
+        dlg = UnifiedOptimizerDialog(
+            base_case=case,
+            snap_exe_path="C:/fake/SNAP.exe",
+            snap_work_dir=str(tmp_path / "work"),
+            project=project,
+        )
+        dlg._tf_wave_dir_edit.setText(str(tmp_path / "wave"))
+
+        # D1 (空グループ) を選択
+        dlg._tf_base_case_combo.setCurrentIndex(0)  # D1 BASE
+        assert dlg._tf_base_case_combo.currentData() == 1
+
+        params = [ParameterRange(
+            key="field_8", label="C0", min_val=1.0, max_val=100.0,
+            step=1.0, is_integer=False, is_floor_count=False,
+        )]
+
+        # evaluator 作成が None を返し、critical ダイアログが呼ばれる
+        evaluator = dlg._create_tf_evaluator(params, "IOD", lambda m: None)
+        assert evaluator is None, "空グループのケースで evaluator 作成を許可している"
+        assert critical_calls, "critical ダイアログが呼ばれていない"
+        title, msg = critical_calls[0]
+        assert "装置グループ" in title
+        assert "IOD" in msg or "空欄" in msg
+
+        dlg.close()
+
+    def test_tf_create_evaluator_blocks_mismatch_group(
+        self, qapp, tmp_path, monkeypatch
+    ):
+        """damper_def_name がケースの装置グループに含まれない場合、evaluator 作成はブロック。"""
+        from app.models import AnalysisCase, Project
+        from app.services.optimizer import ParameterRange
+        from app.ui.unified_optimizer_dialog import UnifiedOptimizerDialog
+        from PySide6.QtWidgets import QMessageBox
+
+        s8i = tmp_path / "tf_test.s8i"
+        s8i.write_text(
+            "DVOD / IOD,0,0,0,,3,100,0,14,0,0,0,0,0,0,0,0,0,0,0,1,0,1\n"
+            "DVOD / OD,0,0,0,,3,100,0,10,0,0,0,0,0,0,0,0,0,0,0,1,0,1\n"
+            "RD / OD,1,2,1,OD,0,0,0,0,0,1,0,0,1,,0,1,1,0,1\n"
+            "DYC / WITH_OD,1,2,0,0,OD,0,0,,D1,1,10,0,1,0,0,1,DL+LL,,WV,1\n",
+            encoding="shift_jis",
+        )
+        project = Project(name="tfmismatch_test")
+        project.load_s8i(str(s8i))
+
+        case = AnalysisCase()
+        case.name = "tfcase"
+        case.model_path = str(s8i)
+        case.snap_exe_path = "C:/fake/SNAP.exe"
+        project.add_case(case)
+
+        critical_calls: list[tuple[str, str]] = []
+        monkeypatch.setattr(
+            QMessageBox, "critical",
+            lambda *a, **k: critical_calls.append((a[1], a[2]))
+        )
+        monkeypatch.setattr(QMessageBox, "warning", lambda *a, **k: None)
+
+        dlg = UnifiedOptimizerDialog(
+            base_case=case,
+            snap_exe_path="C:/fake/SNAP.exe",
+            snap_work_dir=str(tmp_path / "work"),
+            project=project,
+        )
+        dlg._tf_wave_dir_edit.setText(str(tmp_path / "wave"))
+
+        # グループは OD だが IOD を最適化しようとする → 不整合
+        params = [ParameterRange(
+            key="field_8", label="C0", min_val=1.0, max_val=100.0,
+            step=1.0, is_integer=False, is_floor_count=False,
+        )]
+        evaluator = dlg._create_tf_evaluator(params, "IOD", lambda m: None)
+        assert evaluator is None
+        assert critical_calls
+        title, msg = critical_calls[0]
+        assert "不整合" in title
+        assert "IOD" in msg
+        assert "OD" in msg  # 有効装置として表示される
+
+        dlg.close()
+
+    def test_tf_skip_non_dynamic_fields(self, qapp):
+        """動的応答に効かないフィールド (変動係数/疲労曲線/頻度解析) は
+        最適化変数テーブルに現れない (bug 2026-04-22: no-op 最適化の防止)。
+        """
+        from app.models.s8i_parser import DamperDefinition
+        from app.ui.unified_optimizer_dialog import UnifiedOptimizerDialog
+
+        dlg = UnifiedOptimizerDialog()
+
+        skip = dlg._PARAM_SKIP_KEYWORDS
+        assert "変動係数" in skip, "温度変動係数は非動的なのでスキップリスト必須"
+        assert "疲労曲線" in skip, "疲労曲線 P1/P2 は非動的なのでスキップリスト必須"
+        assert "頻度解析" in skip, "頻度解析刻み幅は非動的なのでスキップリスト必須"
+
+        # 実ラベルでの検査
+        dd = DamperDefinition(
+            keyword="DVOD",
+            name="IOD",
+            values=["IOD"] + ["0"] * 25,
+        )
+        # DVOD 19 は "変動係数 下限温度" → スキップされて current は None
+        assert dlg._parse_param_field_value(dd, 19, "変動係数 下限温度") is None
+        # DVOD 8 は "C0（減衰係数）" → 通常通り数値 0.0
+        assert dlg._parse_param_field_value(dd, 8, "C0（減衰係数）") == 0.0
+        # DSD 27 "疲労曲線 P1" → スキップ
+        assert dlg._parse_param_field_value(dd, 13, "疲労曲線 P1") is None
+        # DSD 29 "頻度解析刻み幅" → スキップ
+        assert dlg._parse_param_field_value(dd, 14, "頻度解析刻み幅") is None
+
+        dlg.close()
+
+    def test_tf_post_optimization_stagnation_warning(
+        self, qapp, monkeypatch
+    ):
+        """TF モードで全候補のピークが同値なら、完了時に警告ダイアログが出る。"""
+        from app.services.optimizer import OptimizationCandidate, OptimizationResult
+        from app.ui.unified_optimizer_dialog import (
+            UnifiedOptimizerDialog, _TF_OBJECTIVE_KEY,
+        )
+        from PySide6.QtWidgets import QMessageBox
+
+        dlg = UnifiedOptimizerDialog()
+        # TF モードに切り替え
+        for i in range(dlg._obj1_combo.count()):
+            if dlg._obj1_combo.itemData(i) == _TF_OBJECTIVE_KEY:
+                dlg._obj1_combo.setCurrentIndex(i)
+                break
+
+        # 同一ピーク候補を3件挿入
+        for i in range(3):
+            c = OptimizationCandidate(
+                params={"field_8": 10.0 + i},
+                objective_value=62.87,
+                response_values={"transfer_function_peak": 62.87},
+                is_feasible=True,
+                iteration=i,
+            )
+            dlg._candidates.append(c)
+
+        warning_calls: list[tuple[str, str]] = []
+        monkeypatch.setattr(
+            QMessageBox, "warning",
+            lambda *a, **k: warning_calls.append((a[1], a[2]))
+        )
+
+        dlg._maybe_warn_stagnation()
+        assert warning_calls, "全候補のピークが同値なのに警告が出ない"
+        title, msg = warning_calls[0]
+        assert "no-op" in title.lower() or "no-op" in msg
+        assert "変動係数" in msg or "疲労曲線" in msg  # 原因ヒントが含まれる
+
+        dlg.close()
+
+    def test_tf_post_optimization_no_warning_when_peaks_vary(
+        self, qapp, monkeypatch
+    ):
+        """ピークが変動している場合は警告が出ない。"""
+        from app.services.optimizer import OptimizationCandidate
+        from app.ui.unified_optimizer_dialog import (
+            UnifiedOptimizerDialog, _TF_OBJECTIVE_KEY,
+        )
+        from PySide6.QtWidgets import QMessageBox
+
+        dlg = UnifiedOptimizerDialog()
+        for i in range(dlg._obj1_combo.count()):
+            if dlg._obj1_combo.itemData(i) == _TF_OBJECTIVE_KEY:
+                dlg._obj1_combo.setCurrentIndex(i)
+                break
+
+        for i, peak in enumerate([62.87, 58.77, 60.20]):
+            dlg._candidates.append(OptimizationCandidate(
+                params={"field_8": 10.0 + i}, objective_value=peak,
+                response_values={"transfer_function_peak": peak},
+                is_feasible=True, iteration=i,
+            ))
+
+        warning_calls: list[tuple[str, str]] = []
+        monkeypatch.setattr(
+            QMessageBox, "warning",
+            lambda *a, **k: warning_calls.append((a[1], a[2]))
+        )
+        dlg._maybe_warn_stagnation()
+        assert not warning_calls, f"ピーク変動しているのに警告: {warning_calls}"
+        dlg.close()
+
+    def test_nontf_post_optimization_stagnation_warning(
+        self, qapp, monkeypatch
+    ):
+        """非 TF (max_drift) で全候補が同一値なら事後警告が出る
+        (bug 2026-04-22: TF だけでなく通常最適化でも no-op 停滞を検知)。"""
+        from app.services.optimizer import OptimizationCandidate
+        from app.ui.unified_optimizer_dialog import UnifiedOptimizerDialog
+        from PySide6.QtWidgets import QMessageBox
+
+        dlg = UnifiedOptimizerDialog()
+        # max_drift を目的関数に
+        for i in range(dlg._obj1_combo.count()):
+            if dlg._obj1_combo.itemData(i) == "max_drift":
+                dlg._obj1_combo.setCurrentIndex(i)
+                break
+        assert dlg._obj1_combo.currentData() == "max_drift"
+
+        # 3 候補すべて同一値 0.003 rad (相対差 0、絶対差 0)
+        for i in range(3):
+            dlg._candidates.append(OptimizationCandidate(
+                params={"field_8": 10.0 + i}, objective_value=0.003,
+                response_values={"max_drift": 0.003},
+                is_feasible=True, iteration=i,
+            ))
+
+        warning_calls: list[tuple[str, str]] = []
+        monkeypatch.setattr(
+            QMessageBox, "warning",
+            lambda *a, **k: warning_calls.append((a[1], a[2]))
+        )
+        dlg._maybe_warn_stagnation()
+        assert warning_calls, "全候補 max_drift が同値なのに警告なし"
+        title, msg = warning_calls[0]
+        assert "no-op" in title.lower() or "no-op" in msg
+        assert "変動係数" in msg or "疲労曲線" in msg
+        # dB 文字列が含まれないこと (非 TF なので単位の決め打ちはしない)
+        assert "dB" not in msg
+        dlg.close()
+
+    def test_nontf_post_optimization_no_warning_when_varying(
+        self, qapp, monkeypatch
+    ):
+        """非 TF で max_drift が通常に変動するなら警告なし (0.1% 超の変動)。"""
+        from app.services.optimizer import OptimizationCandidate
+        from app.ui.unified_optimizer_dialog import UnifiedOptimizerDialog
+        from PySide6.QtWidgets import QMessageBox
+
+        dlg = UnifiedOptimizerDialog()
+        for i in range(dlg._obj1_combo.count()):
+            if dlg._obj1_combo.itemData(i) == "max_drift":
+                dlg._obj1_combo.setCurrentIndex(i)
+                break
+
+        # 0.003 → 0.0033 → 0.0028 (相対差 ≈ 16%)
+        for i, d in enumerate([0.003, 0.0033, 0.0028]):
+            dlg._candidates.append(OptimizationCandidate(
+                params={"field_8": 10.0 + i}, objective_value=d,
+                response_values={"max_drift": d},
+                is_feasible=True, iteration=i,
+            ))
+
+        warning_calls: list[tuple[str, str]] = []
+        monkeypatch.setattr(
+            QMessageBox, "warning",
+            lambda *a, **k: warning_calls.append((a[1], a[2]))
+        )
+        dlg._maybe_warn_stagnation()
+        assert not warning_calls, f"変動しているのに警告: {warning_calls}"
+        dlg.close()
+
+    def test_nontf_post_optimization_warning_within_rel_tol(
+        self, qapp, monkeypatch
+    ):
+        """非 TF で相対差 < 1e-4 なら警告 (スケール独立判定)。"""
+        from app.services.optimizer import OptimizationCandidate
+        from app.ui.unified_optimizer_dialog import UnifiedOptimizerDialog
+        from PySide6.QtWidgets import QMessageBox
+
+        dlg = UnifiedOptimizerDialog()
+        for i in range(dlg._obj1_combo.count()):
+            if dlg._obj1_combo.itemData(i) == "max_drift":
+                dlg._obj1_combo.setCurrentIndex(i)
+                break
+
+        # 3.000 / 3.00005 / 3.00008 (相対差 ≈ 2.6e-5 < 1e-4)
+        for i, d in enumerate([3.000, 3.00005, 3.00008]):
+            dlg._candidates.append(OptimizationCandidate(
+                params={"field_8": 10.0 + i}, objective_value=d,
+                response_values={"max_drift": d},
+                is_feasible=True, iteration=i,
+            ))
+
+        warning_calls: list[tuple[str, str]] = []
+        monkeypatch.setattr(
+            QMessageBox, "warning",
+            lambda *a, **k: warning_calls.append((a[1], a[2]))
+        )
+        dlg._maybe_warn_stagnation()
+        assert warning_calls, (
+            "相対差 < 1e-4 だが警告なし (rel_tol が効いていない)"
+        )
+        dlg.close()
+
     def test_unified_optimizer_axis_selectors_exist(self, qapp):
         """X/Y軸セレクタが存在し、自動 + 反復番号 + 応答値の選択肢を持つ。"""
         from app.ui.unified_optimizer_dialog import UnifiedOptimizerDialog, _OBJECTIVE_ITEMS

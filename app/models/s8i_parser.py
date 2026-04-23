@@ -199,6 +199,8 @@ class DycCase:
       1: run_flag (0=解析しない, 1=解析する)
       2: 地震動波数
       ...
+      5: ダンパーグループ名 (RD.values[0] と突き合わせる。空文字=ダンパーなし)
+      ...
     """
     case_no: int          # s8i 内での連番 (1始まり) = D{N} フォルダ番号
     name: str             # ケース名 (e.g. "BCJL2-MIX")
@@ -223,13 +225,28 @@ class DycCase:
         return f"D{self.case_no}"
 
     @property
+    def damper_group(self) -> str:
+        """このケースで有効なダンパーグループ名 (DYC values[5])。
+
+        SNAP では RD レコードの「名称」(RD.values[0]) がこのグループ名と
+        一致する装置のみ、当該ケースの解析対象となります。空文字列の場合は
+        「装置なし」(bare structure) として扱われ、どの DVOD/DSD を変更しても
+        応答は変わりません。
+        """
+        if len(self.values) <= _DYC_DAMPER_GROUP_IDX:
+            return ""
+        return self.values[_DYC_DAMPER_GROUP_IDX].strip()
+
+    @property
     def display_label(self) -> str:
         """UI 表示用ラベル。"""
         if self.is_run:
             flag_str = f"✓({self.run_flag})"
         else:
             flag_str = "–"
-        return f"[{flag_str}] D{self.case_no}: {self.name}"
+        grp = self.damper_group
+        grp_part = f" [{grp}]" if grp else " [ダンパーなし]"
+        return f"[{flag_str}] D{self.case_no}: {self.name}{grp_part}"
 
 
 @dataclass
@@ -285,6 +302,37 @@ class S8iModel:
             if d.name == name:
                 return d
         return None
+
+    def get_dyc_case(self, case_no: int) -> Optional["DycCase"]:
+        """case_no (1始まり) で DYC ケースを検索。"""
+        for c in self.dyc_cases:
+            if c.case_no == case_no:
+                return c
+        return None
+
+    def active_damper_defs_for_case(self, case_no: int) -> List[str]:
+        """指定 DYC ケースで有効な「装置名 (DVOD/DSD 等の名前)」リストを返します。
+
+        SNAP では RD.values[0] (ダンパーグループ名) が DYC.values[5] と一致する
+        装置のみが当該ケースで有効となります。グループ名が空の場合は装置なし。
+
+        Returns
+        -------
+        list of str
+            当該ケースで有効な damper_def_name の一覧 (重複なし、出現順)。
+            ケースが存在しないかグループが空の場合は空リスト。
+        """
+        case = self.get_dyc_case(case_no)
+        if case is None:
+            return []
+        group = case.damper_group
+        if not group:
+            return []
+        seen: Dict[str, None] = {}
+        for rd in self.damper_elements:
+            if rd.name == group and rd.damper_def_name:
+                seen.setdefault(rd.damper_def_name, None)
+        return list(seen.keys())
 
     def get_floor_nodes(self) -> Dict[str, List[int]]:
         """層ごとの節点IDリストを返します（Z座標でグルーピング）。"""
@@ -639,6 +687,11 @@ _DYC_WAVE_SCALE_IDX: int = 20
 
 #: DYC レコードの「解析」(run_flag) フィールド index (0-based)
 _DYC_RUN_FLAG_IDX: int = 1
+
+#: DYC レコードの「ダンパーグループ名」フィールド index (0-based)
+#: このフィールドに一致する RD.values[0] の装置のみが当該ケースで有効。
+#: 空文字列の場合は「装置なし」で解析される。
+_DYC_DAMPER_GROUP_IDX: int = 5
 
 
 # ---------------------------------------------------------------------------

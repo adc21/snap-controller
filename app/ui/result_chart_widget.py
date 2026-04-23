@@ -201,7 +201,10 @@ class ResultChartWidget(QWidget):
     def set_cases(self, cases: List[AnalysisCase]) -> None:
         """利用可能なケース一覧を更新します。解析済みケースのみをコンボに表示します。"""
         from app.models import AnalysisCaseStatus
-        self._all_cases = [c for c in cases if c.result_summary]
+        self._all_cases = [
+            c for c in cases
+            if c.result_summary or c.status == AnalysisCaseStatus.COMPLETED
+        ]
         self._rebuild_case_combo()
 
     def show_case(self, case: AnalysisCase) -> None:

@@ -276,6 +276,96 @@ class TestS8iDycCase:
         assert dyc.folder_name == "D4"
 
 
+class TestDycDamperGroup:
+    """DYC values[5] が「装置グループ名」であることを保証するテスト。
+
+    SNAP では DYC.values[5] と RD.values[0] が一致する装置のみが当該ケース
+    で有効となる。グループが空 or 不一致だと DVOD/DSD 値変更が応答に反映
+    されず、伝達関数最適化がピーク不変の無言 no-op になる (bug: 2026-04-22)。
+    """
+
+    def test_damper_group_returns_field_5(self, tmp_path):
+        s8i = tmp_path / "t.s8i"
+        # values: [0]=name, [1]=run_flag, ..., [5]=damper_group
+        content = (
+            "DYC / C_EMPTY,0,2,0,0,,0,0\n"
+            "DYC / C_OD,0,2,0,0,OD,0,0\n"
+            "DYC / C_MIX,1,2,0,0,MIX,0,0\n"
+        )
+        s8i.write_text(content, encoding="shift_jis")
+        model = parse_s8i(str(s8i))
+        assert model.dyc_cases[0].damper_group == ""
+        assert model.dyc_cases[1].damper_group == "OD"
+        assert model.dyc_cases[2].damper_group == "MIX"
+
+    def test_damper_group_empty_when_values_too_short(self):
+        """values[5] が無くても KeyError にならず空文字を返す。"""
+        dyc = DycCase(
+            case_no=1, name="SHORT", run_flag=1, num_waves=1,
+            values=["SHORT", "1", "1"],
+        )
+        assert dyc.damper_group == ""
+
+    def test_active_damper_defs_empty_group_returns_empty_list(self, tmp_path):
+        s8i = tmp_path / "t.s8i"
+        content = (
+            "DVOD / OD1,0,0,0,,3,100,0,10,0,0,0,0,0,0,0,0,0,0,0,1,0,1\n"
+            "RD / OD,1,2,1,OD1,0,0,0,0,0,1,0,0,1,,0,1,1,0,1\n"
+            "DYC / NO_DAMPER,1,2,0,0,,0,0\n"
+        )
+        s8i.write_text(content, encoding="shift_jis")
+        model = parse_s8i(str(s8i))
+        assert model.active_damper_defs_for_case(1) == []
+
+    def test_active_damper_defs_matches_group(self, tmp_path):
+        s8i = tmp_path / "t.s8i"
+        content = (
+            "DVOD / OD1,0,0,0,,3,100,0,10,0,0,0,0,0,0,0,0,0,0,0,1,0,1\n"
+            "DVOD / IOD1,0,0,0,,3,100,0,14,0,0,0,0,0,0,0,0,0,0,0,1,0,1\n"
+            "DSD / ST1,0,0,0,,0,0,460,0,1600,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,20.48,-0.49,0.05,1,0\n"
+            # group='OD' -> only OD1
+            "RD / OD,1,2,1,OD1,0,0,0,0,0,1,0,0,1,,0,1,1,0,1\n"
+            # group='IOD' -> IOD1 + ST1
+            "RD / IOD,1,2,1,IOD1,0,0,0,0,0,1,0,0,1,,0,1,1,0,1\n"
+            "RD / IOD,3,4,0,ST1,0,0,0,0,0,1,0,0,1,,0,1,1,0,1\n"
+            # group='MIX' -> all three
+            "RD / MIX,1,2,1,IOD1,0,0,0,0,0,1,0,0,1,,0,1,1,0,1\n"
+            "RD / MIX,3,4,0,ST1,0,0,0,0,0,1,0,0,1,,0,1,1,0,1\n"
+            "RD / MIX,5,6,1,OD1,0,0,0,0,0,1,0,0,1,,0,1,1,0,1\n"
+            "DYC / C_OD,0,2,0,0,OD,0,0\n"
+            "DYC / C_IOD,0,2,0,0,IOD,0,0\n"
+            "DYC / C_MIX,1,2,0,0,MIX,0,0\n"
+            "DYC / C_NONE,0,2,0,0,,0,0\n"
+        )
+        s8i.write_text(content, encoding="shift_jis")
+        model = parse_s8i(str(s8i))
+
+        assert model.active_damper_defs_for_case(1) == ["OD1"]
+        assert sorted(model.active_damper_defs_for_case(2)) == ["IOD1", "ST1"]
+        assert sorted(model.active_damper_defs_for_case(3)) == ["IOD1", "OD1", "ST1"]
+        assert model.active_damper_defs_for_case(4) == []
+
+    def test_active_damper_defs_unknown_case(self, tmp_path):
+        s8i = tmp_path / "t.s8i"
+        s8i.write_text("DYC / C1,1,2,0,0,OD,0,0", encoding="shift_jis")
+        model = parse_s8i(str(s8i))
+        assert model.active_damper_defs_for_case(999) == []
+
+    def test_get_dyc_case(self, tmp_path):
+        s8i = tmp_path / "t.s8i"
+        content = (
+            "DYC / A,0,2,0,0,OD,0,0\n"
+            "DYC / B,1,2,0,0,IOD,0,0\n"
+        )
+        s8i.write_text(content, encoding="shift_jis")
+        model = parse_s8i(str(s8i))
+        c1 = model.get_dyc_case(1)
+        c2 = model.get_dyc_case(2)
+        assert c1 is not None and c1.name == "A"
+        assert c2 is not None and c2.name == "B"
+        assert model.get_dyc_case(99) is None
+
+
 class TestApplyImpulseMode:
     """Test S8iModel.apply_impulse_mode for transfer function optimization."""
 

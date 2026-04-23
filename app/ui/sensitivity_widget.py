@@ -295,16 +295,13 @@ class SensitivityWidget(QWidget):
 
     def _build_suggest_panel(self, layout: QVBoxLayout) -> None:
         suggest_header_row = QHBoxLayout()
-        _suggest_hdr_lbl = QLabel("<b>📋 次ラウンド推奨パラメータ</b>")
+        _suggest_hdr_lbl = QLabel("<b>📋 パラメータ変更の推奨</b>")
         _suggest_hdr_lbl.setTextFormat(Qt.RichText)
         suggest_header_row.addWidget(_suggest_hdr_lbl)
         suggest_header_row.addStretch()
 
         self._suggest_btn = QPushButton("✨ 改善提案を生成")
-        self._suggest_btn.setToolTip(
-            "感度解析の結果から、次ラウンドで変更すべきパラメータと推奨変更量を自動計算します。\n"
-            "最重要パラメータ（|r| 最大）の相関方向を参照して「増やす/減らす」の方向を提案します。"
-        )
+        self._suggest_btn.setToolTip("感度解析から変更方向と量を自動計算")
         self._suggest_btn.setStyleSheet(
             "QPushButton {"
             "  font-size: 10px; padding: 3px 10px;"
@@ -332,21 +329,7 @@ class SensitivityWidget(QWidget):
         _sp_layout.setContentsMargins(10, 6, 10, 8)
         _sp_layout.setSpacing(4)
 
-        _sp_title_row = QHBoxLayout()
-        _sp_icon = QLabel("🔮")
-        _sp_icon.setStyleSheet("font-size: 14px; background: transparent; border: none;")
-        _sp_title_row.addWidget(_sp_icon)
-        _sp_title = QLabel("<b>次ラウンドで試すべきパラメータ変更の提案</b>")
-        _sp_title.setTextFormat(Qt.RichText)
-        _sp_title.setStyleSheet("color: #4a148c; background: transparent; border: none;")
-        _sp_title_row.addWidget(_sp_title)
-        _sp_title_row.addStretch()
-        _sp_layout.addLayout(_sp_title_row)
-
-        self._suggest_content_lbl = QLabel(
-            "「✨ 改善提案を生成」ボタンを押すと、感度解析結果に基づいた\n"
-            "パラメータ変更の推奨が表示されます。"
-        )
+        self._suggest_content_lbl = QLabel("未生成")
         self._suggest_content_lbl.setWordWrap(True)
         self._suggest_content_lbl.setStyleSheet(
             "color: #6a1b9a; font-size: 10px; background: transparent; border: none;"

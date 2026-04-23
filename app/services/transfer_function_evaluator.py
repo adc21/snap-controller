@@ -130,6 +130,22 @@ class TransferFunctionEvaluator:
         self._error_count: int = 0
         self._cache: Dict[str, Dict[str, float]] = {}
 
+        # 停滞検知用: (cache_key, peak_db) を成功評価ごとに記録。
+        # 異なるパラメータセットで同じピークが続く＝選択した変数が応答に
+        # 効いていない可能性が高い (bug 2026-04-22: 非動的フィールドを
+        # 選んでしまうとダンパーあっても peak 変化しない)。
+        self._distinct_peaks: List[Tuple[str, float]] = []
+        self._stagnation_warned: bool = False
+        #: 停滞と判定する同一ピーク許容差 (dB)
+        self._stagnation_tolerance_db: float = 0.01
+        #: 警告を出すのに必要な、異なるパラメータでの成功評価数
+        self._stagnation_min_evals: int = 3
+
+        # 装置グループ整合性の事前チェック（警告のみ、ブロックしない）
+        # UI 側でもチェックしているが、スクリプト実行やテストから直接
+        # 呼ばれた場合でも問題が見えるようにログに残す。
+        self._warn_if_damper_group_mismatch()
+
         # インパルス波を wave フォルダに生成（1回のみ）
         self._impulse_filename = (
             config.impulse_filename_override
@@ -144,6 +160,90 @@ class TransferFunctionEvaluator:
         # 最新結果の保持（UI プロット用）
         self.last_result: Optional[TransferFunctionResult] = None
         self.last_T1: Optional[float] = None
+
+    def _warn_if_damper_group_mismatch(self) -> None:
+        """対象ケースの装置グループと damper_def_name の整合性を検査して
+        不整合ならログに警告を出す。
+
+        SNAP では DYC.values[5] (ダンパーグループ名) と RD.values[0] が一致
+        する装置のみが当該ケースで有効。グループが空、または ``damper_def_name``
+        がグループ内の RD に出現しない場合は、どんなに DVOD/DSD 値を
+        変更しても応答に反映されないため、最適化が無言で no-op になる。
+        """
+        if not self.config.damper_def_name:
+            return
+        try:
+            model = parse_s8i(self.config.base_s8i_path)
+        except Exception:
+            logger.debug("装置グループ検査の為の parse_s8i に失敗", exc_info=True)
+            return
+        case = model.get_dyc_case(self.config.target_case_no)
+        if case is None:
+            self.log_callback(
+                f"  [WARN] ケース D{self.config.target_case_no} が .s8i に存在しません。"
+            )
+            return
+        group = case.damper_group
+        active_defs = model.active_damper_defs_for_case(self.config.target_case_no)
+        if not group:
+            self.log_callback(
+                f"  [WARN] ケース D{self.config.target_case_no} ({case.name}) の"
+                f" 装置グループが空欄です。装置 '{self.config.damper_def_name}' の"
+                f" パラメータを変更しても応答に反映されません (SNAP: 装置未選択)。"
+            )
+            return
+        if self.config.damper_def_name not in active_defs:
+            self.log_callback(
+                f"  [WARN] ケース D{self.config.target_case_no} ({case.name}) の"
+                f" 装置グループ '{group}' には装置 '{self.config.damper_def_name}'"
+                f" が含まれません。パラメータ変更は応答に反映されません。"
+                f" このケースで有効な装置: {active_defs}"
+            )
+            return
+        self.log_callback(
+            f"  [INFO] 装置グループ整合性 OK: ケース D{self.config.target_case_no}"
+            f" ({case.name}), グループ '{group}', 有効装置 {active_defs},"
+            f" 最適化対象 '{self.config.damper_def_name}'"
+        )
+
+    def _record_peak_and_maybe_warn(self, cache_key: str, peak_db: float) -> None:
+        """成功評価ごとに peak を記録し、停滞を検出したら一度だけ警告する。
+
+        異なるパラメータセットで ``_stagnation_min_evals`` 回以上成功評価
+        してもピークが ``_stagnation_tolerance_db`` 以内に収まっている場合、
+        ユーザが選んだフィールドが応答に効いていない（= no-op 最適化）
+        可能性が高い。典型例:
+
+        - 変動係数/疲労曲線/頻度解析フィールドを選んでしまった
+        - 値範囲が狭すぎて感度が極小
+        - Fc/Fy などの閾値型パラメータで応答が閾値未満
+        """
+        if self._stagnation_warned:
+            return
+        # 同一 cache_key は重複カウントしない
+        if any(k == cache_key for k, _ in self._distinct_peaks):
+            return
+        self._distinct_peaks.append((cache_key, peak_db))
+        if len(self._distinct_peaks) < self._stagnation_min_evals:
+            return
+        peaks_only = [p for _, p in self._distinct_peaks]
+        if max(peaks_only) - min(peaks_only) <= self._stagnation_tolerance_db:
+            self._stagnation_warned = True
+            self.log_callback(
+                "  [WARN] 停滞検知: 異なるパラメータで"
+                f" {len(self._distinct_peaks)} 回評価してもピークが"
+                f" {self._stagnation_tolerance_db} dB 以内しか変動していません。"
+                " 選択した最適化変数が応答に効いていない可能性があります"
+                " (例: 温度変動係数 / 疲労曲線フィールド / 閾値未満の Fc など)。"
+                " ベースケースのダンパーグループ設定、および動的応答に"
+                " 影響するフィールド（C0/α/K/Fy 等）が選択されているか"
+                " 確認してください。"
+            )
+
+    @property
+    def stagnation_detected(self) -> bool:
+        """停滞（no-op 最適化）が検出されたかどうか。UI 側の事後警告で使う。"""
+        return self._stagnation_warned
 
     # ------------------------------------------------------------------
     # Public
@@ -166,6 +266,9 @@ class TransferFunctionEvaluator:
                 response["total_damper_count"] = float(total)
             self._success_count += 1
             self._cache[cache_key] = response
+            peak = response.get(OBJECTIVE_KEY)
+            if isinstance(peak, (int, float)) and peak != float("inf"):
+                self._record_peak_and_maybe_warn(cache_key, float(peak))
             return response
         except Exception as e:
             self._error_count += 1
