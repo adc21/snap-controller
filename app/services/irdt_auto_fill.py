@@ -179,48 +179,41 @@ def _extract_modes_from_result(
     - MDFloor.xbn (存在すれば) → 各層のモード形状振幅
     """
     from controller.binary.period_xbn_reader import PeriodXbnReader
-    from controller.binary.xbn_reader import XbnReader
-    from controller.binary.mode_analysis import (
-        estimate_mdfloor_structure,
-        get_mdfloor_mode_series,
-    )
+    from controller.binary.modal_displacement_reader import ModalDisplacementReader
 
     period_reader = PeriodXbnReader(result_dir / "Period.xbn")
     modes: List[ModeInfo] = []
     if not period_reader.modes:
         return modes
 
+    # structure_type は Period の自動検出結果から取り出す
+    struct_type: Optional[int] = None
+    if getattr(period_reader, "layout_is_planar", False):
+        struct_type = 1
+    elif period_reader.modes:
+        struct_type = 0
+
     # MDFloor.xbn から各モード形状を取得（存在する場合）
-    mdfloor_records = None
-    dof_per_mode = 0
-    dof_labels: List[str] = []
+    md_reader: Optional[ModalDisplacementReader] = None
     mdfloor_path = result_dir / "MDFloor.xbn"
     if mdfloor_path.exists():
         try:
-            mdfloor_reader = XbnReader(mdfloor_path)
-            mdfloor_records = mdfloor_reader.records
-            dof_per_mode, dof_labels = estimate_mdfloor_structure(
-                period_reader.num_modes, mdfloor_reader.values_per_record
+            md_reader = ModalDisplacementReader(
+                mdfloor_path, dof_per_item=3, structure_type=struct_type
             )
+            if md_reader.data is None:
+                md_reader = None
         except Exception as exc:
             logger.debug("MDFloor.xbn 読み込み失敗: %s", exc)
-            mdfloor_records = None
+            md_reader = None
 
     for pm in period_reader.modes:
         dom = pm.dominant_direction or "X"
         shape: List[float] = []
-        if mdfloor_records is not None and dof_per_mode > 0:
-            # DOF ラベルから dominant_direction に対応する index を探す
-            dof_idx = 0
-            # "Dx" ↔ "X" のマッピング
-            want_prefix = f"D{dom.lower()}"
-            for i, lbl in enumerate(dof_labels):
-                if lbl.lower() == want_prefix:
-                    dof_idx = i
-                    break
-            arr = get_mdfloor_mode_series(
-                mdfloor_records, pm.mode_no - 1, dof_idx, dof_per_mode
-            )
+        if md_reader is not None:
+            # dominant_direction "X" -> "Dx" 等に変換
+            direction = f"D{dom.lower()}"
+            arr = md_reader.mode_shape(pm.mode_no - 1, direction)
             shape = [float(v) for v in arr[:n_floors]]
             # 最大絶対値で正規化 (adc-tools と整合)
             if shape:

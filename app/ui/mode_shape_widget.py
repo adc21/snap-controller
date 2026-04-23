@@ -109,13 +109,10 @@ def _empty_label(msg: str) -> QLabel:
 
 
 # ---------------------------------------------------------------------------
-# MDFloor.xbn のモード/DOF 構造を推定するヘルパー（controller から再エクスポート）
+# ModalDisplacementReader: MDFloor.xbn / MDNode.xbn 専用リーダー
 # ---------------------------------------------------------------------------
 
-from controller.binary.mode_analysis import (
-    estimate_mdfloor_structure,
-    get_mdfloor_mode_series,
-)
+from controller.binary.modal_displacement_reader import ModalDisplacementReader
 
 
 # ---------------------------------------------------------------------------
@@ -419,57 +416,54 @@ class ModeShapeWidget(QWidget):
         ax.clear()
 
         mode_idx: int = self._mode_combo.currentData() or 0
-        dof_idx: int = self._dof_combo.currentData() or 0
+        prev_direction: Optional[str] = self._dof_combo.currentData()
 
-        # MDFloor.xbn を持つエントリを収集
-        md_entries: List[Tuple[str, object]] = []
+        # MDFloor.xbn の ModalDisplacementReader を持つエントリを収集
+        md_entries: List[Tuple[str, ModalDisplacementReader, Optional[List[str]]]] = []
         for case_name, loader in self._entries:
             bc = loader.get("MDFloor")
-            if bc and bc.xbn and bc.xbn.records is not None:
-                md_entries.append((case_name, bc))
+            if bc and bc.md and bc.md.data is not None and bc.md.num_items > 0:
+                stp_names = (
+                    list(bc.stp.names) if bc.stp and bc.stp.names else None
+                )
+                md_entries.append((case_name, bc.md, stp_names))
 
         if not md_entries:
-            # MDFloor なしの場合は Period.xbn の β値からの簡易表示
             self._draw_shape_from_beta(ax, mode_idx)
             return
 
-        # DOF コンボを最初のケースに合わせて更新
-        first_bc = md_entries[0][1]
-        xbn = first_bc.xbn
-        n_modes_period = max(
-            (len(loader.period.modes) for _, loader in self._entries
-             if loader.period and loader.period.modes),
-            default=1,
-        )
-        dof_per_mode, dof_labels = estimate_mdfloor_structure(
-            n_modes_period, xbn.values_per_record
-        )
+        # 利用可能な direction 一覧を最初のケースから取得
+        first_md = md_entries[0][1]
+        directions = first_md.available_directions()
+        if not directions:
+            directions = list(first_md.slot_map().values())[: first_md.dof_per_item]
 
+        # DOF コンボ再構築 (direction ラベルをそのまま userData に入れる)
         self._dof_combo.blockSignals(True)
-        prev_dof = self._dof_combo.currentData()
         self._dof_combo.clear()
-        for i, lbl in enumerate(dof_labels[:dof_per_mode]):
-            self._dof_combo.addItem(lbl, i)
-        if prev_dof is not None and 0 <= prev_dof < len(dof_labels):
-            self._dof_combo.setCurrentIndex(prev_dof)
-            dof_idx = prev_dof
+        for lbl in directions:
+            self._dof_combo.addItem(lbl, lbl)
+        if prev_direction in directions:
+            self._dof_combo.setCurrentIndex(directions.index(prev_direction))
+            current_direction = prev_direction
+        else:
+            self._dof_combo.setCurrentIndex(0)
+            current_direction = directions[0]
         self._dof_combo.blockSignals(False)
 
         colors = plt.rcParams["axes.prop_cycle"].by_key()["color"]
         plotted = 0
-        for ci, (case_name, bc) in enumerate(md_entries):
-            if bc.xbn.records is None:
+        n_items = 0
+        last_stp_names: Optional[List[str]] = None
+        for ci, (case_name, md, stp_names) in enumerate(md_entries):
+            if not (0 <= mode_idx < md.num_modes):
                 continue
-            vals = get_mdfloor_mode_series(
-                bc.xbn.records, mode_idx, dof_idx, dof_per_mode
-            )
-            n_floors = len(vals)
-            floors = list(range(n_floors))
-
-            # STP 名がある場合はレコード名を使う
-            stp_names: List[str] = []
-            if bc.stp and bc.stp.names:
-                stp_names = bc.stp.names
+            vals = md.mode_shape(mode_idx, current_direction)
+            if vals.size == 0:
+                continue
+            n_items = max(n_items, vals.size)
+            last_stp_names = stp_names if stp_names else last_stp_names
+            floors = list(range(vals.size))
 
             c = colors[ci % len(colors)]
             ax.plot(vals, floors, "o-", color=c, linewidth=1.8,
@@ -480,19 +474,18 @@ class ModeShapeWidget(QWidget):
             self._shape_canvas.show_message("MDFloor.xbn データが空です")
             return
 
-        # Y 軸ラベルをレコード名に
-        if stp_names and len(stp_names) >= n_floors:
-            ax.set_yticks(range(n_floors))
-            ax.set_yticklabels(stp_names[:n_floors], fontsize=7)
+        # Y 軸ラベルを STP 名（あれば）に
+        if last_stp_names and len(last_stp_names) >= n_items:
+            ax.set_yticks(range(n_items))
+            ax.set_yticklabels(last_stp_names[:n_items], fontsize=7)
         else:
-            ax.set_yticks(range(n_floors))
-            ax.set_yticklabels([str(i + 1) for i in range(n_floors)], fontsize=7)
+            ax.set_yticks(range(n_items))
+            ax.set_yticklabels([str(i + 1) for i in range(n_items)], fontsize=7)
 
-        dof_label = dof_labels[dof_idx] if dof_idx < len(dof_labels) else f"f{dof_idx}"
         ax.axvline(0, color="#888", linewidth=0.8, linestyle="--")
-        ax.set_xlabel(f"振幅  [{dof_label}]")
+        ax.set_xlabel(f"振幅  [{current_direction}]")
         ax.set_ylabel("階（下→上）")
-        ax.set_title(f"固有モード形状 — モード {mode_idx + 1}  [{dof_label}]")
+        ax.set_title(f"固有モード形状 — モード {mode_idx + 1}  [{current_direction}]")
         ax.grid(True, axis="x", linestyle=":", alpha=0.5)
         ax.invert_yaxis()  # 最上階を上に表示
         if len(md_entries) > 1:
