@@ -297,17 +297,6 @@ class SidebarWidget(QWidget):
         sep.setStyleSheet("color: palette(mid); margin: 0 8px;")
         layout.addWidget(sep)
 
-        hint = QLabel("①→②→③→④ の順に進めます")
-        hint.setAlignment(Qt.AlignCenter)
-        hint.setWordWrap(True)
-        hint.setStyleSheet("color: #888888; font-size: 10px; padding: 8px 12px 4px 12px;")
-        layout.addWidget(hint)
-
-        sep2 = QFrame()
-        sep2.setFrameShape(QFrame.HLine)
-        sep2.setStyleSheet("color: palette(mid); margin: 0 8px;")
-        layout.addWidget(sep2)
-
         self._status_label = QLabel("モデル未読み込み")
         self._status_label.setAlignment(Qt.AlignCenter)
         self._status_label.setWordWrap(True)
@@ -315,8 +304,7 @@ class SidebarWidget(QWidget):
             "color: #888888; font-size: 10px; padding: 4px 12px 8px 12px;"
         )
         self._status_label.setToolTip(
-            "現在のプロジェクト状態を要約表示します。\n"
-            "モデルファイル名 / ケース数 / 解析完了数 が表示されます。"
+            "モデル名 / ケース数 / 完了数"
         )
         layout.addWidget(self._status_label)
 

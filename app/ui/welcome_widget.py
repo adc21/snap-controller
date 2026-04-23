@@ -2,34 +2,8 @@
 app/ui/welcome_widget.py
 ウェルカム画面 & 最近使ったプロジェクト。
 
-アプリ起動時やプロジェクトが開かれていない時に表示される画面です。
-最近使ったプロジェクトのリスト、クイックアクション、ヒントを提供します。
-
-UX改善（第7回①）: 見つからないプロジェクトの一括削除ボタン追加。
-  「❌ 見つからない項目を削除」ボタンを追加し、存在しないパスの履歴を
-  一括で削除できるようにします。現在は「履歴をクリア」で全件削除するか
-  手動で管理するしかありませんでしたが、このボタンで不要なリストを
-  自動クリーンアップできます。削除件数を「X件削除しました」でフィードバック。
-
-UX改善①: シングルクリック選択 + 「開く」ボタン追加。
-  - 最近のプロジェクトをシングルクリックするだけで「開く」ボタンが有効化されます。
-  - 「開く」ボタンを押すか、Enterキー / ダブルクリックで即座に開けます。
-  - プロジェクトファイルが見つからない場合は「開く」ボタンを自動無効化します。
-
-UX改善（新④）: ワークフロー概要カードを追加。
-  「ヒント:」の1行テキストを廃止し、4ステップの概要を視覚的なカードで表示します。
-  各カードにはステップ番号・タイトル・何をするかの簡単な説明が含まれており、
-  初めてアプリを起動したユーザーが「何をすればいいか」を即座に理解できます。
-  カードはウェルカム画面下部に横並びで表示され、常に参照できます。
-
-UX改善（スマートデフォルト）: SNAP実行ファイル未設定時の警告バナー。
-  Snap.exe のパスが設定されていない場合、ウェルカム画面の最上部に
-  目立つ黄色の警告バナーを表示します。
-  「⚙ 設定を開く」ボタンからすぐに設定ダイアログへ誘導するため、
-  「プロジェクトを作って解析しようとしたら SNAP が動かなかった」
-  という挫折ポイントを未然に防ぎます。
-  - show_snap_warning(show: bool) で表示/非表示を外部から制御できます。
-  - snapSettingsRequested シグナルで設定ダイアログ開放を外部に委譲します。
+アプリ起動時やプロジェクトが開かれていない時に表示される画面。
+クイックアクション、最近のプロジェクト、SNAP未設定時の警告バナーを提供します。
 """
 
 from __future__ import annotations
@@ -165,7 +139,6 @@ class WelcomeWidget(QWidget):
         self._build_quick_actions(container_layout)
         self._build_recent_projects(container_layout)
         self._build_recent_buttons(container_layout)
-        self._build_workflow_cards(container_layout)
 
         main_layout.addWidget(container)
 
@@ -205,10 +178,7 @@ class WelcomeWidget(QWidget):
             "}"
             "QPushButton:hover { background-color: #f9a825; color: #3e2000; }"
         )
-        _snap_warn_btn.setToolTip(
-            "「設定」ダイアログを開きます。\n"
-            "「SNAP 実行ファイル」欄で Snap.exe のパスを指定してください。"
-        )
+        _snap_warn_btn.setToolTip("設定ダイアログを開く")
         _snap_warn_btn.clicked.connect(self.snapSettingsRequested.emit)
         _snap_warn_layout.addWidget(_snap_warn_btn)
 
@@ -242,7 +212,7 @@ class WelcomeWidget(QWidget):
 
         btn_new = self._make_action_button(
             "新規プロジェクト",
-            "新しい解析プロジェクトを作成します。\n作成後に STEP1 で .s8i ファイルを読み込んでください。 (Ctrl+N)",
+            "新規プロジェクト作成 (Ctrl+N)",
             self.newProjectRequested.emit,
             shortcut_hint="Ctrl+N",
         )
@@ -250,8 +220,7 @@ class WelcomeWidget(QWidget):
 
         btn_open = self._make_action_button(
             "プロジェクトを開く (.snapproj)",
-            "以前に保存したプロジェクトファイル (.snapproj) を開きます。\n"
-            "解析ケース・設定・結果がすべて復元されます。 (Ctrl+O)",
+            ".snapproj を開く (Ctrl+O)",
             self.openProjectRequested.emit,
             shortcut_hint="Ctrl+O",
         )
@@ -269,10 +238,6 @@ class WelcomeWidget(QWidget):
         recent_label.setFont(recent_font)
         layout.addWidget(recent_label)
 
-        recent_hint = QLabel("クリックで選択、ダブルクリックまたは「開く」ボタンで開きます")
-        recent_hint.setStyleSheet("color: gray; font-size: 10px; padding-bottom: 2px;")
-        layout.addWidget(recent_hint)
-
         self._recent_list = QListWidget()
         self._recent_list.setMinimumHeight(200)
         self._recent_list.setAlternatingRowColors(True)
@@ -286,13 +251,7 @@ class WelcomeWidget(QWidget):
         btn_row = QHBoxLayout()
 
         self._open_btn = QPushButton("開く (.snapproj)")
-        self._open_btn.setToolTip(
-            "選択したプロジェクトファイル (.snapproj) を開きます。\n"
-            "解析ケース・設定・結果がすべて復元されます。\n"
-            "（ダブルクリックでも開けます）\n\n"
-            "※ SNAP の入力ファイル (.s8i) を読み込む場合は、\n"
-            "  新規プロジェクト作成後に STEP1 の「.s8i ファイルを読み込む」を使用してください。"
-        )
+        self._open_btn.setToolTip("選択中のプロジェクトを開く")
         self._open_btn.setEnabled(False)
         self._open_btn.setDefault(True)
         self._open_btn.setStyleSheet("""
@@ -317,11 +276,7 @@ class WelcomeWidget(QWidget):
 
         self._cleanup_btn = QPushButton("❌ 見つからない項目を削除")
         self._cleanup_btn.setMaximumWidth(210)
-        self._cleanup_btn.setToolTip(
-            "存在しないファイルパスの履歴エントリを一括削除します。\n"
-            "「[見つかりません]」と表示されている項目をまとめて消去します。\n\n"
-            "※ 現在開いているプロジェクトには影響しません。"
-        )
+        self._cleanup_btn.setToolTip("存在しないパスの履歴を一括削除")
         self._cleanup_btn.setStyleSheet(
             "QPushButton {"
             "  font-size: 11px; padding: 3px 10px;"
@@ -338,67 +293,6 @@ class WelcomeWidget(QWidget):
         self._clear_btn.clicked.connect(self._on_clear_recent)
         btn_row.addWidget(self._clear_btn)
         layout.addLayout(btn_row)
-
-    def _build_workflow_cards(self, layout: QVBoxLayout) -> None:
-        """ワークフロー概要カード（4ステップ）を構築。"""
-        separator = QFrame()
-        separator.setFrameShape(QFrame.HLine)
-        separator.setFrameShadow(QFrame.Sunken)
-        layout.addWidget(separator)
-
-        workflow_title = QLabel("基本的な使い方")
-        wf_font = QFont()
-        wf_font.setPointSize(11)
-        wf_font.setBold(True)
-        workflow_title.setFont(wf_font)
-        workflow_title.setStyleSheet("padding: 4px 0px 6px 0px;")
-        layout.addWidget(workflow_title)
-
-        cards_row = QHBoxLayout()
-        cards_row.setSpacing(10)
-
-        _workflow_steps = [
-            ("①", "モデル設定", "#1976d2",
-             ["SNAPの入力ファイル", "(.s8i) を選択", "ダンパー定義・節点", "情報を確認"]),
-            ("②", "ケース設計", "#7b1fa2",
-             ["ダンパー種別・", "基数・パラメータを", "複数ケースで設定", "テンプレート活用可"]),
-            ("③", "解析実行", "#f57c00",
-             ["実行するケースを", "チェックして一括実行", "進捗をリアルタイム", "モニタリング"]),
-            ("④", "結果・戦略", "#2e7d32",
-             ["応答グラフを比較", "最良ケースを特定", "次回解析の戦略を", "メモしてループ"]),
-        ]
-
-        for number, title, color, lines in _workflow_steps:
-            card = QFrame()
-            card.setFrameShape(QFrame.StyledPanel)
-            card.setStyleSheet(
-                f"QFrame {{"
-                f"  border: 2px solid {color};"
-                f"  border-radius: 6px;"
-                f"  padding: 4px;"
-                f"}}"
-            )
-            card_layout = QVBoxLayout(card)
-            card_layout.setContentsMargins(8, 6, 8, 6)
-            card_layout.setSpacing(4)
-
-            header_lbl = QLabel(
-                f"<span style='font-size:18px; font-weight:900; color:{color};'>"
-                f"{number}"
-                f"</span>"
-                f"<span style='font-size:12px; font-weight:bold;'> {title}</span>"
-            )
-            header_lbl.setTextFormat(Qt.RichText)
-            card_layout.addWidget(header_lbl)
-
-            for line in lines:
-                lbl = QLabel(line)
-                lbl.setStyleSheet("color: gray; font-size: 10px;")
-                card_layout.addWidget(lbl)
-
-            cards_row.addWidget(card)
-
-        layout.addLayout(cards_row)
 
     def _make_action_button(
         self, text: str, tooltip: str, callback, shortcut_hint: str = ""
@@ -537,12 +431,9 @@ class WelcomeWidget(QWidget):
         exists = path and Path(path).exists()
         self._open_btn.setEnabled(bool(exists))
         if not exists and path:
-            self._open_btn.setToolTip("このファイルは見つかりません:\n" + str(path))
+            self._open_btn.setToolTip("ファイルが見つかりません:\n" + str(path))
         else:
-            self._open_btn.setToolTip(
-                "選択したプロジェクトを開きます\n"
-                "（ダブルクリックでも開けます）"
-            )
+            self._open_btn.setToolTip("選択中のプロジェクトを開く")
 
     # UX改善①: 「開く」ボタンクリック処理
     def _on_open_selected(self) -> None:

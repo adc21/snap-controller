@@ -46,6 +46,7 @@ from app.services import AnalysisService
 from app.services.autosave import AutoSaveService
 from .case_table import CaseTableWidget
 from .compare_chart_widget import CompareChartWidget
+from .case_dyc_selector_widget import CaseDycSelectorWidget, DycSelection
 from .envelope_chart_widget import EnvelopeChartWidget
 from .dashboard_widget import DashboardWidget
 from .file_preview_widget import FilePreviewWidget
@@ -176,6 +177,9 @@ class MainWindow(_MainWindowDialogsMixin, QMainWindow):
         self._run_selection = RunSelectionWidget()
         self._batch_queue = BatchQueueWidget()
         self._log = LogWidget()
+        # 全結果タブ共通の (ケース × DYC) セレクタ。STEP4 の左側に配置する。
+        self._case_dyc_selector = CaseDycSelectorWidget()
+        self._case_dyc_selector.selectionChanged.connect(self._on_dyc_selection_changed)
 
     def _setup_welcome(self) -> None:
         """ウェルカム画面を構築します。"""
@@ -201,12 +205,6 @@ class MainWindow(_MainWindowDialogsMixin, QMainWindow):
             next_primary=True,
         )
         self._step1_footer.set_next_enabled(False)
-        self._step1_footer.set_next_hint(
-            "入力ファイル (.s8i / .NAP) を読み込むと STEP2 へ進めます"
-        )
-        self._step1_footer.setToolTip(
-            "STEP1 で入力ファイル (.s8i / .NAP) を読み込むと STEP2 へ進めます"
-        )
         self._step1_footer.nextRequested.connect(lambda: self._sidebar.set_current_step(1))
         step1_layout.addWidget(self._step1_footer)
         return step1
@@ -226,8 +224,6 @@ class MainWindow(_MainWindowDialogsMixin, QMainWindow):
             next_primary=True,
         )
         self._step2_footer.set_next_enabled(False)
-        self._step2_footer.set_next_hint("解析ケースを1件以上追加すると STEP3 へ進めます")
-        self._step2_footer.setToolTip("STEP2で解析ケースを1件以上追加するとSTEP3へ進めます")
         self._step2_footer.backRequested.connect(lambda: self._sidebar.set_current_step(0))
         self._step2_footer.nextRequested.connect(lambda: self._sidebar.set_current_step(2))
         step2_layout.addWidget(self._step2_footer)
@@ -322,8 +318,6 @@ class MainWindow(_MainWindowDialogsMixin, QMainWindow):
             next_primary=True,
         )
         self._step3_footer.set_next_enabled(False)
-        self._step3_footer.set_next_hint("解析を実行して結果が出ると STEP4 へ進めます")
-        self._step3_footer.setToolTip("解析を実行して結果が出るとSTEP4へ進めます")
         self._step3_footer.backRequested.connect(lambda: self._sidebar.set_current_step(1))
         self._step3_footer.nextRequested.connect(lambda: self._sidebar.set_current_step(3))
         step3_layout.addWidget(self._step3_footer)
@@ -350,7 +344,7 @@ class MainWindow(_MainWindowDialogsMixin, QMainWindow):
 
         self._step4_content_stack = QStackedWidget()
         self._step4_content_stack.addWidget(self._build_step4_empty_state())
-        self._step4_content_stack.addWidget(self._right_tabs)
+        self._step4_content_stack.addWidget(self._step4_split)
         step4_layout.addWidget(self._step4_content_stack, stretch=1)
 
         step4_layout.addWidget(self._build_step4_notes_panel())
@@ -366,28 +360,26 @@ class MainWindow(_MainWindowDialogsMixin, QMainWindow):
         return step4
 
     def _build_step4_result_tabs(self) -> None:
-        """結果タブウィジェットを構築します。"""
+        """結果タブウィジェットを構築します。
+
+        ケース選択は左の ``CaseDycSelectorWidget`` に集約し、右側はタブ構成をフラットに
+        並べる。「解析結果」タブ (単一ケース用 ResultChartWidget) は
+        CompareChartWidget / BinaryResultWidget と表示内容が重複していたため撤廃。
+        """
         from PySide6.QtWidgets import QTabWidget as _QTabWidget
-
-        self._binary_result.prepend_tab(self._compare_chart, "📊 応答値比較")
-        self._binary_result.prepend_tab(self._hysteresis_widget, "🔄 履歴ループ")
-        self._binary_result.prepend_tab(self._mode_shape_widget, "🏗 モード形状")
-        self._binary_result.prepend_tab(self._transfer_function_widget, "〜 伝達関数")
-
-        # BinaryResultWidget の左パネル選択を応答値比較グラフに連動
-        self._binary_result.cases_selected.connect(self._compare_chart.set_active_cases)
 
         self._right_tabs = _QTabWidget()
         _tab_defs = [
-            (self._dashboard,      "fa5s.chart-pie",       "ダッシュボード",   True,  1),
-            (self._chart,          "fa5s.chart-line",      "解析結果",         True,  1),
-            # ケース比較タブは内部に伝達関数/時刻歴/ダンパー履歴など単一ケースでも
-            # 有用な子タブを含むため、1 ケースから有効化する (実比較は 2 件以上で可能)
-            (self._binary_result,  "fa5s.exchange-alt",    "ケース比較",       True,  1),
-            (self._envelope_chart,    "fa5s.ruler-combined",  "エンベロープ",     True,  1),
-            (self._radar_chart,       "fa5s.spider",          "レーダーチャート", True,  2),
-            (self._result_table,      "fa5s.table",           "結果テーブル",     True,  1),
-            (self._ranking,           "fa5s.trophy",          "ランキング",       True,  1),
+            (self._dashboard,                "fa5s.chart-pie",      "ダッシュボード",   True,  1),
+            (self._compare_chart,            "fa5s.chart-line",     "応答値比較",       True,  1),
+            (self._binary_result,            "fa5s.exchange-alt",   "時刻歴/固有値",    True,  1),
+            (self._mode_shape_widget,        "fa5s.building",       "モード形状",       True,  1),
+            (self._hysteresis_widget,        "fa5s.sync-alt",       "履歴ループ",       True,  1),
+            (self._transfer_function_widget, "fa5s.wave-square",    "伝達関数",         True,  1),
+            (self._envelope_chart,           "fa5s.ruler-combined", "エンベロープ",     True,  1),
+            (self._radar_chart,              "fa5s.spider",         "レーダーチャート", True,  2),
+            (self._result_table,             "fa5s.table",          "結果テーブル",     True,  1),
+            (self._ranking,                  "fa5s.trophy",         "ランキング",       True,  1),
         ]
         self._tab_result_requirements: dict = {}
         icon_color = "#d4d4d4" if ThemeManager.is_dark() else "#333333"
@@ -408,12 +400,18 @@ class MainWindow(_MainWindowDialogsMixin, QMainWindow):
             "}"
             "QPushButton:hover { background: #1976d2; color: white; }"
         )
-        _tab_guide_btn.setToolTip(
-            "このタブで確認できる内容と、結果の読み方を表示します。\n"
-            "タブを切り替えると説明も切り替わります。"
-        )
+        _tab_guide_btn.setToolTip("このタブの読み方を表示")
         _tab_guide_btn.clicked.connect(self._show_current_tab_guide)
         self._right_tabs.setCornerWidget(_tab_guide_btn, Qt.TopRightCorner)
+
+        # ケース×DYC 選択パネルとタブを横スプリッタで並べる
+        from PySide6.QtWidgets import QSplitter as _QSplitter
+        self._step4_split = _QSplitter(Qt.Horizontal)
+        self._step4_split.addWidget(self._case_dyc_selector)
+        self._step4_split.addWidget(self._right_tabs)
+        self._step4_split.setStretchFactor(0, 0)
+        self._step4_split.setStretchFactor(1, 1)
+        self._step4_split.setSizes([240, 1000])
 
     def _build_step4_empty_state(self) -> QWidget:
         """結果なし時の空状態ウィジェットを構築します。"""
@@ -436,10 +434,7 @@ class MainWindow(_MainWindowDialogsMixin, QMainWindow):
         _s4_empty_title.setAlignment(Qt.AlignCenter)
         _s4_empty_layout.addWidget(_s4_empty_title)
 
-        _s4_empty_desc = QLabel(
-            "STEP3 で解析を実行すると、ここに結果グラフ・比較チャート・ランキングなどが表示されます。\n"
-            "少なくとも1件の解析ケースを実行してください。"
-        )
+        _s4_empty_desc = QLabel("STEP3で解析を実行すると、ここに結果が表示されます。")
         _s4_empty_desc.setAlignment(Qt.AlignCenter)
         _s4_empty_desc.setStyleSheet("color: gray; padding: 8px;")
         _s4_empty_desc.setWordWrap(True)
@@ -483,26 +478,14 @@ class MainWindow(_MainWindowDialogsMixin, QMainWindow):
             qta.icon("fa5s.sticky-note", color=icon_color).pixmap(14, 14)
         )
         _notes_header_row.addWidget(_notes_icon_lbl)
-        _notes_title_lbl = QLabel(
-            "<b>解析戦略メモ</b>"
-            "<span style='color:gray; font-size:10px;'>"
-            "　次ラウンドに向けた気づきや方針をメモしておきましょう"
-            "</span>"
-        )
+        _notes_title_lbl = QLabel("<b>解析戦略メモ</b>")
         _notes_title_lbl.setTextFormat(Qt.RichText)
         _notes_header_row.addWidget(_notes_title_lbl)
         _notes_header_row.addStretch()
         _notes_frame_layout.addLayout(_notes_header_row)
         self._strategy_notes_edit = _QTextEdit()
-        self._strategy_notes_edit.setPlaceholderText(
-            "例: Case3の制振効果が最も大きかった。次はVEダンパー基数を4→6に増やして"
-            "加速度応答の低減を狙う。層間変形角はすでにOKなので変位側は余裕あり…"
-        )
+        self._strategy_notes_edit.setPlaceholderText("戦略・気づきをメモ（プロジェクトに保存）")
         self._strategy_notes_edit.setMaximumHeight(70)
-        self._strategy_notes_edit.setToolTip(
-            "解析結果を見た上での戦略・気づきをメモします。\n"
-            "プロジェクトファイルに保存されるため、次回起動時も参照できます。"
-        )
         self._strategy_notes_edit.textChanged.connect(self._on_strategy_notes_changed)
         _notes_frame_layout.addWidget(self._strategy_notes_edit)
         return _notes_frame
@@ -730,7 +713,7 @@ class MainWindow(_MainWindowDialogsMixin, QMainWindow):
 
         act_shortcuts = QAction("キーボードショートカット一覧(&K)…", self)
         act_shortcuts.setShortcut("Ctrl+?")
-        act_shortcuts.setToolTip("アプリ内のキーボードショートカットを一覧表示します  [Ctrl+?]")
+        act_shortcuts.setToolTip("ショートカット一覧  [Ctrl+?]")
         act_shortcuts.triggered.connect(self._show_shortcut_help)
         help_menu.addAction(act_shortcuts)
 
@@ -751,28 +734,28 @@ class MainWindow(_MainWindowDialogsMixin, QMainWindow):
     def _build_toolbar_actions(self, tb, icon_color: str) -> None:
         """ツールバーのアクションボタンを構築します。"""
         act_add = QAction(qta.icon("fa5s.plus", color=icon_color), "ケース追加", self)
-        act_add.setToolTip("新しい解析ケースをダイアログで作成します")
+        act_add.setToolTip("新規ケースを追加")
         act_add.triggered.connect(self._add_case)
         tb.addAction(act_add)
 
         tb.addSeparator()
 
         act_run = QAction(qta.icon("fa5s.play", color="#4CAF50"), "実行", self)
-        act_run.setToolTip("選択ケースを解析実行します  [F5]")
+        act_run.setToolTip("選択ケースを実行  [F5]")
         act_run.triggered.connect(self._run_selected)
         tb.addAction(act_run)
 
         tb.addSeparator()
 
         act_criteria = QAction(qta.icon("fa5s.bullseye", color=icon_color), "基準設定", self)
-        act_criteria.setToolTip("目標性能基準を設定します  [Ctrl+T]")
+        act_criteria.setToolTip("性能基準を設定  [Ctrl+T]")
         act_criteria.triggered.connect(self._open_criteria_dialog)
         tb.addAction(act_criteria)
 
         tb.addSeparator()
 
         act_save = QAction(qta.icon("fa5s.save", color=icon_color), "保存", self)
-        act_save.setToolTip("プロジェクトを上書き保存します  [Ctrl+S]")
+        act_save.setToolTip("プロジェクトを保存  [Ctrl+S]")
         act_save.triggered.connect(self._save_project)
         tb.addAction(act_save)
 
@@ -793,7 +776,7 @@ class MainWindow(_MainWindowDialogsMixin, QMainWindow):
         tb.addSeparator()
 
         act_help = QAction("❓ ヘルプ", self)
-        act_help.setToolTip("キーボードショートカット一覧を表示します  [Ctrl+?]")
+        act_help.setToolTip("ショートカット一覧  [Ctrl+?]")
         act_help.triggered.connect(self._show_shortcut_help)
         tb.addAction(act_help)
 
@@ -816,11 +799,7 @@ class MainWindow(_MainWindowDialogsMixin, QMainWindow):
         self._global_progress_label.setStyleSheet(
             "font-size: 11px; color: gray; min-width: 90px;"
         )
-        self._global_progress_label.setToolTip(
-            "全解析ケースの進捗状況（完了件数 / 合計件数）。\n"
-            "現在表示しているステップに関わらず常時更新されます。\n"
-            "クリックで STEP4（結果・戦略）へ移動できます。"
-        )
+        self._global_progress_label.setToolTip("全ケースの進捗（クリックでSTEP4へ）")
         self._global_progress_label.setCursor(Qt.PointingHandCursor)
         self._global_progress_label.mousePressEvent = lambda _: self._navigate_to_step(3)
         _gp_layout.addWidget(self._global_progress_label)
@@ -1086,20 +1065,19 @@ class MainWindow(_MainWindowDialogsMixin, QMainWindow):
         """
         UX改善（新）: STEP4 サマリーバーの「最良ケース」クリック時処理。
 
-        該当ケースを解析結果タブで選択・表示します。
+        該当ケースを左の CaseDycSelector で選択して、応答値比較タブに切り替える。
         """
         if not case_id or self._project is None:
             return
-        # STEP4 の解析結果タブ (index=1) に切り替え
+        # 最良ケースを単独選択
+        if hasattr(self, '_case_dyc_selector'):
+            self._case_dyc_selector.select_case(case_id, exclusive=True)
+        # 応答値比較タブに切り替え (index=1)
         if hasattr(self, '_right_tabs') and self._right_tabs.isTabEnabled(1):
             self._right_tabs.setCurrentIndex(1)
-        # ケースを解析結果ウィジェットに表示
-        if hasattr(self, '_chart'):
-            case = self._project.get_case(case_id)
-            if case:
-                self._chart.set_case(case)
+        case = self._project.get_case(case_id)
         self.statusBar().showMessage(
-            f"🏆 最良ケース「{self._project.get_case(case_id).name if self._project.get_case(case_id) else ''}」の結果を表示しています",
+            f"🏆 最良ケース「{case.name if case else ''}」の結果を表示しています",
             4000,
         )
 
@@ -1231,15 +1209,12 @@ class MainWindow(_MainWindowDialogsMixin, QMainWindow):
         if n == 0:
             return  # 空状態のまま
 
-        # タブインデックス定義 (main_window _tab_defs の順番に対応)
-        # 0: ダッシュボード, 1: 解析結果, 2: ケース比較, ...
+        # タブインデックス定義 (_build_step4_result_tabs の _tab_defs に対応)
+        # 0: ダッシュボード, 1: 応答値比較, 2: 時刻歴/固有値, ...
         _TAB_DASHBOARD = 0
-        _TAB_RESULT    = 1
-        _TAB_COMPARE   = 2
+        _TAB_COMPARE   = 1
 
-        if n == 1:
-            target_tab = _TAB_RESULT
-        elif n == 2:
+        if n >= 1:
             target_tab = _TAB_COMPARE
         else:
             target_tab = _TAB_DASHBOARD
@@ -1324,27 +1299,15 @@ class MainWindow(_MainWindowDialogsMixin, QMainWindow):
             self._sidebar.set_step_state(3, "pending")
 
     def _update_step_footers(self, total_cases: int, completed: int) -> None:
-        """StepNavFooter の「次へ」ボタンをプロジェクト状態に合わせて制御。"""
+        """StepNavFooter の「次へ」ボタン有効性を更新。"""
         model_loaded = bool(self._project.s8i_path)
         if hasattr(self, "_step1_footer"):
             self._step1_footer.set_next_enabled(model_loaded)
-            self._step1_footer.setToolTip(
-                "" if model_loaded
-                else "STEP1 で入力ファイル (.s8i / .NAP) を読み込むと STEP2 へ進めます"
-            )
         has_cases = total_cases > 0
         if hasattr(self, "_step2_footer"):
             self._step2_footer.set_next_enabled(has_cases)
-            self._step2_footer.setToolTip(
-                "" if has_cases
-                else "STEP2で解析ケースを1件以上追加するとSTEP3へ進めます"
-            )
         if hasattr(self, "_step3_footer"):
             self._step3_footer.set_next_enabled(completed > 0)
-            self._step3_footer.setToolTip(
-                "" if completed > 0
-                else "解析を実行して結果が出るとSTEP4へ進めます"
-            )
 
     def _update_sidebar_summary(self, total_cases: int, completed: int) -> None:
         """サイドバー下部のプロジェクト状態サマリーを更新。"""
@@ -1501,12 +1464,14 @@ class MainWindow(_MainWindowDialogsMixin, QMainWindow):
 
         ショートカット対応:
             Alt+1 → ダッシュボード
-            Alt+2 → 解析結果
-            Alt+3 → ケース比較
-            Alt+4 → エンベロープ
-            Alt+5 → レーダーチャート
-            Alt+6 → 結果テーブル
-            Alt+7 → ランキング
+            Alt+2 → 応答値比較
+            Alt+3 → 時刻歴/固有値
+            Alt+4 → モード形状
+            Alt+5 → 履歴ループ
+            Alt+6 → 伝達関数
+            Alt+7 → エンベロープ
+            Alt+8 → レーダーチャート
+            Alt+9 → 結果テーブル
         """
         if self._main_stack.currentIndex() != 1:
             return
@@ -1793,18 +1758,30 @@ class MainWindow(_MainWindowDialogsMixin, QMainWindow):
             )
 
     def _refresh_analysis_widgets(self) -> None:
-        """ModeShapeWidget と HysteresisWidget に最新のローダーを渡す。
+        """CaseDycSelector の選択に基づく結果ウィジェットの初期化。
 
-        BinaryResultWidget が set_cases() 後に内部で SnapResultLoader を
-        生成・保持しているため、そのエントリを取り出して渡す。
+        新 UI では ``CaseDycSelectorWidget.selectionChanged`` が実際の描画配信を
+        担うため、ここでは自動選択をトリガーするだけで良い。
         """
-        entries = [
-            (e.name, e.loader)
-            for e in self._binary_result._entries.values()
-        ]
-        self._mode_shape_widget.set_entries(entries)
-        self._hysteresis_widget.set_entries(entries)
-        self._transfer_function_widget.set_entries(entries)
+        # 選択がまだ無い場合は _on_dyc_selection_changed 側の初期ブランチで
+        # ケース毎の最初の DYC を自動選択して描画する。
+        selections = self._case_dyc_selector.current_selections()
+        if selections:
+            self._on_dyc_selection_changed(selections)
+        else:
+            # まだ何も選ばれていないとき、CaseDycSelector のツリーは
+            # set_cases() 時に選択復元が無ければ空のまま。BinaryResultWidget だけは
+            # フォールバックとして先頭 DYC を自動選択して描画する。
+            self._binary_result.set_cases(self._project.cases if self._project else [])
+
+    def _on_dyc_selection_changed(self, selections: list) -> None:
+        """CaseDycSelectorWidget の選択変更を全結果ウィジェットに配信する。"""
+        # 全結果ウィジェットは DycSelection リストを受け取れるよう拡張済み
+        self._binary_result.set_dyc_selections(selections)
+        self._mode_shape_widget.set_dyc_selections(selections)
+        self._hysteresis_widget.set_dyc_selections(selections)
+        self._transfer_function_widget.set_dyc_selections(selections)
+        self._compare_chart.set_dyc_selections(selections)
 
     def _reset_all_cases_for_new_s8i(self, new_s8i_path: str) -> None:
         """
@@ -1832,6 +1809,7 @@ class MainWindow(_MainWindowDialogsMixin, QMainWindow):
         self._radar_chart.set_cases([])
         self._result_table.set_cases([])
         self._binary_result.set_cases([])
+        self._case_dyc_selector.set_cases([])
         self._mode_shape_widget.set_entries([])
         self._hysteresis_widget.set_entries([])
         self._transfer_function_widget.set_entries([])
@@ -2008,8 +1986,7 @@ class MainWindow(_MainWindowDialogsMixin, QMainWindow):
         case = self._project.get_case(case_id)
         if case is None:
             return
-        if case.result_summary:
-            self._chart.show_case(case)
+        self._chart.show_case(case)
         # モデルファイルがある場合、入力ファイルプレビューに表示
         if case.model_path:
             self._file_preview.load_file(case.model_path)
@@ -2059,6 +2036,7 @@ class MainWindow(_MainWindowDialogsMixin, QMainWindow):
             self._radar_chart.set_cases(self._project.cases)
             self._result_table.set_cases(self._project.cases)
             self._binary_result.set_cases(self._project.cases)
+            self._case_dyc_selector.set_cases(self._project.cases)
             self._refresh_analysis_widgets()
             self._ranking.set_cases(self._project.cases)
             self._ranking.set_criteria(self._project.criteria)
@@ -2136,10 +2114,9 @@ class MainWindow(_MainWindowDialogsMixin, QMainWindow):
             self._update_sidebar_badges()
             return
         completed_n = sum(1 for c in self._project.cases if c.result_summary)
-        _TAB_RESULT = 1
-        _TAB_COMPARE = 2
         _TAB_DASHBOARD = 0
-        _TAB_RANKING = 6
+        _TAB_COMPARE = 1   # 応答値比較
+        _TAB_RANKING = 9   # ランキング
         _has_criteria = (
             self._project.criteria is not None
             and (
@@ -2148,7 +2125,7 @@ class MainWindow(_MainWindowDialogsMixin, QMainWindow):
             )
         )
         if completed_n == 1:
-            _best_tab = _TAB_RESULT
+            _best_tab = _TAB_COMPARE
         elif _has_criteria:
             _best_tab = _TAB_RANKING if self._right_tabs.isTabEnabled(_TAB_RANKING) else _TAB_COMPARE
         else:

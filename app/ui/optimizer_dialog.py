@@ -505,17 +505,12 @@ class OptimizerDialog(_OptimizerResultActionsMixin, QDialog):
         config_btn_row.addStretch()
         self._save_config_btn = QPushButton("設定保存")
         self._save_config_btn.setFixedWidth(80)
-        self._save_config_btn.setToolTip(
-            "現在のパラメータ範囲・目的関数・探索手法の設定を\n"
-            "JSONファイルに保存します（プリセットとして再利用可能）"
-        )
+        self._save_config_btn.setToolTip("設定をJSONに保存")
         self._save_config_btn.clicked.connect(self._save_config_preset)
         config_btn_row.addWidget(self._save_config_btn)
         self._load_config_btn = QPushButton("設定読込")
         self._load_config_btn.setFixedWidth(80)
-        self._load_config_btn.setToolTip(
-            "保存済みのパラメータ設定をJSONファイルから読み込みます"
-        )
+        self._load_config_btn.setToolTip("JSONから設定を読込")
         self._load_config_btn.clicked.connect(self._load_config_preset)
         config_btn_row.addWidget(self._load_config_btn)
         param_group_layout.addLayout(config_btn_row)
@@ -541,10 +536,7 @@ class OptimizerDialog(_OptimizerResultActionsMixin, QDialog):
     def _build_warmstart_row(self, layout: QVBoxLayout) -> None:
         warm_row = QHBoxLayout()
         self._warm_start_cb = QCheckBox("ウォームスタート（前回結果を初期値に利用）")
-        self._warm_start_cb.setToolTip(
-            "保存済みの最適化結果を読み込み、その上位解を初期値として\n"
-            "新しい最適化を開始します（ベイズ/GA/SAで有効）"
-        )
+        self._warm_start_cb.setToolTip("過去結果の上位解を初期値に利用（ベイズ/GA/SA）")
         warm_row.addWidget(self._warm_start_cb)
         self._warm_start_path_label = QLabel("")
         self._warm_start_path_label.setStyleSheet("color: #666; font-size: 10px;")
@@ -559,10 +551,7 @@ class OptimizerDialog(_OptimizerResultActionsMixin, QDialog):
     def _build_penalty_row(self, layout: QVBoxLayout) -> None:
         penalty_row = QHBoxLayout()
         self._penalty_cb = QCheckBox("制約ペナルティ法")
-        self._penalty_cb.setToolTip(
-            "制約違反に比例したペナルティを目的関数に加算し、\n"
-            "制約境界付近の探索を改善します（GA/SA/ベイズで有効）"
-        )
+        self._penalty_cb.setToolTip("制約違反にペナルティ加算（GA/SA/ベイズ）")
         penalty_row.addWidget(self._penalty_cb)
         penalty_row.addWidget(QLabel("ペナルティ重み:"))
         self._penalty_spin = QDoubleSpinBox()
@@ -585,12 +574,7 @@ class OptimizerDialog(_OptimizerResultActionsMixin, QDialog):
         self._acq_combo.addItem("Probability of Improvement (PI)", "pi")
         self._acq_combo.addItem("Upper Confidence Bound (UCB)", "ucb")
         self._acq_combo.setFixedWidth(260)
-        self._acq_combo.setToolTip(
-            "ベイズ最適化で使用する獲得関数を選択します。\n"
-            "EI: 探索と利用のバランスが良い汎用的な選択（推奨）\n"
-            "PI: 利用寄りで収束が速いが局所解に陥りやすい\n"
-            "UCB: κ で探索度合いを直接制御。高次元で有効"
-        )
+        self._acq_combo.setToolTip("獲得関数（EI=推奨 / PI=収束早 / UCB=高次元）")
         self._acq_combo.currentIndexChanged.connect(self._on_acq_changed)
         acq_row.addWidget(self._acq_combo)
         acq_row.addWidget(QLabel("κ:"))
@@ -601,10 +585,7 @@ class OptimizerDialog(_OptimizerResultActionsMixin, QDialog):
         self._acq_kappa_spin.setDecimals(1)
         self._acq_kappa_spin.setFixedWidth(60)
         self._acq_kappa_spin.setEnabled(False)
-        self._acq_kappa_spin.setToolTip(
-            "UCB の探索パラメータ κ。\n"
-            "1.0: 利用寄り、2.0: バランス（推奨）、3.0: 探索寄り"
-        )
+        self._acq_kappa_spin.setToolTip("UCBのκ（1.0=利用寄り / 2.0=推奨 / 3.0=探索寄り）")
         acq_row.addWidget(self._acq_kappa_spin)
         acq_row.addStretch()
         self._acq_row_widget = QWidget()
@@ -616,11 +597,7 @@ class OptimizerDialog(_OptimizerResultActionsMixin, QDialog):
         ga_row = QHBoxLayout()
         self._ga_adaptive_cb = QCheckBox("適応的突然変異率")
         self._ga_adaptive_cb.setChecked(False)
-        self._ga_adaptive_cb.setToolTip(
-            "世代が進むにつれて突然変異率を線形減衰させ、\n"
-            "序盤は探索（高突然変異率）・終盤は利用（低突然変異率）を重視します。\n"
-            "交叉率も逆方向に増加させて終盤の局所精錬を促進します。"
-        )
+        self._ga_adaptive_cb.setToolTip("世代進行で突然変異率を減衰・交叉率を増加")
         ga_row.addWidget(self._ga_adaptive_cb)
         ga_row.addStretch()
         self._ga_row_widget = QWidget()
@@ -632,11 +609,7 @@ class OptimizerDialog(_OptimizerResultActionsMixin, QDialog):
         seed_row = QHBoxLayout()
         self._seed_check = QCheckBox("乱数シード:")
         self._seed_check.setChecked(False)
-        self._seed_check.setToolTip(
-            "整数を指定すると再現性のある結果を得られます。\n"
-            "同じシードで同じ設定を実行すると同一の結果になります。\n"
-            "構造設計のレビューや結果の再現性確認に有用です。"
-        )
+        self._seed_check.setToolTip("固定すると再現性のある結果になる")
         seed_row.addWidget(self._seed_check)
         self._seed_spin = QSpinBox()
         self._seed_spin.setRange(0, 999999)
@@ -657,10 +630,7 @@ class OptimizerDialog(_OptimizerResultActionsMixin, QDialog):
         self._parallel_spin.setRange(1, 16)
         self._parallel_spin.setValue(1)
         self._parallel_spin.setFixedWidth(60)
-        self._parallel_spin.setToolTip(
-            "グリッドサーチ/ランダムサーチで複数候補を同時評価します。\n"
-            "SNAP実行時は4〜8が目安です。モック評価では1で十分です。"
-        )
+        self._parallel_spin.setToolTip("並列候補数（SNAP: 4〜8推奨 / モック: 1）")
         parallel_row.addWidget(self._parallel_spin)
         parallel_row.addWidget(QLabel("（SNAP解析を並列化。1=逐次）"))
         parallel_row.addWidget(QLabel("    タイムアウト:"))
@@ -670,11 +640,7 @@ class OptimizerDialog(_OptimizerResultActionsMixin, QDialog):
         self._timeout_spin.setSuffix(" 秒")
         self._timeout_spin.setSingleStep(30)
         self._timeout_spin.setFixedWidth(100)
-        self._timeout_spin.setToolTip(
-            "SNAP 1回実行あたりのタイムアウト（秒）。\n"
-            "大規模モデルでは 600〜1200 に設定してください。\n"
-            "デフォルト: 300秒（5分）"
-        )
+        self._timeout_spin.setToolTip("SNAP1回のタイムアウト（大規模モデル: 600〜1200）")
         parallel_row.addWidget(self._timeout_spin)
         parallel_row.addStretch()
         layout.addLayout(parallel_row)
@@ -683,10 +649,7 @@ class OptimizerDialog(_OptimizerResultActionsMixin, QDialog):
         checkpoint_row = QHBoxLayout()
         self._checkpoint_check = QCheckBox("チェックポイント自動保存")
         self._checkpoint_check.setChecked(False)
-        self._checkpoint_check.setToolTip(
-            "最適化中に一定間隔で中間結果をJSONファイルに自動保存します。\n"
-            "アプリクラッシュ時のデータ損失を防ぎます。"
-        )
+        self._checkpoint_check.setToolTip("中間結果を自動保存（クラッシュ対策）")
         checkpoint_row.addWidget(self._checkpoint_check)
         checkpoint_row.addWidget(QLabel("間隔:"))
         self._checkpoint_interval_spin = QSpinBox()
@@ -702,11 +665,7 @@ class OptimizerDialog(_OptimizerResultActionsMixin, QDialog):
         robust_row = QHBoxLayout()
         self._robust_check = QCheckBox("ロバスト最適化")
         self._robust_check.setChecked(False)
-        self._robust_check.setToolTip(
-            "各候補をパラメータ摂動付きで複数回評価し、最悪ケースで最適化します。\n"
-            "製造誤差やモデル不確実性に対して頑健な設計解を見つけます。\n"
-            "評価回数は (1+サンプル数) 倍になるため計算時間が増加します。"
-        )
+        self._robust_check.setToolTip("摂動下の最悪ケースで最適化（評価回数が増加）")
         robust_row.addWidget(self._robust_check)
         robust_row.addWidget(QLabel("サンプル数:"))
         self._robust_samples_spin = QSpinBox()
@@ -730,11 +689,7 @@ class OptimizerDialog(_OptimizerResultActionsMixin, QDialog):
         cost_row = QHBoxLayout()
         self._cost_check = QCheckBox("コスト重み付き")
         self._cost_check.setChecked(False)
-        self._cost_check.setToolTip(
-            "ダンパーパラメータにコスト係数を設定し、\n"
-            "応答最小化とコスト最小化を同時に考慮します。\n"
-            "目的関数 = 応答値 + コスト重み × Σ(係数×パラメータ値)"
-        )
+        self._cost_check.setToolTip("応答値+重み×Σ(係数×パラメータ)を目的関数に")
         cost_row.addWidget(self._cost_check)
         cost_row.addWidget(QLabel("重み:"))
         self._cost_weight_spin = QDoubleSpinBox()
@@ -744,10 +699,7 @@ class OptimizerDialog(_OptimizerResultActionsMixin, QDialog):
         self._cost_weight_spin.setDecimals(4)
         self._cost_weight_spin.setFixedWidth(90)
         self._cost_weight_spin.setEnabled(False)
-        self._cost_weight_spin.setToolTip(
-            "応答値に対するコスト項の重み。\n"
-            "小さい値ほど応答優先、大きい値ほどコスト優先。"
-        )
+        self._cost_weight_spin.setToolTip("コスト項の重み（小=応答優先 / 大=コスト優先）")
         cost_row.addWidget(self._cost_weight_spin)
         self._cost_edit_btn = QPushButton("係数設定...")
         self._cost_edit_btn.setFixedWidth(90)
@@ -768,11 +720,7 @@ class OptimizerDialog(_OptimizerResultActionsMixin, QDialog):
         envelope_row = QHBoxLayout()
         self._envelope_check = QCheckBox("多波エンベロープ")
         self._envelope_check.setChecked(False)
-        self._envelope_check.setToolTip(
-            "複数の地震波で同時に評価し、全波形の最大応答（エンベロープ）\n"
-            "を最小化します。全波形で制約を満足する解を探索します。\n"
-            "評価回数は波数倍になるため計算時間が増加します。"
-        )
+        self._envelope_check.setToolTip("全波形の最大応答を最小化（評価回数=波数倍）")
         envelope_row.addWidget(self._envelope_check)
         self._envelope_mode_combo = QComboBox()
         self._envelope_mode_combo.addItem("最大値（保守側）", "max")
@@ -923,44 +871,32 @@ class OptimizerDialog(_OptimizerResultActionsMixin, QDialog):
 
         self._sensitivity_btn = QPushButton("感度解析")
         self._sensitivity_btn.setEnabled(False)
-        self._sensitivity_btn.setToolTip(
-            "最適解周りのパラメータ感度を解析します（各パラメータを±20%変動）"
-        )
+        self._sensitivity_btn.setToolTip("最適解周りの感度解析（±20%変動）")
         row.addWidget(self._sensitivity_btn)
 
         self._sobol_btn = QPushButton("Sobol解析")
         self._sobol_btn.setEnabled(False)
-        self._sobol_btn.setToolTip(
-            "Sobol分散ベースグローバル感度解析（交互作用を含む一次/全次指標）"
-        )
+        self._sobol_btn.setToolTip("Sobolグローバル感度（一次/全次指標）")
         row.addWidget(self._sobol_btn)
 
         self._pareto_btn = QPushButton("Pareto Front")
         self._pareto_btn.setEnabled(False)
-        self._pareto_btn.setToolTip(
-            "複合目的関数使用時のトレードオフ曲線を表示します"
-        )
+        self._pareto_btn.setToolTip("複合目的のトレードオフ曲線")
         row.addWidget(self._pareto_btn)
 
         self._correlation_btn = QPushButton("相関分析")
         self._correlation_btn.setEnabled(False)
-        self._correlation_btn.setToolTip(
-            "上位候補のパラメータ間の相関を分析します（相関行列ヒートマップ）"
-        )
+        self._correlation_btn.setToolTip("上位候補の相関行列")
         row.addWidget(self._correlation_btn)
 
         self._diagnostics_btn = QPushButton("収束診断")
         self._diagnostics_btn.setEnabled(False)
-        self._diagnostics_btn.setToolTip(
-            "探索の品質を診断し、再実行の必要性や推奨アクションを表示します"
-        )
+        self._diagnostics_btn.setToolTip("探索品質の診断と推奨アクション")
         row.addWidget(self._diagnostics_btn)
 
         self._heatmap_btn = QPushButton("空間ヒートマップ")
         self._heatmap_btn.setEnabled(False)
-        self._heatmap_btn.setToolTip(
-            "パラメータ空間の探索密度と目的関数値を2Dヒートマップで可視化します"
-        )
+        self._heatmap_btn.setToolTip("探索密度と目的関数値の2Dヒートマップ")
         row.addWidget(self._heatmap_btn)
         row.addStretch()
         layout.addLayout(row)
@@ -974,43 +910,35 @@ class OptimizerDialog(_OptimizerResultActionsMixin, QDialog):
 
         self._export_csv_btn = QPushButton("CSV出力")
         self._export_csv_btn.setEnabled(False)
-        self._export_csv_btn.setToolTip("探索結果をCSVファイルに出力します")
+        self._export_csv_btn.setToolTip("結果をCSV出力")
         row.addWidget(self._export_csv_btn)
 
         self._log_export_btn = QPushButton("評価ログ")
         self._log_export_btn.setEnabled(False)
-        self._log_export_btn.setToolTip(
-            "全評価履歴をCSVログとして出力します（審査・規制文書用）"
-        )
+        self._log_export_btn.setToolTip("全評価履歴をCSV出力（審査用）")
         row.addWidget(self._log_export_btn)
 
         self._report_btn = QPushButton("HTMLレポート")
         self._report_btn.setEnabled(False)
-        self._report_btn.setToolTip(
-            "最適化結果をHTMLレポートとして出力します（設定・最良解・収束グラフ含む）"
-        )
+        self._report_btn.setToolTip("HTMLレポート出力（設定・最良解・収束）")
         row.addWidget(self._report_btn)
 
         self._save_btn = QPushButton("結果保存")
         self._save_btn.setEnabled(False)
-        self._save_btn.setToolTip("最適化結果をJSONファイルに保存します")
+        self._save_btn.setToolTip("結果をJSON保存")
         row.addWidget(self._save_btn)
 
         self._load_btn = QPushButton("結果読込")
-        self._load_btn.setToolTip("保存済みの最適化結果をJSONファイルから読み込みます")
+        self._load_btn.setToolTip("JSONから結果を読込")
         row.addWidget(self._load_btn)
 
         self._compare_btn = QPushButton("結果比較")
-        self._compare_btn.setToolTip(
-            "複数の最適化結果JSONを読み込み、パラメータ・収束曲線を比較します"
-        )
+        self._compare_btn.setToolTip("複数結果JSONの比較")
         row.addWidget(self._compare_btn)
 
         self._copy_params_btn = QPushButton("最良パラメータコピー")
         self._copy_params_btn.setEnabled(False)
-        self._copy_params_btn.setToolTip(
-            "最良解のパラメータ値をクリップボードにコピーします"
-        )
+        self._copy_params_btn.setToolTip("最良解パラメータをクリップボードへ")
         row.addWidget(self._copy_params_btn)
         row.addStretch()
         layout.addLayout(row)

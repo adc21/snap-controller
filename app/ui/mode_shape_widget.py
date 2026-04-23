@@ -154,6 +154,24 @@ class ModeShapeWidget(QWidget):
         self._entries = list(entries) if entries else []
         self._refresh()
 
+    def set_dyc_selections(self, selections: list) -> None:
+        """CaseDycSelectorWidget からの DycSelection リストを受け取り、
+        各選択について SnapResultLoader を生成して set_entries() に渡す。
+        """
+        from pathlib import Path
+        entries: List[Tuple[str, SnapResultLoader]] = []
+        for sel in selections or []:
+            path = getattr(sel, "result_dir", None)
+            if path is None:
+                continue
+            try:
+                loader = SnapResultLoader(Path(path))
+            except Exception as exc:
+                logger.debug("ModeShape: loader 生成失敗 %s: %s", path, exc)
+                continue
+            entries.append((sel.short_name, loader))
+        self.set_entries(entries)
+
     # ------------------------------------------------------------------
     # UI 構築
     # ------------------------------------------------------------------

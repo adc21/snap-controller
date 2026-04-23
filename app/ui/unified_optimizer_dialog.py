@@ -634,11 +634,9 @@ class UnifiedOptimizerDialog(QDialog):
         self._tf_base_case_combo = QComboBox()
         self._populate_tf_base_case_combo()
         self._tf_base_case_combo.setToolTip(
-            "インパルス波に差し替える対象の DYC ケース。"
-            "他のケースは実行しない（run_flag=0）に設定されます。\n"
-            "末尾の [...] はそのケースで有効な装置グループ。"
-            "[ダンパーなし] のケースを選ぶと DVOD/DSD 値を変更しても"
-            "応答は変わらないため、最適化開始時にエラーを出します。"
+            "対象DYCケース（他は実行されません）\n"
+            "[...] はケースで有効な装置グループ。[ダンパーなし] のケースを\n"
+            "選ぶと DVOD/DSD 値を変更しても応答は変わりません。"
         )
         gl.addRow("ベースケース:", self._tf_base_case_combo)
 
@@ -652,9 +650,7 @@ class UnifiedOptimizerDialog(QDialog):
         self._tf_floor_spin = QSpinBox()
         self._tf_floor_spin.setRange(-1, 999)
         self._tf_floor_spin.setValue(-1)
-        self._tf_floor_spin.setToolTip(
-            "Floor.hst のレコードインデックス。-1=最上階を自動選択。"
-        )
+        self._tf_floor_spin.setToolTip("Floor.hstの層index（-1=最上階）")
         gl.addRow("応答階インデックス:", self._tf_floor_spin)
 
         # インパルス加速度
@@ -678,10 +674,7 @@ class UnifiedOptimizerDialog(QDialog):
         self._tf_scale_spin.setDecimals(2)
         self._tf_scale_spin.setRange(1.01, 50.0)
         self._tf_scale_spin.setValue(5.0)
-        self._tf_scale_spin.setToolTip(
-            "1次周期 T1 に対する探索周波数範囲の倍率。\n"
-            "範囲は [1/(scale·T1), scale/T1] Hz"
-        )
+        self._tf_scale_spin.setToolTip("範囲 [1/(scale·T1), scale/T1] Hz")
         gl.addRow("周波数範囲倍率 (1次Tx):", self._tf_scale_spin)
 
         # wave ディレクトリ
@@ -705,11 +698,9 @@ class UnifiedOptimizerDialog(QDialog):
     def _populate_tf_base_case_combo(self) -> None:
         """ベース DYC ケース一覧を更新。
 
-        ラベルに装置グループ名を併記する。装置グループ (DYC values[5]) は
-        SNAP でそのケースに含める RD 装置を絞る識別子で、空欄だと装置が
-        一切含まれない。空欄ケースを選んで DVOD/DSD を変化させても応答は
-        変わらないため、一目でわかるように [グループ名] / [ダンパーなし] を
-        表示する (bug fix 2026-04-22: TF peak never changes)。
+        ラベルに装置グループ名を併記して、「ダンパーなし」ケースを選択して
+        DVOD/DSD を変化させても応答が変わらない、というよくあるハマりを
+        視覚的に防ぐ。
         """
         self._tf_base_case_combo.clear()
         if self._project is None or self._project.s8i_model is None:
@@ -745,10 +736,7 @@ class UnifiedOptimizerDialog(QDialog):
 
         # 基準設定を編集ボタン
         edit_btn = QPushButton("📋 基準設定を編集...")
-        edit_btn.setToolTip(
-            "性能基準（PerformanceCriteria）の設定画面を開きます。\n"
-            "基準を変更すると、制約条件が自動的に更新されます。"
-        )
+        edit_btn.setToolTip("性能基準を編集（制約条件を自動更新）")
         edit_btn.clicked.connect(self._open_criteria_dialog)
         self._constraints_layout.addRow(edit_btn)
 
@@ -806,10 +794,7 @@ class UnifiedOptimizerDialog(QDialog):
 
         # 編集ボタンを再追加
         edit_btn = QPushButton("📋 基準設定を編集...")
-        edit_btn.setToolTip(
-            "性能基準（PerformanceCriteria）の設定画面を開きます。\n"
-            "基準を変更すると、制約条件が自動的に更新されます。"
-        )
+        edit_btn.setToolTip("性能基準を編集（制約条件を自動更新）")
         edit_btn.clicked.connect(self._open_criteria_dialog)
         self._constraints_layout.addRow(edit_btn)
 
@@ -854,9 +839,7 @@ class UnifiedOptimizerDialog(QDialog):
     def _build_seed_option(self, layout: QVBoxLayout) -> None:
         row = QHBoxLayout()
         self._seed_check = QCheckBox("乱数シード:")
-        self._seed_check.setToolTip(
-            "整数を指定すると再現性のある結果を得られます。"
-        )
+        self._seed_check.setToolTip("固定すると再現性のある結果になる")
         row.addWidget(self._seed_check)
         self._seed_spin = QSpinBox()
         self._seed_spin.setRange(0, 999999)
@@ -875,10 +858,7 @@ class UnifiedOptimizerDialog(QDialog):
         self._parallel_spin.setRange(1, 16)
         self._parallel_spin.setValue(1)
         self._parallel_spin.setFixedWidth(60)
-        self._parallel_spin.setToolTip(
-            "グリッド/ランダム/LHSで複数候補を同時評価。\n"
-            "SNAP解析時は4〜8が目安。"
-        )
+        self._parallel_spin.setToolTip("並列候補数（SNAP: 4〜8推奨）")
         row.addWidget(self._parallel_spin)
         row.addWidget(QLabel("  タイムアウト:"))
         self._timeout_spin = QSpinBox()
@@ -894,9 +874,7 @@ class UnifiedOptimizerDialog(QDialog):
     def _build_checkpoint_option(self, layout: QVBoxLayout) -> None:
         row = QHBoxLayout()
         self._checkpoint_check = QCheckBox("チェックポイント自動保存")
-        self._checkpoint_check.setToolTip(
-            "最適化中に一定間隔で中間結果を自動保存します。"
-        )
+        self._checkpoint_check.setToolTip("中間結果を自動保存（クラッシュ対策）")
         row.addWidget(self._checkpoint_check)
         row.addWidget(QLabel("間隔:"))
         self._checkpoint_interval_spin = QSpinBox()
@@ -911,10 +889,7 @@ class UnifiedOptimizerDialog(QDialog):
     def _build_robust_option(self, layout: QVBoxLayout) -> None:
         row = QHBoxLayout()
         self._robust_check = QCheckBox("ロバスト最適化")
-        self._robust_check.setToolTip(
-            "パラメータ摂動付きで複数回評価し最悪ケースで最適化。\n"
-            "製造誤差に頑健な設計解を探索します。"
-        )
+        self._robust_check.setToolTip("摂動下の最悪ケースで最適化")
         row.addWidget(self._robust_check)
         row.addWidget(QLabel("サンプル数:"))
         self._robust_samples_spin = QSpinBox()
@@ -1795,7 +1770,7 @@ class UnifiedOptimizerDialog(QDialog):
         # SNAP では DYC.values[5] (ダンパーグループ名) と RD.values[0] が
         # 一致する装置のみが当該ケースで有効。グループが空のケースを
         # 選ぶとどんな DVOD/DSD 値変更も応答に反映されず、最適化が
-        # 「ピークが変わらない」という無言の no-op になる (bug 2026-04-22)。
+        # 「ピークが変わらない」という無言の no-op になる。
         if self._project is not None and self._project.s8i_model is not None:
             model = self._project.s8i_model
             case = model.get_dyc_case(int(target_case_no))

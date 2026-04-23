@@ -190,6 +190,49 @@ class CompareChartWidget(QWidget):
         self._update_baseline_combo()
         self.refresh()
 
+    def set_dyc_selections(self, selections: list) -> None:
+        """CaseDycSelectorWidget からの DycSelection リストを受け取り、
+        DYC 単位で比較行を生成して表示する。
+
+        各 DycSelection について、以下のように擬似ケースを生成する:
+            - dyc_index == -1: 元のケースをそのまま使う
+            - dyc_index >= 0:  dyc_results[i].result_summary を持った
+                               擬似的な AnalysisCase を作る (id/name を修飾)
+        """
+        rows: List[AnalysisCase] = []
+        for sel in selections or []:
+            case = sel.case
+            if sel.dyc_index < 0:
+                if case.status == AnalysisCaseStatus.COMPLETED and case.result_summary:
+                    rows.append(case)
+                continue
+            if sel.dyc_index >= len(case.dyc_results):
+                continue
+            dr = case.dyc_results[sel.dyc_index]
+            if not dr.get("has_result"):
+                continue
+            summary = dr.get("result_summary") or {}
+            rdata = dr.get("result_data") or {}
+            if not summary and not rdata:
+                continue
+            proxy = AnalysisCase(
+                id=f"{case.id}::dyc{sel.dyc_index}",
+                name=sel.short_name,
+                model_path=case.model_path,
+                snap_exe_path=case.snap_exe_path,
+                output_dir=case.output_dir,
+                parameters=dict(case.parameters),
+                damper_params=dict(case.damper_params),
+                status=AnalysisCaseStatus.COMPLETED,
+                notes=case.notes,
+                result_summary={**summary, "result_data": rdata} if rdata else dict(summary),
+            )
+            rows.append(proxy)
+
+        self._active_cases = rows
+        self._update_baseline_combo()
+        self.refresh()
+
     def refresh(self) -> None:
         """現在の選択状態でグラフを再描画します。"""
         self._draw()

@@ -4,7 +4,7 @@ app/ui/case_edit_dialog.py
 
 改善内容:
   [バグ修正]
-  - RD「基数（倍数）」を正しいフィールド(SNAP仕様 index=10)から読み書きするよう修正。
+  - RD「本数」を正しいフィールド(SNAP仕様 index=10)から読み書きするよう修正。
     旧実装は index=3（種別）を誤って基数として読んでいたため、変更が反映されなかった。
 
   [UX改善: タブ構成]
@@ -305,19 +305,10 @@ class CaseEditDialog(QDialog):
     # ────── Tab 1: 基本設定 ──────────────────
 
     def _make_basic_tab(self) -> QWidget:
-        # UX改善（新①）: 外側コンテナで「ガイドバナー + フォーム」の構成にする
         outer = QWidget()
         outer_layout = QVBoxLayout(outer)
         outer_layout.setContentsMargins(0, 0, 0, 0)
         outer_layout.setSpacing(0)
-
-        outer_layout.addWidget(self._make_tab_guide_banner(
-            "⚙",
-            "このケースの識別名を設定します。"
-            "ダンパーパラメータや配置を変更しなければ、元の .s8i モデルと同じ条件で解析されます。"
-            "まずはわかりやすいケース名を付けて、次のタブへ進みましょう。",
-            bg="#e8f5e9", border="#66bb6a", text_color="#1b5e20",
-        ))
 
         w = QWidget()
         form = QFormLayout(w)
@@ -340,11 +331,7 @@ class CaseEditDialog(QDialog):
         _name_row_layout.addWidget(self._name_edit)
         self._btn_gen_name = QPushButton("🔖 名前を自動生成")
         self._btn_gen_name.setFixedWidth(140)
-        self._btn_gen_name.setToolTip(
-            "設定したダンパーパラメータの内容から、後から見てわかりやすいケース名を自動生成します。\n"
-            "例: 「OIL_Ce500_α0.40」「STEEL_Fy3000」「RD基数×2」など\n"
-            "（現在のテキストボックスの内容は上書きされます）"
-        )
+        self._btn_gen_name.setToolTip("パラメータから名前を自動生成（上書き）")
         self._btn_gen_name.setStyleSheet(
             "QPushButton {"
             "  font-size: 10px; padding: 3px 8px;"
@@ -391,24 +378,12 @@ class CaseEditDialog(QDialog):
         outer = QWidget()
         outer_layout = QVBoxLayout(outer)
 
-        outer_layout.addWidget(self._make_tab_guide_banner(
-            "🔧",
-            "ダンパーの物性値（減衰係数・降伏荷重など）を変更します。"
-            "変更しなければ .s8i ファイルの元の値がそのまま使われます。",
-            bg="#fff8e1", border="#ffca28", text_color="#e65100",
-        ))
-
         if not (self._s8i and self._s8i.damper_defs):
             outer_layout.addWidget(QLabel(
                 "<i>.s8i ファイルにダンパー定義がありません。</i>"
             ))
             self._damper_def_tables: Dict[str, QTableWidget] = {}
             return outer
-
-        outer_layout.addWidget(QLabel(
-            "<small>各ダンパー定義 (DVOD/DSD 等) のパラメータを編集します。"
-            "変更後の値は解析ケースごとに保存され、元の .s8i ファイルは変更されません。</small>"
-        ))
 
         outer_layout.addWidget(self._build_def_scroll_area())
         outer_layout.addWidget(self._build_validity_bar())
@@ -429,7 +404,7 @@ class CaseEditDialog(QDialog):
 
             btn_bar = QHBoxLayout()
             kdb_btn = QPushButton("🗄 k-DB から選択")
-            kdb_btn.setToolTip("k-DB（構造部材データベース）からダンパーを選択してパラメータを自動入力します")
+            kdb_btn.setToolTip("k-DBからダンパーを選んで自動入力")
             kdb_btn.setStyleSheet(
                 "QPushButton { background: #E3F2FD; color: #1565C0; border: 1px solid #90CAF9;"
                 " padding: 3px 10px; border-radius: 3px; font-size: 12px; }"
@@ -846,22 +821,6 @@ class CaseEditDialog(QDialog):
         layout = QVBoxLayout(w)
         layout.setSpacing(8)
 
-        # UX改善（新①）: タブガイドバナー
-        layout.addWidget(self._make_tab_guide_banner(
-            "📐",
-            "RD（免制振装置）ごとに「装置定義（ダンパー種類）」と「基数（本数）」を変更します。"
-            "変更しない行は元の .s8i の配置のまま解析されます。",
-            bg="#fce4ec", border="#f48fb1", text_color="#880e4f",
-        ))
-
-        # 説明
-        desc = QLabel(
-            "<small><b>免制振装置 (RD)</b> の配置と基数を設定します。<br>"
-            "「<b>基数(倍数)</b>」は同じ位置に設置するダンパーの本数です。<br>"
-            "「<b>装置定義</b>」を変更すると下部パネルにそのダンパーのパラメータが表示されます。</small>"
-        )
-        desc.setWordWrap(True)
-        layout.addWidget(desc)
 
         # ---- UX改善（第9回⑤）: フロア別ダンパー配置ビジュアルバーパネル ----
         # SpinBox の値から各フロア（z_grid）の合計基数を集計してバー形式で表示します。
@@ -899,7 +858,7 @@ class CaseEditDialog(QDialog):
         self._rd_table.setColumnCount(7)
         self._rd_table.setHorizontalHeaderLabels([
             "#", "名称", "節点I → J（位置）",
-            "ダンパー種別", "装置定義", "基数（倍数）", "変更"
+            "ダンパー種別", "装置定義", "本数", "変更"
         ])
         hdr = self._rd_table.horizontalHeader()
         hdr.setSectionResizeMode(_RD_COL_NO,    QHeaderView.ResizeToContents)
@@ -1010,15 +969,12 @@ class CaseEditDialog(QDialog):
             self._rd_def_combos.append(combo)
             self._rd_table.setCellWidget(row, _RD_COL_DEF, combo)
 
-            # --- 基数（倍数）SpinBox ---
+            # --- 本数SpinBox ---
             spin = QSpinBox()
             spin.setMinimum(0)
             spin.setMaximum(999)
             spin.setValue(elem.quantity)  # 正しい index=10 から読んだ値
-            spin.setToolTip(
-                f"この位置に設置するダンパーの本数（倍数）。\n"
-                f"元の値: {elem.quantity}"
-            )
+            spin.setToolTip(f"設置本数（元: {elem.quantity}）")
             spin.setProperty("_row", row)
             spin.valueChanged.connect(self._on_qty_spin_changed)
             self._rd_qty_spins.append(spin)
@@ -1040,20 +996,8 @@ class CaseEditDialog(QDialog):
         w = QWidget()
         layout = QVBoxLayout(w)
 
-        # UX改善（新①）: タブガイドバナー
-        layout.addWidget(self._make_tab_guide_banner(
-            "📝",
-            "このケースの設計意図・変更内容・気づきをメモします。"
-            "メモはプロジェクトファイルに保存され、後から参照できます。"
-            "例: 「Ce を 500→600 に増やして加速度低減を狙う」など。",
-            bg="#e8eaf6", border="#7986cb", text_color="#283593",
-        ))
-
         self._notes_edit = QTextEdit()
-        self._notes_edit.setPlaceholderText(
-            "このケースに関するメモを入力してください…\n"
-            "（例: Ce=500, α=0.4, 2Fと3Fのみ設置）"
-        )
+        self._notes_edit.setPlaceholderText("設計意図や変更内容をメモ（例: Ce=500, α=0.4, 2F/3Fのみ）")
         layout.addWidget(self._notes_edit)
         return w
 
@@ -1069,17 +1013,8 @@ class CaseEditDialog(QDialog):
         outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(0)
 
-        # ガイドバナー
-        outer.addWidget(self._make_tab_guide_banner(
-            "📋",
-            "変更した全パラメータを一覧で確認できます。"
-            "保存する前に意図した変更になっているか最終チェックしましょう。"
-            "変更がない場合は「まだ変更がありません」と表示されます。",
-            bg="#e0f2f1", border="#26a69a", text_color="#004d40",
-        ))
-
         # プレースホルダーラベル（変更なし時）
-        self._diff_empty_lbl = QLabel("📋  まだ変更がありません\n（ダンパー定義・配置計画・基本設定を変更すると、ここに差分が表示されます）")
+        self._diff_empty_lbl = QLabel("変更なし")
         self._diff_empty_lbl.setAlignment(Qt.AlignCenter)
         self._diff_empty_lbl.setStyleSheet("color: #888; font-size: 13px; padding: 24px;")
         self._diff_empty_lbl.setWordWrap(True)
@@ -1177,7 +1112,7 @@ class CaseEditDialog(QDialog):
                 new_qty = self._rd_qty_spins[i].value()
                 if new_qty != elem.quantity:
                     pct_qty = (new_qty - elem.quantity) / max(elem.quantity, 1) * 100.0
-                    rows.append(("📐 配置計画", elem.name, "基数（倍数）",
+                    rows.append(("📐 配置計画", elem.name, "本数",
                                  str(elem.quantity), str(new_qty), pct_qty))
             if i < len(self._rd_def_combos):
                 new_def = self._rd_def_combos[i].currentText()
@@ -1489,7 +1424,7 @@ class CaseEditDialog(QDialog):
             for row, elem in enumerate(self._s8i.damper_elements):
                 changes: Dict[str, Any] = {}
 
-                # 基数（倍数）
+                # 本数
                 if row < len(self._rd_qty_spins):
                     new_qty = self._rd_qty_spins[row].value()
                     if new_qty != elem.quantity:
@@ -2025,15 +1960,8 @@ class CaseEditDialog(QDialog):
         msg = _QMB(self)
         msg.setWindowTitle("パラメータ変更なしの確認")
         msg.setIcon(_QMB.Question)
-        msg.setText(
-            "このケースはベースモデルとパラメータが同じです。\n\n"
-            "ダンパーの種別・パラメータ・配置基数を変更しないと、\n"
-            "他のケースと比較する意味がなくなります。"
-        )
-        msg.setInformativeText(
-            "変更なしのまま保存しますか？\n\n"
-            "「パラメータを変更する」を押すと「🔧 ダンパー定義」タブに戻ります。"
-        )
+        msg.setText("ベースモデルと同一のパラメータです。")
+        msg.setInformativeText("このまま保存しますか？")
         btn_save = msg.addButton("このまま保存する", _QMB.AcceptRole)
         btn_edit = msg.addButton("🔧 パラメータを変更する", _QMB.RejectRole)
         msg.setDefaultButton(btn_edit)

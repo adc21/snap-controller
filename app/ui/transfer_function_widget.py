@@ -148,6 +148,22 @@ class TransferFunctionWidget(QWidget):
         self._populate_combos()
         self._refresh()
 
+    def set_dyc_selections(self, selections: list) -> None:
+        """CaseDycSelectorWidget からの DycSelection リストを受け取って表示する。"""
+        from pathlib import Path
+        entries: List[Tuple[str, SnapResultLoader]] = []
+        for sel in selections or []:
+            path = getattr(sel, "result_dir", None)
+            if path is None:
+                continue
+            try:
+                loader = SnapResultLoader(Path(path))
+            except Exception as exc:
+                logger.debug("TransferFunction: loader 生成失敗 %s: %s", path, exc)
+                continue
+            entries.append((sel.short_name, loader))
+        self.set_entries(entries)
+
     # ------------------------------------------------------------------
     # UI 構築
     # ------------------------------------------------------------------

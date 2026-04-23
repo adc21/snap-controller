@@ -32,7 +32,7 @@ from typing import List, Optional, Dict, Tuple
 
 import numpy as np
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QWidget,
     QHBoxLayout,
@@ -45,9 +45,6 @@ from PySide6.QtWidgets import (
     QTabWidget,
     QTableWidget,
     QTableWidgetItem,
-    QListWidget,
-    QListWidgetItem,
-    QAbstractItemView,
     QStackedWidget,
 )
 
@@ -69,6 +66,8 @@ import logging
 from controller.binary import SnapResultLoader
 from controller.binary.result_loader import BinaryCategory
 from controller.binary.hysteresis_analysis import energy_field_index
+
+from app.ui.case_dyc_selector_widget import DycSelection
 
 logger = logging.getLogger(__name__)
 
@@ -227,6 +226,7 @@ class _CaseEntry:
     name: str
     path: Path
     loader: SnapResultLoader
+    selection: Optional["DycSelection"] = None
 
 
 class _MplCanvas(FigureCanvas):
@@ -279,10 +279,12 @@ def _empty_panel(msg: str) -> QWidget:
 # メインウィジェット
 # ---------------------------------------------------------------------------
 class BinaryResultWidget(QWidget):
-    """SNAP バイナリ結果を種類別・マルチケース比較表示するウィジェット。"""
+    """SNAP バイナリ結果を種類別・マルチケース比較表示するウィジェット。
 
-    # 左パネルのケース選択が変わったときに AnalysisCase リストを送出
-    cases_selected = Signal(list)
+    ケース選択は外部の ``CaseDycSelectorWidget`` が担う。
+    ``set_dyc_selections(selections)`` に ``DycSelection`` のリストを渡すと
+    それぞれを独立した _CaseEntry として扱い、全結果タブを再描画する。
+    """
 
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
@@ -291,6 +293,8 @@ class BinaryResultWidget(QWidget):
         self._entries: Dict[int, _CaseEntry] = {}
         # 現在アクティブな（選択中の）ケース
         self._active_entries: List[_CaseEntry] = []
+        # 外部セレクタが一度でも set_dyc_selections を呼んだら True
+        self._selections_externally_driven: bool = False
 
         self._setup_ui()
         self._show_empty_state()
@@ -308,8 +312,6 @@ class BinaryResultWidget(QWidget):
 
     def _build_top_bar(self) -> QHBoxLayout:
         top = QHBoxLayout()
-        top.addWidget(QLabel("比較ケース:"))
-        top.addWidget(QLabel("（Ctrl / Shift で複数選択）"))
         top.addStretch(0)
 
         top.addWidget(QLabel("dt [s]:"))
@@ -325,21 +327,6 @@ class BinaryResultWidget(QWidget):
         btn_reload.clicked.connect(self._reload)
         top.addWidget(btn_reload)
         return top
-
-    def _build_case_list_panel(self) -> QVBoxLayout:
-        left = QVBoxLayout()
-        self._case_list = QListWidget()
-        self._case_list.setSelectionMode(QAbstractItemView.ExtendedSelection)
-        self._case_list.setMinimumWidth(220)
-        self._case_list.setMaximumWidth(300)
-        self._case_list.itemSelectionChanged.connect(self._on_case_selection_changed)
-        left.addWidget(QLabel("解析ケース"))
-        left.addWidget(self._case_list, stretch=1)
-
-        btn_all = QPushButton("全選択")
-        btn_all.clicked.connect(self._select_all_cases)
-        left.addWidget(btn_all)
-        return left
 
     def _build_result_tabs(self) -> QTabWidget:
         self._tabs = QTabWidget()
@@ -424,19 +411,15 @@ class BinaryResultWidget(QWidget):
         self._tabs.addTab(self._tab_stacks["energy"], "⚡ エネルギー")
         return self._tabs
 
-    def _build_body(self) -> QHBoxLayout:
-        body = QHBoxLayout()
-        body.addLayout(self._build_case_list_panel())
-
-        right = QVBoxLayout()
+    def _build_body(self) -> QVBoxLayout:
+        body = QVBoxLayout()
         self._status_label = QLabel("解析ケースを選択してください。")
         self._status_label.setStyleSheet(
             "color: #555; padding: 4px; background: #f5f5f5; border-radius: 4px;"
         )
         self._status_label.setWordWrap(True)
-        right.addWidget(self._status_label)
-        right.addWidget(self._build_result_tabs(), stretch=1)
-        body.addLayout(right, stretch=1)
+        body.addWidget(self._status_label)
+        body.addWidget(self._build_result_tabs(), stretch=1)
         return body
 
     def _make_stack(self, content: QWidget) -> QStackedWidget:
@@ -450,19 +433,6 @@ class BinaryResultWidget(QWidget):
         stack = self._tab_stacks.get(key)
         if stack is not None:
             stack.setCurrentIndex(0 if has_data else 1)
-
-    # ------------------------------------------------------------------
-    # Public helper: 外部ウィジェットをタブ先頭に挿入（ケース比較統合用）
-    # ------------------------------------------------------------------
-    def prepend_tab(self, widget: QWidget, label: str) -> None:
-        """外部ウィジェットをタブ先頭（index 0）として挿入する。
-
-        main_window から CompareChartWidget を統合するために使用。
-        呼び出し側は widget の set_cases / set_criteria などを
-        引き続き直接管理してよい。
-        """
-        self._tabs.insertTab(0, widget, label)
-        self._tabs.setCurrentIndex(0)
 
     # ------------------------------------------------------------------
     # 各タブビルダ
@@ -517,32 +487,8 @@ class BinaryResultWidget(QWidget):
         lay_beta.addWidget(self._beta_canvas, stretch=1)
         chart_tabs.addTab(w_beta, "刺激関数 β")
 
-        # --- グラフ 4: モード形状 (MDFloor.xbn) ---
-        w_mdfloor = QWidget()
-        lay_mdfloor = QVBoxLayout(w_mdfloor)
-        lay_mdfloor.setContentsMargins(2, 2, 2, 2)
-        ctrl_md = QHBoxLayout()
-        ctrl_md.addWidget(QLabel("成分:"))
-        self._mdfloor_field_combo = QComboBox()
-        self._mdfloor_field_combo.setMinimumWidth(120)
-        ctrl_md.addWidget(self._mdfloor_field_combo)
-        ctrl_md.addSpacing(16)
-        ctrl_md.addWidget(QLabel("ケース:"))
-        self._mdfloor_case_combo = QComboBox()
-        self._mdfloor_case_combo.setMinimumWidth(140)
-        ctrl_md.addWidget(self._mdfloor_case_combo)
-        ctrl_md.addStretch(1)
-        lay_mdfloor.addLayout(ctrl_md)
-        self._mdfloor_canvas = _MplCanvas(height=3.0)
-        lay_mdfloor.addWidget(NavigationToolbar(self._mdfloor_canvas, w_mdfloor))
-        lay_mdfloor.addWidget(self._mdfloor_canvas, stretch=1)
-        self._mdfloor_field_combo.currentIndexChanged.connect(
-            lambda *_: self._refresh_period_mode_shapes()
-        )
-        self._mdfloor_case_combo.currentIndexChanged.connect(
-            lambda *_: self._refresh_period_mode_shapes()
-        )
-        chart_tabs.addTab(w_mdfloor, "🏗 モード形状")
+        # モード形状は独立タブ (ModeShapeWidget) に統合済み。
+        # ここには重複表示を置かない。
 
         splitter.addWidget(chart_tabs)
         splitter.setSizes([200, 300])
@@ -707,104 +653,99 @@ class BinaryResultWidget(QWidget):
     # Public API
     # ------------------------------------------------------------------
     def set_cases(self, cases: List) -> None:
-        """AnalysisCase のリストを受け取り、リスト左パネルに表示します。"""
-        self._cases = cases or []
-        # 既存キャッシュはクリア（ケース構成が変わった可能性）
+        """AnalysisCase のリストを記憶するのみ。表示内容は set_dyc_selections() で決まる。
+
+        互換: 外部セレクタがまだ何も送っていない状態で set_cases だけ呼ばれた場合は、
+        各ケースの最初の DYC を自動選択して表示する（従来挙動の代替）。
+        """
+        self._cases = list(cases or [])
         self._entries.clear()
         self._active_entries = []
 
-        self._case_list.blockSignals(True)
-        self._case_list.clear()
-
-        loaded_idx: List[int] = []
-        for i, c in enumerate(self._cases):
-            dirs = self._resolve_case_dirs(c)
-            label = getattr(c, "name", None) or getattr(c, "id", f"case{i}")
-            if not dirs:
-                item = QListWidgetItem(f"{label}  (結果未検出)")
-                item.setFlags(item.flags() & ~Qt.ItemIsSelectable)
-                item.setForeground(Qt.gray)
-                self._case_list.addItem(item)
-                continue
-
-            path = dirs[0]
-            try:
-                loader = SnapResultLoader(path, dt=float(self._dt_spin.value()))
-            except Exception as e:
-                item = QListWidgetItem(f"{label}  (読み込み失敗)")
-                item.setFlags(item.flags() & ~Qt.ItemIsSelectable)
-                item.setForeground(Qt.red)
-                item.setToolTip(str(e))
-                self._case_list.addItem(item)
-                continue
-
-            entry = _CaseEntry(name=label, path=path, loader=loader)
-            self._entries[id(c)] = entry
-
-            tags = []
-            if loader.period:
-                tags.append("固有値")
-            if loader.get("Floor") and loader.get("Floor").hst:
-                tags.append("時刻歴")
-            if loader.get("Damper") and loader.get("Damper").hst:
-                tags.append("ダンパー")
-            suffix = f"  [{'/'.join(tags)}]" if tags else ""
-            item = QListWidgetItem(f"{label}{suffix}")
-            item.setData(Qt.UserRole, id(c))
-            item.setToolTip(str(path))
-            self._case_list.addItem(item)
-            loaded_idx.append(self._case_list.count() - 1)
-
-        self._case_list.blockSignals(False)
-
-        # 最初に見つかったものをデフォルト選択
-        if loaded_idx:
-            self._case_list.setCurrentRow(loaded_idx[0])
-            # trigger refresh
-            self._on_case_selection_changed()
+        if not self._selections_externally_driven:
+            auto_sels = self._auto_selections_from_cases(self._cases)
+            self._apply_selections(auto_sels)
         else:
             self._show_empty_state()
 
-    # ------------------------------------------------------------------
-    # Events
-    # ------------------------------------------------------------------
-    def _select_all_cases(self) -> None:
-        for i in range(self._case_list.count()):
-            item = self._case_list.item(i)
-            if item.flags() & Qt.ItemIsSelectable:
-                item.setSelected(True)
+    def set_dyc_selections(self, selections: List[DycSelection]) -> None:
+        """外部セレクタから (case, DYC) 選択を受け取り、結果タブを再描画する。"""
+        self._selections_externally_driven = True
+        self._apply_selections(selections or [])
 
-    def _on_case_selection_changed(self) -> None:
-        selected = self._case_list.selectedItems()
-        self._active_entries = []
-        selected_cases = []
-        for it in selected:
-            cid = it.data(Qt.UserRole)
-            if cid is None:
-                continue
-            entry = self._entries.get(cid)
-            if entry:
-                self._active_entries.append(entry)
-            # 対応する AnalysisCase を復元
-            for c in self._cases:
-                if id(c) == cid:
-                    selected_cases.append(c)
+    # ------------------------------------------------------------------
+    # Selection → entries
+    # ------------------------------------------------------------------
+    def _auto_selections_from_cases(self, cases: List) -> List[DycSelection]:
+        """外部セレクタが無いときに、ケース毎に最初の解析済み DYC を 1 件選ぶ。"""
+        out: List[DycSelection] = []
+        for c in cases:
+            dyc_results = getattr(c, "dyc_results", []) or []
+            picked = False
+            for i, dr in enumerate(dyc_results):
+                if dr.get("run_flag") and dr.get("has_result") and dr.get("result_dir"):
+                    out.append(DycSelection(
+                        case=c, dyc_index=i,
+                        result_dir=Path(dr["result_dir"]),
+                    ))
+                    picked = True
                     break
+            if not picked:
+                # フォールバック: case.binary_result_dir / _resolve_case_dirs[0]
+                dirs = self._resolve_case_dirs(c)
+                if dirs:
+                    out.append(DycSelection(
+                        case=c, dyc_index=-1, result_dir=dirs[0],
+                    ))
+        return out
 
-        # 選択ケースを外部に通知（CompareChartWidget 等が受信）
-        self.cases_selected.emit(selected_cases)
+    def _apply_selections(self, selections: List[DycSelection]) -> None:
+        """DycSelection のリストから _active_entries を再構築してタブを更新する。"""
+        entries: List[_CaseEntry] = []
+        failures: List[str] = []
+        dt = float(self._dt_spin.value())
 
-        if not self._active_entries:
+        for sel in selections:
+            path = sel.result_dir
+            if path is None:
+                # DYC 情報に result_dir が無い場合は _resolve_case_dirs にフォールバック
+                dirs = self._resolve_case_dirs(sel.case)
+                if not dirs:
+                    failures.append(f"{sel.display_name}: 結果フォルダ未検出")
+                    continue
+                path = dirs[0]
+            try:
+                loader = SnapResultLoader(Path(path), dt=dt)
+            except Exception as e:
+                failures.append(f"{sel.display_name}: {e}")
+                continue
+            entries.append(_CaseEntry(
+                name=sel.short_name,
+                path=Path(path),
+                loader=loader,
+                selection=sel,
+            ))
+
+        self._active_entries = entries
+        # _entries も簡易的に同期（id ベース）
+        self._entries = {id(e.selection.case): e for e in entries if e.selection}
+
+        if not entries:
+            msg = "表示可能な結果がありません。"
+            if failures:
+                msg = msg + "\n" + "\n".join(failures[:4])
+            self._status_label.setText(msg)
             self._show_empty_state()
             return
 
-        parts = [f"{len(self._active_entries)} ケース選択中"]
-        for e in self._active_entries[:4]:
+        parts = [f"{len(entries)} 件選択中"]
+        for e in entries[:4]:
             parts.append(f"{e.name}: {e.path}")
-        if len(self._active_entries) > 4:
-            parts.append(f"… 他 {len(self._active_entries) - 4} ケース")
+        if len(entries) > 4:
+            parts.append(f"… 他 {len(entries) - 4} 件")
+        if failures:
+            parts.append(f"(失敗 {len(failures)} 件)")
         self._status_label.setText("\n".join(parts))
-
         self._refresh_all_tabs()
 
     def _on_dt_changed(self, *_) -> None:
@@ -817,8 +758,12 @@ class BinaryResultWidget(QWidget):
         self._refresh_all_tabs()
 
     def _reload(self) -> None:
-        # ケース全再読込
-        self.set_cases(self._cases)
+        # アクティブな選択を復元して再ロード
+        prev = [e.selection for e in self._active_entries if e.selection] if self._active_entries else []
+        if prev:
+            self._apply_selections(prev)
+        elif self._cases:
+            self._apply_selections(self._auto_selections_from_cases(self._cases))
 
     # ------------------------------------------------------------------
     # 全タブ更新
@@ -830,11 +775,10 @@ class BinaryResultWidget(QWidget):
             self._status_label.setText("解析ケースがありません。")
         elif not self._entries:
             self._status_label.setText(
-                "選択されたケースに SNAP バイナリ結果フォルダが見つかりません。\n"
-                "解析を実行済みのケースを選択してください。"
+                "左の解析ケースツリーで、表示したい DYC サブケースをチェックしてください。"
             )
         else:
-            self._status_label.setText("左のリストからケースを選択してください。")
+            self._status_label.setText("左のツリーからケースを選択してください。")
 
     def _refresh_all_tabs(self) -> None:
         if not self._active_entries:
@@ -880,7 +824,6 @@ class BinaryResultWidget(QWidget):
         self._draw_period_bars(case_modes, case_names, max_modes, colors)
         self._draw_cumulative_pm(case_modes, case_names, max_modes, colors)
         self._draw_beta_excitation(case_modes, case_names, max_modes, colors)
-        self._refresh_period_mode_shapes()
 
     def _collect_period_data(self) -> Tuple[Dict[str, list], List[Tuple[str, object]]]:
         case_modes: Dict[str, list] = {}
@@ -1045,110 +988,6 @@ class BinaryResultWidget(QWidget):
             ax3.legend(fontsize=8)
         self._beta_canvas.fig.tight_layout()
         self._beta_canvas.draw()
-
-    # ------------------------------------------------------------------
-    # モード形状 (MDFloor.xbn)
-    # ------------------------------------------------------------------
-    def _refresh_period_mode_shapes(self) -> None:
-        """MDFloor.xbn を使って固有モード形状（各階の変形）を図化する。"""
-        canvas = self._mdfloor_canvas
-
-        entries_with_md = self._collect_mdfloor_entries()
-        if not entries_with_md:
-            canvas.show_message(
-                "MDFloor.xbn が見つかりません\n"
-                "（SNAPの出力設定でMDFloor出力を有効にしてください）",
-                color="gray",
-            )
-            return
-
-        xbn = entries_with_md[0][1].xbn
-        field_labels = xbn.field_labels()
-        self._update_mdfloor_combos(entries_with_md, field_labels, xbn.values_per_record)
-
-        field_idx = self._mdfloor_field_combo.currentData() or 0
-        selected_case_name = self._mdfloor_case_combo.currentData()
-        target_entries = [
-            (e, bc) for e, bc in entries_with_md if e.name == selected_case_name
-        ] or entries_with_md[:1]
-
-        self._plot_mode_shapes(canvas, target_entries, field_idx, field_labels, xbn.num_records)
-
-    def _collect_mdfloor_entries(self) -> List[tuple]:
-        entries: List[tuple] = []
-        for e in self._active_entries:
-            bc = e.loader.get("MDFloor")
-            if bc and bc.xbn and bc.xbn.records is not None:
-                entries.append((e, bc))
-        return entries
-
-    def _update_mdfloor_combos(self, entries_with_md, field_labels, n_fields: int) -> None:
-        # ケースコンボ
-        self._mdfloor_case_combo.blockSignals(True)
-        prev_case = self._mdfloor_case_combo.currentData()
-        self._mdfloor_case_combo.clear()
-        for e, _ in entries_with_md:
-            self._mdfloor_case_combo.addItem(e.name, e.name)
-        idx_c = next(
-            (i for i in range(self._mdfloor_case_combo.count())
-             if self._mdfloor_case_combo.itemData(i) == prev_case), 0
-        )
-        self._mdfloor_case_combo.setCurrentIndex(idx_c)
-        self._mdfloor_case_combo.blockSignals(False)
-
-        # フィールドコンボ
-        self._mdfloor_field_combo.blockSignals(True)
-        prev_field = self._mdfloor_field_combo.currentData()
-        if self._mdfloor_field_combo.count() != n_fields:
-            self._mdfloor_field_combo.clear()
-            for i in range(n_fields):
-                lbl = field_labels[i] if i < len(field_labels) else f"f{i}"
-                self._mdfloor_field_combo.addItem(lbl, i)
-        if prev_field is not None and 0 <= prev_field < n_fields:
-            self._mdfloor_field_combo.setCurrentIndex(prev_field)
-        self._mdfloor_field_combo.blockSignals(False)
-
-    def _plot_mode_shapes(self, canvas, target_entries, field_idx: int,
-                          field_labels, n_records_default: int) -> None:
-        ax = canvas.ax
-        ax.clear()
-        colors = plt.rcParams["axes.prop_cycle"].by_key()["color"]
-
-        for ci, (e, bc) in enumerate(target_entries):
-            xbn_data = bc.xbn
-            if xbn_data.records is None or field_idx >= xbn_data.values_per_record:
-                continue
-            vals = xbn_data.records[:, field_idx].astype(float)
-            floors = list(range(len(vals)))
-            c = colors[ci % len(colors)]
-            ax.plot(vals, floors, "o-", color=c, linewidth=1.8,
-                    markersize=5, label=e.name)
-
-        n_recs = target_entries[0][1].xbn.num_records if target_entries else n_records_default
-        stp_names_first = (
-            target_entries[0][1].stp.names if target_entries and target_entries[0][1].stp else []
-        )
-        if stp_names_first and len(stp_names_first) >= n_recs:
-            ax.set_yticks(range(n_recs))
-            ax.set_yticklabels(stp_names_first[:n_recs], fontsize=7)
-        else:
-            ax.set_yticks(range(n_recs))
-            ax.set_yticklabels([str(i + 1) for i in range(n_recs)], fontsize=7)
-
-        ax.axvline(0, color="#888", linewidth=0.8, linestyle="--")
-        field_lbl = field_labels[field_idx] if field_idx < len(field_labels) else f"f{field_idx}"
-        ax.set_xlabel(f"振幅  [{field_lbl}]")
-        ax.set_ylabel("階 (記録番号)")
-        ax.set_title(f"モード形状 — {field_lbl}")
-        ax.grid(True, axis="x", linestyle=":", alpha=0.5)
-        ax.invert_yaxis()
-        if len(target_entries) > 1:
-            ax.legend(fontsize=8)
-        try:
-            canvas.fig.tight_layout()
-        except (MemoryError, ValueError):
-            logger.debug("tight_layout失敗 (mode shapes)")
-        canvas.draw()
 
     # ------------------------------------------------------------------
     # 時刻歴 (Floor/Story)
