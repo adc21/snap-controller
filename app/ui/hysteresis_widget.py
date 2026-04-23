@@ -473,12 +473,12 @@ class HysteresisWidget(QWidget):
         all_V: List[np.ndarray] = []
         all_F: List[np.ndarray] = []
         summaries: List[str] = []
+        any_derived = False
 
         for ci, (label, data) in enumerate(data_list):
             V = data["V"]
             F = data["F"]
             if V.size == 0 or np.all(V == 0):
-                # 速度データがゼロ（未出力）の場合はスキップ
                 summaries.append(f"{label}: 速度データなし（SNAP 出力設定を確認）")
                 continue
 
@@ -487,9 +487,12 @@ class HysteresisWidget(QWidget):
             all_V.append(V)
             all_F.append(F)
             stats = compute_peak_stats(data)
+            derived = bool(data.get("v_derived"))
+            any_derived = any_derived or derived
+            tag = "  ※V=dD/dt" if derived else ""
             summaries.append(
                 f"{label}: |F|max={stats['max_F']:.4g},  "
-                f"|V|max={stats['max_V']:.4g}"
+                f"|V|max={stats['max_V']:.4g}{tag}"
             )
 
         if not all_V:
@@ -505,7 +508,10 @@ class HysteresisWidget(QWidget):
         ax.axvline(0, color="#888", linewidth=0.6)
         ax.set_xlabel("速度 V  [m/s 等]")
         ax.set_ylabel("荷重 F")
-        ax.set_title("力–速度（F–V）履歴ループ")
+        title = "力–速度（F–V）履歴ループ"
+        if any_derived:
+            title += "（V は変位の数値微分）"
+        ax.set_title(title)
         ax.grid(True, linestyle=":", alpha=0.4)
         _set_tight_axis(ax, np.concatenate(all_V), np.concatenate(all_F))
         if len(data_list) > 1:

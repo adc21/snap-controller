@@ -136,11 +136,11 @@ class TestFetchHysteresisData:
         assert self._fn(loader, "Damper", 0, 0.005) is None
 
     def test_returns_none_for_insufficient_fields(self):
-        """fields_per_record < 3 の場合 None を返す（V が取れない）。"""
+        """fields_per_record < 2 の場合 None を返す（F/D が取れない）。"""
         from unittest.mock import MagicMock
         mock_header = MagicMock()
         mock_header.num_records = 5
-        mock_header.fields_per_record = 2
+        mock_header.fields_per_record = 1
         mock_hst = MagicMock()
         mock_hst.header = mock_header
         mock_bc = MagicMock()
@@ -162,57 +162,25 @@ class TestFetchHysteresisData:
         loader.get.return_value = mock_bc
         assert self._fn(loader, "Damper", rec_idx=5, dt=0.005) is None
 
-    def test_returns_data_dict_on_success(self):
-        """正常系でデータ辞書が返ることを確認する。"""
-        from unittest.mock import MagicMock
-
-        n = 100
-        t_arr = np.arange(n, dtype=np.float32) * 0.005
-        F_arr = np.sin(np.linspace(0, 2 * np.pi, n)).astype(np.float32)
-        D_arr = (F_arr * 0.01).astype(np.float32)
-        V_arr = np.cos(np.linspace(0, 2 * np.pi, n)).astype(np.float32)
-        E_arr = np.cumsum(np.abs(F_arr)).astype(np.float32)
-
-        mock_header = MagicMock()
-        mock_header.num_records = 5
-        mock_header.fields_per_record = 8
-
-        mock_hst = MagicMock()
-        mock_hst.header = mock_header
-        mock_hst.times.return_value = t_arr
-        mock_hst.time_series.side_effect = lambda r, f: {
-            0: F_arr, 1: D_arr, 2: V_arr, 3: E_arr
-        }.get(f, np.zeros(n, dtype=np.float32))
-
-        mock_bc = MagicMock()
-        mock_bc.hst = mock_hst
-        loader = MagicMock()
-        loader.get.return_value = mock_bc
-
-        result = self._fn(loader, "Damper", rec_idx=2, dt=0.005)
-        assert result is not None
-        assert set(result.keys()) >= {"t", "F", "D", "V", "E"}
-        assert len(result["F"]) == n
-        np.testing.assert_allclose(result["F"], F_arr, rtol=1e-5)
-
-    def test_energy_defaults_to_zero_when_no_field(self):
-        """fields_per_record == 3 (F/D/V のみ) の場合 E はゼロ配列になる。"""
+    def test_damper_fpr4_reads_F_D_E_V_correctly(self):
+        """Damper fpr=4 は [F, D, E, V] 順。従来の [F, D, V, E] 解釈は誤り。"""
         from unittest.mock import MagicMock
 
         n = 50
-        F_arr = np.ones(n, dtype=np.float32)
-        D_arr = np.zeros(n, dtype=np.float32)
-        V_arr = np.zeros(n, dtype=np.float32)
+        F_arr = np.sin(np.linspace(0, 2 * np.pi, n)).astype(np.float32)
+        D_arr = (F_arr * 0.01).astype(np.float32)
+        E_arr = np.cumsum(np.abs(F_arr)).astype(np.float32)  # 単調増加
+        V_arr = np.cos(np.linspace(0, 2 * np.pi, n)).astype(np.float32)  # 振動
 
         mock_header = MagicMock()
-        mock_header.num_records = 2
-        mock_header.fields_per_record = 3  # E フィールドなし
+        mock_header.num_records = 1
+        mock_header.fields_per_record = 4
 
         mock_hst = MagicMock()
         mock_hst.header = mock_header
         mock_hst.times.return_value = np.arange(n, dtype=np.float32) * 0.005
         mock_hst.time_series.side_effect = lambda r, f: {
-            0: F_arr, 1: D_arr, 2: V_arr
+            0: F_arr, 1: D_arr, 2: E_arr, 3: V_arr
         }.get(f, np.zeros(n, dtype=np.float32))
 
         mock_bc = MagicMock()
@@ -220,13 +188,151 @@ class TestFetchHysteresisData:
         loader = MagicMock()
         loader.get.return_value = mock_bc
 
-        result = self._fn(loader, "Damper", rec_idx=0, dt=0.005)
+        result = self._fn(loader, "Damper", 0, 0.005)
         assert result is not None
-        assert np.all(result["E"] == 0.0)
+        np.testing.assert_allclose(result["F"], F_arr, rtol=1e-5)
+        np.testing.assert_allclose(result["D"], D_arr, rtol=1e-5)
+        np.testing.assert_allclose(result["V"], V_arr, rtol=1e-5)
+        np.testing.assert_allclose(result["E"], E_arr, rtol=1e-5)
+        # E は単調増加、V は振動
+        assert np.all(np.diff(result["E"]) >= -1e-6)
+        assert np.any(np.diff(result["V"]) < 0)
+
+    def test_damper_fpr8_no_V_computes_from_D(self):
+        """Damper fpr=8 は V フィールドなし。D の数値微分で V を補完する。"""
+        from unittest.mock import MagicMock
+
+        n = 200
+        dt = 0.01
+        t = np.arange(n, dtype=np.float32) * dt
+        F_arr = np.sin(2 * np.pi * t).astype(np.float32)
+        D_arr = np.sin(2 * np.pi * t).astype(np.float32) * 0.01
+        E_arr = np.cumsum(np.abs(F_arr)).astype(np.float32)
+
+        mock_header = MagicMock()
+        mock_header.num_records = 1
+        mock_header.fields_per_record = 8
+
+        mock_hst = MagicMock()
+        mock_hst.header = mock_header
+        mock_hst.times.return_value = t
+        # fpr=8 の layout: F@0, D@1, ..., E@7
+        mock_hst.time_series.side_effect = lambda r, f: {
+            0: F_arr, 1: D_arr, 7: E_arr
+        }.get(f, np.zeros(n, dtype=np.float32))
+
+        mock_bc = MagicMock()
+        mock_bc.hst = mock_hst
+        loader = MagicMock()
+        loader.get.return_value = mock_bc
+
+        result = self._fn(loader, "Damper", 0, dt)
+        assert result is not None
+        np.testing.assert_allclose(result["F"], F_arr, rtol=1e-5)
+        np.testing.assert_allclose(result["D"], D_arr, rtol=1e-5)
+        np.testing.assert_allclose(result["E"], E_arr, rtol=1e-5)
+        # V = dD/dt = 2π * 0.01 * cos(2πt) ≈ 0.0628 * cos(...)
+        expected_V_peak = 2 * np.pi * 0.01
+        assert result["V"].max() == pytest.approx(expected_V_peak, rel=0.02)
+
+    def test_damper_fpr11_irdt_layout(self):
+        """Damper fpr=11 (iRDT) は F@1, D@2, V@4, E@9。"""
+        from unittest.mock import MagicMock
+
+        n = 40
+        F_arr = np.sin(np.linspace(0, 2 * np.pi, n)).astype(np.float32) * 100
+        D_arr = (F_arr * 0.0001).astype(np.float32)
+        V_arr = np.cos(np.linspace(0, 2 * np.pi, n)).astype(np.float32) * 5
+        E_arr = np.cumsum(np.abs(F_arr)).astype(np.float32)
+
+        mock_header = MagicMock()
+        mock_header.num_records = 1
+        mock_header.fields_per_record = 11
+
+        mock_hst = MagicMock()
+        mock_hst.header = mock_header
+        mock_hst.times.return_value = np.arange(n, dtype=np.float32) * 0.005
+        mock_hst.time_series.side_effect = lambda r, f: {
+            1: F_arr, 2: D_arr, 4: V_arr, 9: E_arr,
+        }.get(f, np.zeros(n, dtype=np.float32))
+
+        mock_bc = MagicMock()
+        mock_bc.hst = mock_hst
+        loader = MagicMock()
+        loader.get.return_value = mock_bc
+
+        result = self._fn(loader, "Damper", 0, 0.005)
+        assert result is not None
+        np.testing.assert_allclose(result["F"], F_arr, rtol=1e-5)
+        np.testing.assert_allclose(result["D"], D_arr, rtol=1e-5)
+        np.testing.assert_allclose(result["V"], V_arr, rtol=1e-5)
+        np.testing.assert_allclose(result["E"], E_arr, rtol=1e-5)
+
+    def test_spring_fpr5_uses_legacy_layout(self):
+        """Spring.hst fpr=5 は従来通り [F, D, V, E, ...] 順。"""
+        from unittest.mock import MagicMock
+
+        n = 30
+        F_arr = np.ones(n, dtype=np.float32)
+        D_arr = np.full(n, 2.0, dtype=np.float32)
+        V_arr = np.full(n, 3.0, dtype=np.float32)
+        E_arr = np.full(n, 4.0, dtype=np.float32)
+
+        mock_header = MagicMock()
+        mock_header.num_records = 1
+        mock_header.fields_per_record = 5
+
+        mock_hst = MagicMock()
+        mock_hst.header = mock_header
+        mock_hst.times.return_value = np.arange(n, dtype=np.float32) * 0.005
+        mock_hst.time_series.side_effect = lambda r, f: {
+            0: F_arr, 1: D_arr, 2: V_arr, 3: E_arr,
+        }.get(f, np.zeros(n, dtype=np.float32))
+
+        mock_bc = MagicMock()
+        mock_bc.hst = mock_hst
+        loader = MagicMock()
+        loader.get.return_value = mock_bc
+
+        result = self._fn(loader, "Spring", 0, 0.005)
+        assert result is not None
+        assert result["F"][0] == pytest.approx(1.0)
+        assert result["D"][0] == pytest.approx(2.0)
+        assert result["V"][0] == pytest.approx(3.0)
+        assert result["E"][0] == pytest.approx(4.0)
+
+
+class TestDamperFieldMap:
+    """damper_field_map() のテスト。"""
+
+    def test_fpr4_layout(self):
+        from controller.binary.hysteresis_analysis import damper_field_map
+        m = damper_field_map(4)
+        assert m == {"F": 0, "D": 1, "E": 2, "V": 3}
+
+    def test_fpr8_layout_no_V(self):
+        from controller.binary.hysteresis_analysis import damper_field_map
+        m = damper_field_map(8)
+        assert m["F"] == 0
+        assert m["D"] == 1
+        assert m["E"] == 7
+        assert "V" not in m
+
+    def test_fpr11_irdt_layout(self):
+        from controller.binary.hysteresis_analysis import damper_field_map
+        m = damper_field_map(11)
+        assert m == {"F": 1, "D": 2, "V": 4, "E": 9}
+
+    def test_unknown_fpr_fallback(self):
+        from controller.binary.hysteresis_analysis import damper_field_map
+        m = damper_field_map(6)
+        assert m["F"] == 0
+        assert m["D"] == 1
+        assert m["E"] == 5
 
 
 class TestFieldConstants:
-    """フィールドインデックス定数のテスト。"""
+    """フィールドインデックス定数のテスト（Spring 用デフォルト）。"""
 
     def test_constants_correct(self):
         from controller.binary.hysteresis_analysis import (
@@ -240,6 +346,24 @@ class TestFieldConstants:
     def test_available_via_package(self):
         from controller.binary import FIELD_FORCE, FIELD_DISP, FIELD_VEL, FIELD_ENERGY  # noqa
         assert FIELD_FORCE == 0
+
+    def test_energy_field_index_damper_fpr4_points_to_field2(self):
+        """旧コードは fpr=4 で field[3] を Energy としていたバグを検出する。"""
+        from controller.binary.hysteresis_analysis import energy_field_index
+        assert energy_field_index("Damper", 4) == 2
+
+    def test_energy_field_index_damper_fpr8_points_to_field7(self):
+        from controller.binary.hysteresis_analysis import energy_field_index
+        assert energy_field_index("Damper", 8) == 7
+
+    def test_energy_field_index_damper_fpr11_points_to_field9(self):
+        """iRDT は E が末尾ではなく f9 にある。"""
+        from controller.binary.hysteresis_analysis import energy_field_index
+        assert energy_field_index("Damper", 11) == 9
+
+    def test_energy_field_index_spring_fpr5_points_to_field3(self):
+        from controller.binary.hysteresis_analysis import energy_field_index
+        assert energy_field_index("Spring", 5) == 3
 
 
 # ===========================================================================

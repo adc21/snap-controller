@@ -87,10 +87,19 @@ _KNOWN_META_PER: Dict[str, int] = {
 # fpr が一致するレイアウトを使い、一致しなければ f0,f1,... にフォールバック。
 _FIELD_LAYOUTS_BY_FPR: Dict[str, Dict[int, List[str]]] = {
     "Damper.hst": {
-        # 2D (shear) モデル: fpr=4 → Force, Disp, Vel, Energy
-        4: ["Force", "Disp", "Vel", "Energy"],
-        # 3D モデル: fpr=8 → Fx, Dx, Fy, Dy, f4, f5, f6, Energy
-        8: ["Fx", "Dx", "Fy", "Dy", "f4", "f5", "f6", "Energy"],
+        # 2D 簡易ダンパー: fpr=4 は [F, D, Energy, V] の順。
+        # (f2 は単調増加、f3 は振動 → F=0, D=1, E=2, V=3)
+        4: ["Force", "Disp", "Energy", "Vel"],
+        # 3D 立体モデル: fpr=8。V 成分は出力されず、
+        # 先頭 2 組 (f0/f1, f2/f3, f5/f6) は異なるサブ要素の F/D 対。
+        # 末尾 (f7) が累積エネルギー (単調増加)。
+        8: ["F", "D", "F2", "D2", "f4", "F3", "D3", "Energy"],
+        # iRDT ダンパー: fpr=11。F=f1, D=f2, V=f4, E=f9 (末尾ではない)。
+        11: [
+            "f0", "Force", "Disp", "cumD",
+            "Vel", "Fv", "cumV",
+            "F2", "D2", "Energy", "f10",
+        ],
     },
     "Spring.hst": {
         5: ["Force", "Disp", "Vel", "Energy", "f4"],
