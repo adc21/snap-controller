@@ -47,7 +47,22 @@ class PeriodReader:
         モード番号 -> 参加質量比 [%]
     """
 
-    def __init__(self, period_file: str) -> None:
+    def __init__(
+        self,
+        period_file: str,
+        structure_type: Optional[int] = None,
+        planar_direction: str = "X",
+    ) -> None:
+        """
+        Parameters
+        ----------
+        period_file : str
+            Period.xbn へのパス。
+        structure_type : int, optional
+            TTL[0]。0=立体, 1=平面。None で自動検出 (通常はこれで十分)。
+        planar_direction : str
+            平面モデル時の参加係数/質量比の方向キー ("X" or "Y")。
+        """
         self.period_file = Path(period_file)
         self.periods: Dict[int, float] = {}
         self.frequencies: Dict[int, float] = {}
@@ -58,7 +73,11 @@ class PeriodReader:
         if self.period_file.exists():
             if _HAS_NEW_READER:
                 # 新リーダーに委譲
-                new = PeriodXbnReader(self.period_file)  # type: ignore
+                new = PeriodXbnReader(  # type: ignore
+                    self.period_file,
+                    structure_type=structure_type,
+                    planar_direction=planar_direction,
+                )
                 self.modes = list(new.modes)
                 for m in new.modes:
                     self.periods[m.mode_no] = m.period

@@ -26,7 +26,9 @@ SNAP ``Period.xbn`` 固有値解析結果リーダー（マルチモード対応
     ...     ...           モード k のレコード
     ...     4             末尾パディング 1 float
 
-モードレコード 14 float の内訳（観測ベース）::
+モードレコード 14 float の内訳は構造形式により異なる。
+
+**立体フレーム (3D) レイアウト (TTL[0]=0)**::
 
     [0] padding
     [1] padding
@@ -34,14 +36,28 @@ SNAP ``Period.xbn`` 固有値解析結果リーダー（マルチモード対応
     [3] β_Y   参加係数 (Y 方向モード)
     [4] β_Z   参加係数 (Z 方向モード)
     [5] β_RX  参加係数 (回転 X)
-    [6] β_RY  参加係数 (回転 Y)  ← 5/6 は仮定
+    [6] β_RY  参加係数 (回転 Y)
     [7] T     固有周期 [秒]
     [8] ω     角振動数 [rad/s]
     [9] padding（減衰定数 ζ が入る SNAP バージョンもありうる）
     [10] PM_X 参加質量比 X [%]
     [11] PM_Y 参加質量比 Y [%]
-    [12] PM_Z 参加質量比 Z [%]（推定）
-    [13] PM_R 参加質量比 回転 [%]（推定）
+    [12] PM_Z 参加質量比 Z [%]
+    [13] PM_R 参加質量比 回転 [%]
+
+**平面フレーム (planar) レイアウト (TTL[0]=1)**::
+
+    [0] padding
+    [1] β     参加係数（平面方向 1 DOF 分のみ）
+    [2..6] padding (0)
+    [7] T     固有周期 [秒]
+    [8] ω     角振動数 [rad/s]
+    [9] PM    参加質量比 [%]
+    [10..13] padding (0)
+
+    ※ T / ω の位置は 3D と同一。β / PM の位置だけ異なる。
+    平面モデルの解析方向は EVC.解析方向 で X (=1) / Y (=2) を決めるが、
+    本リーダーは便宜上 X キーに格納する（UI 表示互換のため）。
 
 β のどれが有効かでモードの支配方向を判定できます。
 """
@@ -100,11 +116,32 @@ class PeriodXbnReader:
     MODE_RECORD_SIZE = 14         # 14 floats per mode
     DIRS = ("X", "Y", "Z", "RX", "RY")
 
-    def __init__(self, period_file: str | Path) -> None:
+    def __init__(
+        self,
+        period_file: str | Path,
+        structure_type: Optional[int] = None,
+        planar_direction: str = "X",
+    ) -> None:
+        """
+        Parameters
+        ----------
+        period_file : path
+            Period.xbn へのパス。
+        structure_type : int, optional
+            s8i TTL[0] の構造形式。0=立体フレーム, 1=平面フレーム。
+            None を渡すとバイナリから自動検出する。
+        planar_direction : str
+            平面モデル時、参加係数/参加質量比を格納する方向キー ("X" or "Y")。
+            EVC.解析方向 (1=X, 2=Y) を元に指定するのが望ましい。省略時は X。
+        """
         self.period_file = Path(period_file)
+        self.structure_type = structure_type
+        self.planar_direction = planar_direction.upper() if planar_direction else "X"
         self.magic: int = 0
         self.num_modes: int = 0
         self.modes: List[ModeInfo] = []
+        # 実際に採用したレイアウト (1=planar, 0=3D)。auto の場合は検出結果が入る。
+        self.layout_is_planar: bool = False
 
         if self.period_file.exists():
             self._parse()
@@ -133,6 +170,14 @@ class PeriodXbnReader:
         if start < 0:
             return
 
+        # レイアウト判定: 構造形式 (TTL[0]) が明示されていればそれを採用、
+        # 未指定なら最初のモードの β 分布から自動検出する。
+        if self.structure_type is not None:
+            is_planar = (self.structure_type == 1)
+        else:
+            is_planar = self._is_planar_layout(floats, start, rec_size, t_pos)
+        self.layout_is_planar = is_planar
+
         for m in range(self.num_modes):
             s = start + m * rec_size
             e = s + rec_size
@@ -148,44 +193,10 @@ class PeriodXbnReader:
                 if abs(ratio - 1.0) > 0.10:
                     continue
 
-            # β は T/ω の前の 5 float （t_pos - 5 以降）
-            beta_start = max(0, t_pos - 5)
-            beta_keys = ("X", "Y", "Z", "RX", "RY")
-            beta = {}
-            for ki, k in enumerate(beta_keys):
-                idx = beta_start + ki
-                beta[k] = rec[idx] if idx < rec_size else 0.0
-
-            # PM は ω の後の float群。SNAPバージョンによりパディング数が異なるため
-            # w_pos+2 を優先（実観測: raw[10]がPM_X）、次に w_pos+1, +3, +4 を試す。
-            # β の支配方向と PM の最大方向が一致するオフセットを優先的に採用する。
-            pm_keys = ("X", "Y", "Z", "R")
-            pm = {}
-            pm_found = False
-
-            # β の支配方向を求める (X=0, Y=1, Z=2)
-            beta_vals = [abs(beta.get(k, 0.0)) for k in ("X", "Y", "Z")]
-            dominant_beta_idx = beta_vals.index(max(beta_vals)) if max(beta_vals) > 0 else -1
-
-            best_pm: Optional[Dict[str, float]] = None
-            for pm_offset in (2, 1, 3, 4):
-                pm_start = w_pos + pm_offset
-                if pm_start + len(pm_keys) - 1 >= rec_size:
-                    continue
-                candidates = [rec[pm_start + ki] for ki in range(len(pm_keys))]
-                if all(0.0 <= c <= 200.0 for c in candidates):
-                    candidate_pm = {k: float(candidates[ki]) for ki, k in enumerate(pm_keys)}
-                    # β の支配方向と PM の最大方向が一致するかチェック
-                    pm_xyz = [candidate_pm.get(k, 0.0) for k in ("X", "Y", "Z")]
-                    dominant_pm_idx = pm_xyz.index(max(pm_xyz)) if max(pm_xyz) > 0 else -1
-                    if dominant_beta_idx >= 0 and dominant_pm_idx == dominant_beta_idx:
-                        pm = candidate_pm
-                        pm_found = True
-                        break
-                    elif best_pm is None:
-                        best_pm = candidate_pm
-            if not pm_found:
-                pm = best_pm or {k: 0.0 for k in pm_keys}
+            if is_planar:
+                beta, pm = self._extract_planar(rec, w_pos, rec_size)
+            else:
+                beta, pm = self._extract_3d(rec, t_pos, w_pos, rec_size)
 
             mode = ModeInfo(
                 mode_no=m + 1,
@@ -196,6 +207,103 @@ class PeriodXbnReader:
                 raw=[float(x) for x in rec],
             )
             self.modes.append(mode)
+
+    # ------------------------------------------------------------------
+    def _is_planar_layout(
+        self, floats: List[float], start: int, rec_size: int, t_pos: int
+    ) -> bool:
+        """β の分布から平面レイアウトかを推定する。
+
+        立体: β は rec[2..6] に格納される → t_pos-5 .. t_pos-1 に非ゼロ値。
+        平面: β は rec[1] に単一値のみ格納される → rec[2..6] が全ゼロ、rec[1] が非ゼロ。
+
+        少なくとも 1 モードで rec[2..6] に非ゼロが現れれば立体、
+        すべてのチェック対象モードで rec[2..6]=0 かつ rec[1]≠0 なら平面。
+        """
+        beta3d_start = max(0, t_pos - 5)
+        beta3d_end = t_pos  # exclusive
+        planar_idx = max(0, t_pos - 6)  # 3D で言う "pad" の位置 ≒ 平面の β
+        check_modes = min(self.num_modes, 3)
+        saw_planar = False
+        for m in range(check_modes):
+            s = start + m * rec_size
+            e = s + rec_size
+            if e > len(floats):
+                break
+            rec = floats[s:e]
+            if any(abs(rec[i]) > 1e-30 for i in range(beta3d_start, beta3d_end) if i < rec_size):
+                return False  # 3D β 位置に値がある → 立体
+            if planar_idx < rec_size and abs(rec[planar_idx]) > 1e-30:
+                saw_planar = True
+        return saw_planar
+
+    # ------------------------------------------------------------------
+    def _extract_3d(
+        self, rec: List[float], t_pos: int, w_pos: int, rec_size: int
+    ) -> tuple:
+        """立体レイアウト (3D) の β と PM を取り出す。"""
+        beta_start = max(0, t_pos - 5)
+        beta_keys = ("X", "Y", "Z", "RX", "RY")
+        beta = {}
+        for ki, k in enumerate(beta_keys):
+            idx = beta_start + ki
+            beta[k] = rec[idx] if idx < rec_size else 0.0
+
+        # PM は ω の後の float群。SNAPバージョンによりパディング数が異なるため
+        # w_pos+2 を優先（実観測: raw[10]がPM_X）、次に w_pos+1, +3, +4 を試す。
+        pm_keys = ("X", "Y", "Z", "R")
+        pm: Dict[str, float] = {}
+        pm_found = False
+
+        beta_vals = [abs(beta.get(k, 0.0)) for k in ("X", "Y", "Z")]
+        dominant_beta_idx = beta_vals.index(max(beta_vals)) if max(beta_vals) > 0 else -1
+
+        best_pm: Optional[Dict[str, float]] = None
+        for pm_offset in (2, 1, 3, 4):
+            pm_start = w_pos + pm_offset
+            if pm_start + len(pm_keys) - 1 >= rec_size:
+                continue
+            candidates = [rec[pm_start + ki] for ki in range(len(pm_keys))]
+            if all(0.0 <= c <= 200.0 for c in candidates):
+                candidate_pm = {k: float(candidates[ki]) for ki, k in enumerate(pm_keys)}
+                pm_xyz = [candidate_pm.get(k, 0.0) for k in ("X", "Y", "Z")]
+                dominant_pm_idx = pm_xyz.index(max(pm_xyz)) if max(pm_xyz) > 0 else -1
+                if dominant_beta_idx >= 0 and dominant_pm_idx == dominant_beta_idx:
+                    pm = candidate_pm
+                    pm_found = True
+                    break
+                elif best_pm is None:
+                    best_pm = candidate_pm
+        if not pm_found:
+            pm = best_pm or {k: 0.0 for k in pm_keys}
+        return beta, pm
+
+    # ------------------------------------------------------------------
+    def _extract_planar(
+        self, rec: List[float], w_pos: int, rec_size: int
+    ) -> tuple:
+        """平面レイアウト (1 DOF) の β と PM を取り出す。
+
+        β は rec[w_pos - 7] 近辺の単一値、PM は rec[w_pos + 1]。
+        w_pos=8 の場合: β は rec[1]、PM は rec[9]。
+
+        格納先の方向キーは ``self.planar_direction`` (X または Y) に従う。
+        UI 側は常に X/Y/Z/RX/RY キーを参照するため、他方向はゼロで埋める。
+        """
+        beta_idx = max(0, w_pos - 7)  # w_pos=8 → 1, w_pos=7 → 0
+        beta_val = float(rec[beta_idx]) if beta_idx < rec_size else 0.0
+        pm_idx = w_pos + 1
+        pm_val = float(rec[pm_idx]) if pm_idx < rec_size else 0.0
+        # レンジ外（負 or 非現実的）は 0 にクリップ
+        if not (0.0 <= pm_val <= 200.0):
+            pm_val = 0.0
+
+        beta = {k: 0.0 for k in ("X", "Y", "Z", "RX", "RY")}
+        pm = {k: 0.0 for k in ("X", "Y", "Z", "R")}
+        direction = self.planar_direction if self.planar_direction in ("X", "Y") else "X"
+        beta[direction] = beta_val
+        pm[direction] = pm_val
+        return beta, pm
 
     # ------------------------------------------------------------------
     def _detect_mode_layout(
