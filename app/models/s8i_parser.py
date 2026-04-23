@@ -255,6 +255,9 @@ class S8iModel:
     file_path: str = ""
     title: str = ""
     version: str = ""
+    # TTL[0]: 構造形式 (0=立体フレーム / 1=平面フレーム)
+    # Period.xbn など DOF に依存するバイナリの読み取りに使用する。
+    structure_type: int = 0
     # 節点
     nodes: Dict[int, Node] = field(default_factory=dict)
     # 層
@@ -811,7 +814,10 @@ def parse_s8i(file_path: str) -> S8iModel:
             continue
 
         elif keyword == "TTL":
-            # タイトル: TTL / type,dim,...,title,...
+            # TTL / 構造形式, 次元, 単位, 重力, g, タイトル, ...
+            # 構造形式: 0=立体フレーム / 1=平面フレーム
+            if vals:
+                model.structure_type = _safe_int(vals[0], 0)
             if len(vals) >= 6:
                 model.title = vals[5]
 
