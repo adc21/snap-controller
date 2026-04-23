@@ -331,6 +331,188 @@ class TestDamperFieldMap:
         assert m["E"] == 5
 
 
+class TestMixedFprLayout:
+    """混在 fpr レイアウト（iOD Damper.hst）対応テスト。
+
+    iOD（Inerter Output Damper）の Damper.hst は、同一ファイル内で
+    前半レコード群が fpr=4（取付部サブ要素）、後半レコード群が fpr=11
+    （iOD 本体）という不均一な構造を持つ。meta 値の切替を境界として
+    per-record fpr を検出する機能を検証する。
+    """
+
+    def _build_mixed_hst(self, tmp_path, num_a=5, fpr_a=4, num_b=3, fpr_b=11):
+        """2 セグメント混在 fpr の合成 Damper.hst を書き出す。
+
+        デフォルト値 (5×4 + 3×11 = 53, +sh=1 = 54) は一律 fpr で
+        割り切れない組合せなので、segmented 検出パスが確実に走る。
+        """
+        import struct
+        from pathlib import Path
+
+        num_records = num_a + num_b
+        step_header = 1
+        step_size = step_header + num_a * fpr_a + num_b * fpr_b
+        num_steps = 5
+        meta_per = 1  # Damper.hst の仕様
+
+        p = tmp_path / "Damper.hst"
+        # 4-int header
+        header = struct.pack(
+            "<4i", 0x12345678, num_steps, step_size, num_records
+        )
+        # meta: first num_a records have meta key 7680, rest have 8186
+        # (これらは実 iOD データから観測された値)
+        meta_bytes = b""
+        for i in range(num_a):
+            meta_bytes += struct.pack("<i", 7680)
+        for i in range(num_b):
+            meta_bytes += struct.pack("<i", 8186)
+
+        # step data: construct distinct values per (step, record, field) so
+        # we can verify per-record offset calculations
+        step_bytes = b""
+        for step in range(num_steps):
+            row = [float(step)]  # step_header
+            for rec in range(num_a):
+                for f in range(fpr_a):
+                    # encode value = step*1000 + rec*100 + f
+                    row.append(float(step * 1000 + rec * 100 + f))
+            for rec in range(num_b):
+                abs_rec = num_a + rec
+                for f in range(fpr_b):
+                    row.append(float(step * 1000 + abs_rec * 100 + f))
+            step_bytes += struct.pack(f"<{step_size}f", *row)
+
+        with open(p, "wb") as f:
+            f.write(header)
+            f.write(meta_bytes)
+            f.write(step_bytes)
+        return p
+
+    def test_detects_segmented_fpr(self, tmp_path):
+        """混在 fpr ファイルを読むと per_record_fpr が設定される。"""
+        from controller.binary.hst_reader import HstReader
+        p = self._build_mixed_hst(tmp_path)
+        r = HstReader(p, dt=0.005, lazy=False)
+        assert r.header is not None
+        # 5×fpr4 + 3×fpr11
+        assert r.header.per_record_fpr == [4, 4, 4, 4, 4, 11, 11, 11]
+        assert r.fpr_for_record(0) == 4
+        assert r.fpr_for_record(4) == 4
+        assert r.fpr_for_record(5) == 11
+        assert r.fpr_for_record(7) == 11
+
+    def test_per_record_offset_correct(self, tmp_path):
+        """各レコードのカラムオフセットが正しく算出される。"""
+        from controller.binary.hst_reader import HstReader
+        p = self._build_mixed_hst(tmp_path)
+        r = HstReader(p, dt=0.005, lazy=False)
+        # sh=1, rec0..4 (fpr=4): cols 1, 5, 9, 13, 17
+        # rec5..7 (fpr=11): cols 21, 32, 43
+        assert r.record_offset(0) == 1
+        assert r.record_offset(1) == 5
+        assert r.record_offset(4) == 17
+        assert r.record_offset(5) == 21
+        assert r.record_offset(7) == 43
+
+    def test_time_series_reads_correct_values(self, tmp_path):
+        """混在 fpr で time_series が各レコードの正しい値を読む。"""
+        from controller.binary.hst_reader import HstReader
+        p = self._build_mixed_hst(tmp_path)
+        r = HstReader(p, dt=0.005, lazy=False)
+        # step s, rec 0, field 0 → s*1000 + 0*100 + 0 = s*1000
+        ts = r.time_series(0, 0)
+        np.testing.assert_array_equal(ts, [0, 1000, 2000, 3000, 4000])
+        # step s, rec 4, field 3 → s*1000 + 400 + 3
+        ts = r.time_series(4, 3)
+        np.testing.assert_array_equal(ts, [403, 1403, 2403, 3403, 4403])
+        # step s, rec 7 (abs_rec=7), field 9 → s*1000 + 700 + 9
+        ts = r.time_series(7, 9)
+        np.testing.assert_array_equal(ts, [709, 1709, 2709, 3709, 4709])
+
+    def test_time_series_rejects_out_of_record_field(self, tmp_path):
+        """fpr=4 レコードに対して field_index=5 を要求すると IndexError。"""
+        import pytest as _pt
+        from controller.binary.hst_reader import HstReader
+        p = self._build_mixed_hst(tmp_path)
+        r = HstReader(p, dt=0.005, lazy=False)
+        with _pt.raises(IndexError):
+            r.time_series(0, 5)  # rec 0 は fpr=4 なので field 5 は不正
+
+    def test_field_labels_vary_by_record(self, tmp_path):
+        """fpr が異なるレコードでは field_labels_for_record が異なるレイアウトを返す。"""
+        from controller.binary.hst_reader import HstReader
+        p = self._build_mixed_hst(tmp_path)
+        r = HstReader(p, dt=0.005, lazy=False)
+        labels_rec0 = r.field_labels_for_record(0)
+        labels_rec5 = r.field_labels_for_record(5)
+        # fpr=4: [Force, Disp, Energy, Vel]
+        assert labels_rec0 == ["Force", "Disp", "Energy", "Vel"]
+        # fpr=11: iRDT レイアウト
+        assert len(labels_rec5) == 11
+        assert labels_rec5[1] == "Force"
+        assert labels_rec5[9] == "Energy"
+
+    def test_fetch_hysteresis_data_uses_per_record_fpr(self, tmp_path):
+        """fetch_hysteresis_data が混在 fpr ファイルでレコード毎に正しい fpr を使う。"""
+        from controller.binary.hst_reader import HstReader
+        from controller.binary.hysteresis_analysis import fetch_hysteresis_data
+        from unittest.mock import MagicMock
+
+        p = self._build_mixed_hst(tmp_path)
+        reader = HstReader(p, dt=0.005, lazy=False)
+
+        mock_bc = MagicMock()
+        mock_bc.hst = reader
+        loader = MagicMock()
+        loader.get.return_value = mock_bc
+
+        # rec 0 は fpr=4: F@0, D@1, E@2, V@3
+        d0 = fetch_hysteresis_data(loader, "Damper", 0, 0.005)
+        assert d0 is not None
+        # rec 0 field 0 for each step = step*1000
+        np.testing.assert_array_equal(d0["F"], [0, 1000, 2000, 3000, 4000])
+        # D = field 1 = step*1000 + 1
+        np.testing.assert_array_equal(d0["D"], [1, 1001, 2001, 3001, 4001])
+        # E = field 2 = step*1000 + 2
+        np.testing.assert_array_equal(d0["E"], [2, 1002, 2002, 3002, 4002])
+        assert d0["v_derived"] is False  # V field exists at fpr=4
+
+        # rec 5 は fpr=11: F@1, D@2, V@4, E@9
+        d5 = fetch_hysteresis_data(loader, "Damper", 5, 0.005)
+        assert d5 is not None
+        # rec 5 field 1 = step*1000 + 5*100 + 1
+        np.testing.assert_array_equal(d5["F"], [501, 1501, 2501, 3501, 4501])
+        # D = field 2 = step*1000 + 5*100 + 2
+        np.testing.assert_array_equal(d5["D"], [502, 1502, 2502, 3502, 4502])
+        # V = field 4 = step*1000 + 5*100 + 4
+        np.testing.assert_array_equal(d5["V"], [504, 1504, 2504, 3504, 4504])
+        # E = field 9 = step*1000 + 5*100 + 9
+        np.testing.assert_array_equal(d5["E"], [509, 1509, 2509, 3509, 4509])
+
+    def test_uniform_fpr_still_works(self, tmp_path):
+        """単一 fpr ファイル（非混在）は従来どおり per_record_fpr=None。"""
+        import struct
+        from controller.binary.hst_reader import HstReader
+
+        # 単純な fpr=4 × 5 レコード のファイル
+        num_records, fpr = 5, 4
+        step_size = 1 + num_records * fpr
+        num_steps = 3
+        p = tmp_path / "Damper.hst"
+        with open(p, "wb") as f:
+            f.write(struct.pack("<4i", 0x1234, num_steps, step_size, num_records))
+            f.write(struct.pack(f"<{num_records}i", *[100] * num_records))  # meta
+            for s in range(num_steps):
+                row = [float(s)] + [float(s * 10 + i) for i in range(num_records * fpr)]
+                f.write(struct.pack(f"<{step_size}f", *row))
+
+        r = HstReader(p, dt=0.005, lazy=False)
+        assert r.header is not None
+        assert r.header.fields_per_record == 4
+        assert r.header.per_record_fpr is None  # 一律 fpr なので None
+
+
 class TestFieldConstants:
     """フィールドインデックス定数のテスト（Spring 用デフォルト）。"""
 

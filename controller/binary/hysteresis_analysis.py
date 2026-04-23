@@ -132,11 +132,17 @@ def fetch_hysteresis_data(
     h = hst.header
     if rec_idx >= h.num_records:
         return None
-    if h.fields_per_record < 2:
+    # レコード固有 fpr を使用（混在 fpr レイアウト対応）
+    per_record_fpr = getattr(h, "per_record_fpr", None)
+    if isinstance(per_record_fpr, (list, tuple)) and rec_idx < len(per_record_fpr):
+        fpr_this = int(per_record_fpr[rec_idx])
+    else:
+        fpr_this = h.fields_per_record
+    if fpr_this < 2:
         # 最低限 F/D が揃わない
         return None
 
-    fmap = category_field_map(category, h.fields_per_record)
+    fmap = category_field_map(category, fpr_this)
     f_idx = fmap.get("F")
     d_idx = fmap.get("D")
     v_idx = fmap.get("V")
@@ -150,12 +156,12 @@ def fetch_hysteresis_data(
         F = hst.time_series(rec_idx, f_idx)
         D = hst.time_series(rec_idx, d_idx)
         v_derived = False
-        if v_idx is not None and v_idx < h.fields_per_record:
+        if v_idx is not None and v_idx < fpr_this:
             V = hst.time_series(rec_idx, v_idx)
         else:
             V = _numerical_derivative(D, dt)
             v_derived = True
-        if e_idx is not None and e_idx < h.fields_per_record:
+        if e_idx is not None and e_idx < fpr_this:
             E = hst.time_series(rec_idx, e_idx)
         else:
             E = np.zeros_like(F)
