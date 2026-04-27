@@ -87,10 +87,19 @@ _KNOWN_META_PER: Dict[str, int] = {
 # fpr が一致するレイアウトを使い、一致しなければ f0,f1,... にフォールバック。
 _FIELD_LAYOUTS_BY_FPR: Dict[str, Dict[int, List[str]]] = {
     "Damper.hst": {
-        # 2D (shear) モデル: fpr=4 → Force, Disp, Vel, Energy
-        4: ["Force", "Disp", "Vel", "Energy"],
-        # 3D モデル: fpr=8 → Fx, Dx, Fy, Dy, f4, f5, f6, Energy
-        8: ["Fx", "Dx", "Fy", "Dy", "f4", "f5", "f6", "Energy"],
+        # 2D 簡易ダンパー: fpr=4 は [F, D, Energy, V] の順。
+        # (f2 は単調増加、f3 は振動 → F=0, D=1, E=2, V=3)
+        4: ["Force", "Disp", "Energy", "Vel"],
+        # 3D 立体モデル: fpr=8。V 成分は出力されず、
+        # 先頭 2 組 (f0/f1, f2/f3, f5/f6) は異なるサブ要素の F/D 対。
+        # 末尾 (f7) が累積エネルギー (単調増加)。
+        8: ["F", "D", "F2", "D2", "f4", "F3", "D3", "Energy"],
+        # iRDT ダンパー: fpr=11。F=f1, D=f2, V=f4, E=f9 (末尾ではない)。
+        11: [
+            "f0", "Force", "Disp", "cumD",
+            "Vel", "Fv", "cumV",
+            "F2", "D2", "Energy", "f10",
+        ],
     },
     "Spring.hst": {
         5: ["Force", "Disp", "Vel", "Energy", "f4"],
@@ -113,7 +122,13 @@ _FIELD_LAYOUTS: Dict[str, List[str]] = {}
 
 @dataclass
 class HstHeader:
-    """.hst ファイルの 4 整数ヘッダ + 派生情報。"""
+    """.hst ファイルの 4 整数ヘッダ + 派生情報。
+
+    iOD など、同じ Damper.hst 内でレコードごとに fpr が異なるケース
+    （例: 22 レコード × fpr=4 + 22 レコード × fpr=11）に対応するため
+    ``per_record_fpr`` / ``per_record_offset`` を保持する。
+    None の場合は全レコード一律 fpr = ``fields_per_record``。
+    """
     magic: int
     num_steps: int
     step_size: int
@@ -121,14 +136,20 @@ class HstHeader:
     meta_per_record: int
     fields_per_record: int
     file_size: int
+    per_record_fpr: Optional[List[int]] = None
+    per_record_offset: Optional[List[int]] = None
 
     def summary(self) -> str:
-        return (
+        base = (
             f"magic=0x{self.magic:08x}, steps={self.num_steps}, "
             f"step_size={self.step_size}, num_records={self.num_records}, "
             f"meta_per_record={self.meta_per_record}, "
             f"fields_per_record={self.fields_per_record}"
         )
+        if self.per_record_fpr is not None:
+            uniq = sorted(set(self.per_record_fpr))
+            base += f", mixed_fpr={uniq}"
+        return base
 
 
 class HstReader:
@@ -201,6 +222,8 @@ class HstReader:
         # --------------------------------------------------------
         fields_per_record = 0
         self._step_header_size: int = 1  # デフォルト
+        per_record_fpr: Optional[List[int]] = None
+        per_record_offset: Optional[List[int]] = None
         if num_records > 0 and step_size > 0:
             # 既知メタサイズからヒントを取得（ファイル名ベース）
             known_meta = _KNOWN_META_PER.get(self.hst_file.name, -1)
@@ -220,6 +243,20 @@ class HstReader:
                         self._step_header_size = sh
                         break
 
+            # 一律 fpr で解釈できない場合、混在 fpr レイアウトを試す
+            # (例: iOD Damper.hst = 22×fpr4 + 22×fpr11 + sh=1 = 331)
+            if fields_per_record == 0:
+                seg = self._detect_segmented_fpr(
+                    step_size, num_records, meta_per
+                )
+                if seg is not None:
+                    sh, fprs, offsets = seg
+                    self._step_header_size = sh
+                    per_record_fpr = fprs
+                    per_record_offset = offsets
+                    # 境界チェック用に最大値を保持 (time_series で使用)
+                    fields_per_record = max(fprs)
+
         self.header = HstHeader(
             magic=magic,
             num_steps=num_steps,
@@ -228,8 +265,83 @@ class HstReader:
             meta_per_record=meta_per,
             fields_per_record=fields_per_record,
             file_size=file_size,
+            per_record_fpr=per_record_fpr,
+            per_record_offset=per_record_offset,
         )
         self._data_offset = 4 + num_records * meta_per
+
+    # ------------------------------------------------------------------
+    # 混在 fpr 検出
+    # ------------------------------------------------------------------
+
+    def _detect_segmented_fpr(
+        self,
+        step_size: int,
+        num_records: int,
+        meta_per: int,
+    ) -> Optional[tuple[int, List[int], List[int]]]:
+        """meta 値をキーに 2 セグメント混在 fpr レイアウトを検出する。
+
+        Damper.hst (iOD) では、レコードごとに meta 値（int32 解釈）が
+        サブ要素種別を表すらしく、同じ meta を持つ連続レコード群は
+        同じ fpr を共有する。ファイルから直接 meta を読み出し、
+        以下の条件を満たすセグメント分割を探す:
+
+        * meta を int32 解釈した key 配列が最大 2 値で構成される
+        * 配列が単調に切り替わる (先頭 N_a 個が type_a, 残り N_b 個が type_b)
+        * ``sh + N_a * fpr_a + N_b * fpr_b == step_size``
+          を満たす既知 fpr 候補 (4, 5, 8, 11) の組合せが存在する
+
+        Returns
+        -------
+        (step_header_size, per_record_fpr, per_record_offset) または ``None``
+        """
+        if meta_per < 1 or num_records < 2:
+            return None
+        try:
+            with open(self.hst_file, "rb") as f:
+                f.seek(16)  # 4-int ヘッダの後
+                meta_bytes = f.read(num_records * meta_per * 4)
+        except OSError:
+            return None
+        if len(meta_bytes) < num_records * meta_per * 4:
+            return None
+        meta_arr = np.frombuffer(meta_bytes, dtype=np.int32).reshape(
+            num_records, meta_per
+        )
+        key = meta_arr[:, 0]
+        uniq = sorted({int(v) for v in key})
+        if len(uniq) != 2:
+            return None
+        # 単調切替（先頭群 / 末尾群）を確認
+        first_change = None
+        for i in range(1, num_records):
+            if key[i] != key[0]:
+                first_change = i
+                break
+        if first_change is None:
+            return None
+        head = key[:first_change]
+        tail = key[first_change:]
+        if not (np.all(head == key[0]) and np.all(tail == key[-1])):
+            return None
+        na, nb = first_change, num_records - first_change
+        fpr_candidates = (4, 5, 8, 11)
+        for sh in (1, 2, 3, 4, 0):
+            for fpr_a in fpr_candidates:
+                for fpr_b in fpr_candidates:
+                    if fpr_a == fpr_b:
+                        continue
+                    if sh + na * fpr_a + nb * fpr_b != step_size:
+                        continue
+                    fprs = [fpr_a] * na + [fpr_b] * nb
+                    offsets: List[int] = []
+                    cur = sh
+                    for fpr in fprs:
+                        offsets.append(cur)
+                        cur += fpr
+                    return sh, fprs, offsets
+        return None
 
     # ------------------------------------------------------------------
     # Data loading
@@ -295,6 +407,29 @@ class HstReader:
         # int ビットパターンで解釈
         return self._raw[:, 0].view(np.int32).copy()
 
+    def fpr_for_record(self, record_index: int) -> int:
+        """指定レコードの fields_per_record を返す。
+
+        混在 fpr レイアウト（per_record_fpr が設定されている場合）では
+        レコードごとの fpr を返す。そうでなければ header.fields_per_record。
+        """
+        if self.header is None:
+            return 0
+        h = self.header
+        if h.per_record_fpr is not None and 0 <= record_index < len(h.per_record_fpr):
+            return int(h.per_record_fpr[record_index])
+        return h.fields_per_record
+
+    def record_offset(self, record_index: int) -> int:
+        """指定レコードのステップ内カラム先頭オフセットを返す。"""
+        if self.header is None:
+            return 0
+        h = self.header
+        if h.per_record_offset is not None and 0 <= record_index < len(h.per_record_offset):
+            return int(h.per_record_offset[record_index])
+        sh = getattr(self, "_step_header_size", 1)
+        return sh + record_index * h.fields_per_record
+
     def time_series(self, record_index: int, field_index: int) -> np.ndarray:
         """
         指定レコード (例: 層 index 0=1F, 1=2F ...) の
@@ -313,12 +448,12 @@ class HstReader:
         if not (0 <= record_index < h.num_records):
             raise IndexError(f"record_index {record_index} out of range "
                              f"(num_records={h.num_records})")
-        if not (0 <= field_index < h.fields_per_record):
+        fpr_this = self.fpr_for_record(record_index)
+        if not (0 <= field_index < fpr_this):
             raise IndexError(f"field_index {field_index} out of range "
-                             f"(fields_per_record={h.fields_per_record})")
+                             f"(fpr_for_record({record_index})={fpr_this})")
 
-        sh = getattr(self, "_step_header_size", 1)
-        offset = sh + record_index * h.fields_per_record + field_index
+        offset = self.record_offset(record_index) + field_index
         return self._raw[:, offset].copy()
 
     def raw_field(self, absolute_field_index: int) -> np.ndarray:
@@ -329,11 +464,19 @@ class HstReader:
         return self._raw[:, absolute_field_index].copy()
 
     def field_labels(self) -> List[str]:
-        """既知レイアウトからフィールド名候補を返します。"""
+        """既知レイアウトからフィールド名候補を返します（レコード 0 基準）。"""
+        return self.field_labels_for_record(0)
+
+    def field_labels_for_record(self, record_index: int) -> List[str]:
+        """指定レコードの fpr に応じたフィールド名候補を返します。
+
+        混在 fpr レイアウト (iOD Damper.hst 等) では、レコードごとに
+        fpr が異なるためラベルもレコード依存で返す必要がある。
+        """
         if self.header is None:
             return []
         name = self.hst_file.name
-        fpr = self.header.fields_per_record
+        fpr = self.fpr_for_record(record_index)
         # fpr 別レイアウトを優先
         by_fpr = _FIELD_LAYOUTS_BY_FPR.get(name)
         if by_fpr:
@@ -356,14 +499,18 @@ class HstReader:
         """
         各レコードの該当フィールドの絶対値最大（ピーク）配列を返します。
         shape=(num_records,)
+
+        混在 fpr レイアウトでは、指定 field_index を持たないレコードは 0 を返す。
         """
         self.ensure_loaded()
         if self._raw is None or self.header is None:
             return np.zeros(0, dtype=np.float32)
         h = self.header
-        sh = getattr(self, "_step_header_size", 1)
         peaks = np.zeros(h.num_records, dtype=np.float32)
         for r in range(h.num_records):
-            offset = sh + r * h.fields_per_record + field_index
+            fpr_this = self.fpr_for_record(r)
+            if field_index >= fpr_this:
+                continue
+            offset = self.record_offset(r) + field_index
             peaks[r] = float(np.max(np.abs(self._raw[:, offset])))
         return peaks
