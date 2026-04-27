@@ -2,8 +2,8 @@
 app/services/impulse_wave_writer.py
 SNAP .wv 形式でインパルス波を書き出すサービス。
 
-伝達関数最適化で用いるインパルス入力波形（8192点、指定サンプル位置にのみ
-指定加速度、それ以外は0）を生成します。
+伝達関数最適化で用いるインパルス入力波形（既定 16384点 = 0.02s × 327.68s、
+指定サンプル位置にのみ指定加速度、それ以外は0）を生成します。
 
 SNAP .wv のテキストフォーマット（サンプル `20000001.wv` 参照）:
 
@@ -34,7 +34,7 @@ from typing import Optional
 logger = logging.getLogger(__name__)
 
 
-DEFAULT_NUM_POINTS = 8192
+DEFAULT_NUM_POINTS = 16384  # 8192 × 2; 0.02 s × 16384 = 327.68 s
 DEFAULT_IMPULSE_INDEX = 9  # 0-indexed, the 10th sample
 DEFAULT_DT = 0.02
 DEFAULT_VERSION = "2021.3.12.0"
