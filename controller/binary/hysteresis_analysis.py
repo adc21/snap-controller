@@ -20,8 +20,12 @@ example_3D/D4 = fpr=8、example_shear_iRDT/D1 = fpr=11) に基づく対応表:
     「F vs 累積エネルギー」となり単調増加の直線しか表示されない状態だった。
 - Damper.hst fpr=8 (3D 立体モデル): V フィールドなし、末尾 (f7) がエネルギー。
 - Damper.hst fpr=11 (iRDT 型): F=f1, D=f2, V=f4, E=f9 (末尾ではない点に注意)。
+- Damper.hst fpr=4 (iOD 型, 全体レコード): ``[F, V, E, D]``
+  ※ 2D 簡易と異なり D と V の位置が入れ替わる。
+  ※ IODCR (減衰モデル=0) / IOD12 (減衰モデル=3) いずれも同一レイアウト。
 - Damper.hst fpr=11 (iOD 型): サブ要素ごとの (F, 運動学) 対が格納される。
-  * スプリング    : F=f1, D=f2  (線形, 無ヒステリシス)
+  * 全体        : F=f1, D=f10 (節点間相対変位, DC オフセット有・非対称)
+  * 内部ばね    : f2          (直列ばね伸び, 対称 ±。F-D は線形なので非表示)
   * 質量（イナーター）: F=f4, A=f5  (F = m·A, 線形)
   * ダッシュポット : F=f7, V=f8  (ヒステリシス)
   * エネルギー   : f9           (単調増加)
@@ -151,19 +155,46 @@ def is_iod_layout(per_record_fpr: Optional[Sequence[int]]) -> bool:
     return 4 in distinct and 11 in distinct
 
 
+def iod_fpr4_whole_map() -> Dict[str, int]:
+    """iOD fpr=4 全体レコードのフィールドインデックス。
+
+    iOD 複合制振装置の fpr=4 レコードは 2D 簡易ダンパーと異なる並びで、
+    実データ検証 (質点XwIOD09_test rec 0-21, ユーザー提供 SNAP 参照図
+    「制振ブレース全体応力-変形4」damper-4 16-16-2 IODCR) から確定::
+
+      f0 = F  [kN]              (全体力, 2D 簡易と同じ)
+      f1 = V  [m/s]             (速度, 2D 簡易と違い D ではない)
+      f2 = E  [kNm] (累積エネルギー, 単調増加, 2D 簡易と同じ)
+      f3 = D  [m]               (変位, 2D 簡易と違い V ではない)
+
+    2D 簡易ダンパー fpr=4 は ``[F, D, E, V]`` だが、
+    iOD fpr=4 は ``[F, V, E, D]`` と D と V の位置が入れ替わる点に注意。
+    検証: ``corr(d(f3)/dt, f1) = 0.99978`` で f1=V, f3=D を確定。
+    IODCR (減衰モデル=0) / IOD12 (減衰モデル=3) いずれも同じレイアウト。
+    """
+    return {"F": 0, "V": 1, "E": 2, "D": 3}
+
+
 def iod_fpr11_sub_element_map(sub_element: str) -> Dict[str, int]:
     """iOD fpr=11 のサブ要素別フィールドインデックス。
 
     iOD 複合制振装置 fpr=11 レコードの実データ検証 (相関解析 + ユーザー
     提供 SNAP 参照図 + 恒等式 ``f1 = f4 + f7`` から確定したレイアウト)::
 
-      f1 = F_total  [kN],  f2 = D_spring [m]      (全体力, f1=k·f2 線形)
-      f4 = F_mass   [kN],  f5 = A_mass   [m/s^2]  (F = m·A, 線形)
-      f7 = F_dash   [kN],  f8 = V_dash   [m/s]    (非線形, ヒステリシス)
-      f9 = E (累積エネルギー, 単調増加)
+      f1  = F_total  [kN]                           (全体力)
+      f2  = D_spring [m]   (内部直列ばね伸び, f1=k·f2 線形・対称 ±)
+      f4  = F_mass   [kN],  f5  = A_mass [m/s^2]    (F = m·A, 線形)
+      f7  = F_dash   [kN],  f8  = V_dash [m/s]      (非線形, ヒステリシス)
+      f9  = E (累積エネルギー, 単調増加)
+      f10 = D_whole  [m]   (節点間相対変位, DC オフセット有・非対称)
 
     ``f1 = f4 + f7`` は質量 || ダッシュポット並列構成による全体力
     の合力を表す恒等式である。
+
+    全体 F-D ループには f10 を用いる。f2 は内部直列ばねの伸びで
+    対称・無オフセットのため SNAP の「全体応力-変形」表示と一致しない。
+    f10 は節点間相対変位 (重力 + 動的成分) で、SNAP の参照図と同一の
+    非対称・DC オフセット履歴ループを再現する (ユーザー確認済み 2026-04-23)。
 
     Parameters
     ----------
@@ -179,7 +210,7 @@ def iod_fpr11_sub_element_map(sub_element: str) -> Dict[str, int]:
     if sub_element == SUB_ELEMENT_DASHPOT:
         return {"F": 7, "V": 8, "E": 9}
     # whole / default
-    return {"F": 1, "D": 2, "E": 9}
+    return {"F": 1, "D": 10, "E": 9}
 
 
 def sub_element_applies_to_fpr(sub_element: str, fpr: int, iod: bool) -> bool:
@@ -278,7 +309,12 @@ def fetch_hysteresis_data(
     ):
         return _fetch_iod_fpr11(hst, rec_idx, fpr_this, dt, effective)
 
-    # 非 iOD または fpr=4: 従来の category_field_map
+    # iOD fpr=4 (全体レコード): 2D 簡易と異なり [F, V, E, D] の並び
+    if category == "Damper" and iod and fpr_this == 4:
+        fmap = iod_fpr4_whole_map()
+        return _fetch_standard(hst, rec_idx, fpr_this, dt, fmap, effective)
+
+    # 非 iOD または他の fpr: 従来の category_field_map
     fmap = category_field_map(category, fpr_this)
     return _fetch_standard(hst, rec_idx, fpr_this, dt, fmap, effective)
 

@@ -467,25 +467,29 @@ class TestMixedFprLayout:
         loader = MagicMock()
         loader.get.return_value = mock_bc
 
-        # rec 0 は fpr=4: F@0, D@1, E@2, V@3
+        # rec 0 は iOD fpr=4 (全体レコード): F@0, V@1, E@2, D@3
+        # (2D 簡易ダンパー [F, D, E, V] と異なり V と D の位置が入れ替わる)
         d0 = fetch_hysteresis_data(loader, "Damper", 0, 0.005)
         assert d0 is not None
         # rec 0 field 0 for each step = step*1000
         np.testing.assert_array_equal(d0["F"], [0, 1000, 2000, 3000, 4000])
-        # D = field 1 = step*1000 + 1
-        np.testing.assert_array_equal(d0["D"], [1, 1001, 2001, 3001, 4001])
+        # V = field 1 = step*1000 + 1
+        np.testing.assert_array_equal(d0["V"], [1, 1001, 2001, 3001, 4001])
         # E = field 2 = step*1000 + 2
         np.testing.assert_array_equal(d0["E"], [2, 1002, 2002, 3002, 4002])
+        # D = field 3 = step*1000 + 3
+        np.testing.assert_array_equal(d0["D"], [3, 1003, 2003, 3003, 4003])
         assert d0["v_derived"] is False  # V field exists at fpr=4
 
-        # rec 5 は fpr=11 (iOD whole サブ要素): F@1, D@2, E@9, V=d(D)/dt
-        # mixed fpr=4+fpr=11 なので is_iod_layout=True → 自動で全体を返す
+        # rec 5 は fpr=11 (iOD whole サブ要素): F@1, D@10 (節点間相対変位),
+        # E@9, V=d(D)/dt。mixed fpr=4+fpr=11 なので is_iod_layout=True →
+        # 自動で全体を返す。f2 は内部直列ばね伸びで SNAP 表示と異なるため未使用。
         d5 = fetch_hysteresis_data(loader, "Damper", 5, 0.005)
         assert d5 is not None
         # rec 5 field 1 = step*1000 + 5*100 + 1
         np.testing.assert_array_equal(d5["F"], [501, 1501, 2501, 3501, 4501])
-        # D = field 2 = step*1000 + 5*100 + 2
-        np.testing.assert_array_equal(d5["D"], [502, 1502, 2502, 3502, 4502])
+        # D = field 10 = step*1000 + 5*100 + 10
+        np.testing.assert_array_equal(d5["D"], [510, 1510, 2510, 3510, 4510])
         # E = field 9 = step*1000 + 5*100 + 9
         np.testing.assert_array_equal(d5["E"], [509, 1509, 2509, 3509, 4509])
         # V は D を dt=0.005 で数値微分 → ΔD=1000 で一定 → V=200000
@@ -542,13 +546,27 @@ class TestIodSubElement:
         assert is_iod_layout(None) is False
         assert is_iod_layout([]) is False
 
+    def test_iod_fpr4_whole_map(self):
+        """iOD fpr=4 全体レコードは [F, V, E, D] の並び。
+
+        2D 簡易ダンパー fpr=4 (``[F, D, E, V]``) と異なり D と V の位置が
+        入れ替わる。IODCR (16-16-2 damper-4) SNAP 参照図で X=±2mm 対称の
+        変位が得られるのは f3 のみで、f1 は |max|≈1mm/s の速度である。
+        """
+        from controller.binary.hysteresis_analysis import iod_fpr4_whole_map
+        m = iod_fpr4_whole_map()
+        assert m == {"F": 0, "V": 1, "E": 2, "D": 3}
+
     def test_sub_element_map_whole(self):
         from controller.binary.hysteresis_analysis import (
             iod_fpr11_sub_element_map, SUB_ELEMENT_WHOLE,
         )
         m = iod_fpr11_sub_element_map(SUB_ELEMENT_WHOLE)
         assert m["F"] == 1
-        assert m["D"] == 2
+        # 全体 F-D は節点間相対変位 f10 (DC オフセット有・非対称) を用いる。
+        # f2 は内部直列ばねの伸びで対称・無オフセットのため SNAP の
+        # 「全体応力-変形」図と一致しない。
+        assert m["D"] == 10
         assert m["E"] == 9
 
     def test_sub_element_map_mass(self):
@@ -597,7 +615,7 @@ class TestIodSubElement:
         assert len(SUB_ELEMENT_LABELS) == 4  # auto + 3
 
     def test_fetch_iod_fpr11_whole(self, tmp_path):
-        """iOD whole: F=f1, D=f2, E=f9 を読み取り、V は D から数値微分。"""
+        """iOD whole: F=f1, D=f10, E=f9 を読み取り、V は D から数値微分。"""
         from controller.binary.hysteresis_analysis import (
             fetch_hysteresis_data, SUB_ELEMENT_WHOLE,
         )
@@ -617,9 +635,9 @@ class TestIodSubElement:
         assert d is not None
         assert d["sub_element"] == SUB_ELEMENT_WHOLE
         assert d["x_kind"] == "D"
-        # F = field 1, D = field 2, E = field 9
+        # F = field 1, D = field 10 (節点間相対変位), E = field 9
         np.testing.assert_array_equal(d["F"], [501, 1501, 2501, 3501, 4501])
-        np.testing.assert_array_equal(d["D"], [502, 1502, 2502, 3502, 4502])
+        np.testing.assert_array_equal(d["D"], [510, 1510, 2510, 3510, 4510])
         np.testing.assert_array_equal(d["E"], [509, 1509, 2509, 3509, 4509])
         assert d["v_derived"] is True
 
